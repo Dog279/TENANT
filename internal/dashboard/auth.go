@@ -112,7 +112,14 @@ func dropForeignFlash(r *http.Request) {
 // TestTemplates_NoInlineJS sweep), so script injected into a page, a
 // javascript: link or an on*= handler never runs; nosniff keeps a log file
 // or a JSON answer from being loaded as script.
-const contentSecurityPolicy = "frame-ancestors 'none'; script-src 'self' 'unsafe-eval'; object-src 'none'; base-uri 'none'"
+//
+// img-src and media-src: a page loads pictures, sound and video from this
+// dashboard only. The pages show text a model wrote after reading mail, web
+// pages and tool results; an image address in that text must not make the
+// browser send a request somewhere, with no click, that no approval saw. The
+// Markdown renderer already turns an image into a link (internal/md); this
+// holds for every other way an <img> could reach a page.
+const contentSecurityPolicy = "frame-ancestors 'none'; script-src 'self' 'unsafe-eval'; object-src 'none'; base-uri 'none'; img-src 'self' data:; media-src 'self'"
 
 // signInPage reports whether an unauthorized request is a person opening a
 // page, who is better sent to the sign-in form than shown JSON (F4, D30): a

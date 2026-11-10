@@ -23,6 +23,25 @@ func TestHTML_RawHTMLIsText(t *testing.T) {
 	}
 }
 
+// An image is a link, never an <img>: the page must not fetch an address the
+// text names. The alt text is the link's text; without one it says "image".
+func TestHTML_ImagesAreLinks(t *testing.T) {
+	out := string(md.HTML("![a chart](https://example.com/c.png \"t\") and ![](https://example.com/d.png)\n\n[![inner](https://example.com/i.png)](https://example.com/page)\n\n![ref][r]\n\n[r]: https://example.com/r.png\n"))
+	if strings.Contains(out, "<img") || strings.Contains(out, "src=") {
+		t.Fatalf("an image reached the HTML:\n%s", out)
+	}
+	for _, want := range []string{
+		`<a href="https://example.com/c.png" title="t">a chart</a>`,
+		`<a href="https://example.com/d.png">image</a>`,
+		`<a href="https://example.com/page">inner</a>`, // an image inside a link: the link stays, with the alt text
+		`<a href="https://example.com/r.png">ref</a>`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
 // The structure a model writes most comes through: headings, lists, code,
 // tables and task boxes.
 func TestHTML_RendersStructure(t *testing.T) {

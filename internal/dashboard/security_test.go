@@ -621,7 +621,7 @@ func TestAuthHeadersAndSignInRedirect(t *testing.T) {
 	h := s.served()
 	want := map[string]string{
 		"X-Frame-Options":         "DENY",
-		"Content-Security-Policy": "frame-ancestors 'none'; script-src 'self' 'unsafe-eval'; object-src 'none'; base-uri 'none'",
+		"Content-Security-Policy": "frame-ancestors 'none'; script-src 'self' 'unsafe-eval'; object-src 'none'; base-uri 'none'; img-src 'self' data:; media-src 'self'",
 		"Referrer-Policy":         "same-origin",
 		"X-Content-Type-Options":  "nosniff",
 	}

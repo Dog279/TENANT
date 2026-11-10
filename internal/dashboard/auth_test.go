@@ -343,7 +343,7 @@ func TestAuthHeaders_NoFramingSameOriginReferrer(t *testing.T) {
 		hd := authDo(h, req).Header()
 		for k, want := range map[string]string{
 			"X-Frame-Options":         "DENY",
-			"Content-Security-Policy": "frame-ancestors 'none'; script-src 'self' 'unsafe-eval'; object-src 'none'; base-uri 'none'",
+			"Content-Security-Policy": "frame-ancestors 'none'; script-src 'self' 'unsafe-eval'; object-src 'none'; base-uri 'none'; img-src 'self' data:; media-src 'self'",
 			"X-Content-Type-Options":  "nosniff",
 			"Referrer-Policy":         "same-origin",
 		} {
