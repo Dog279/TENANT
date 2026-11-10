@@ -480,6 +480,17 @@ After Docker Desktop was quit and started again (engine 29.9.3, running kernel 6
 
 Not run on a real engine: `tenant sandbox stop-all` (not run against this machine's engine) and a `tcp://` endpoint with TLS (no such engine here).
 
+### Nested read-only binds on 9p, tried by hand on 2026-11-10
+
+W2-2 asks to verify nested read-only binds on 9p before building them. Tried with `docker run` and the backend's own flags (read-only root, uid 65532, no capabilities, no network) on Docker Desktop for Windows, engine 29.9.3, with a work dir on NTFS:
+
+- **They work.** With read-only binds over `.git/hooks`, `.git/config`, `.vscode` and `.mcp.json` nested inside the writable work mount, a write to each is refused (`Read-only file system`), the rest of the work dir stays writable, and a bind's own mount point can be neither renamed nor removed (`Device or resource busy`). A single file (`.git/config`, `.mcp.json`) can be a bind.
+- **The §5 list is not enough.** With only those binds, `mv .git .git2` succeeded, and the rename was there on the host afterwards. A command can move the repository aside and make a new `.git` with hooks and a config of its own, which is exactly what the binds are for.
+- **`.git` as a mount point closes that.** With `.git` bound onto itself, writable, under the same two read-only binds, renaming or removing `.git` fails (`Device or resource busy`) while `.git/objects` and the rest stay writable, so a commit inside the container still works. `rm -rf .git` then deletes what is writable inside it (objects, refs, `HEAD`) and stops at the mount points: the repository can be destroyed, as anything in a writable work dir can, but not given hooks.
+- **Not covered by any of this:** a repository the command creates elsewhere in the work dir (`git init sub` worked, and `sub/.git/hooks` is the command's), submodule git dirs under `.git/modules/*/`, a work dir whose `.git` is a file, and a protected folder that does not exist yet (the command can create it).
+
+So the build is three layers per repository (the work dir, `.git` onto itself, then the read-only binds), plus answers to the open questions in the table below. W2-3 stays necessary whatever is bound: the host must not run what it finds in a work dir.
+
 ### Wave 2, checked against the code on 2026-11-10
 
 Some of wave 2 was already in the code when its tickets were still To Do. Rows that say "live" were run on a real engine on 2026-11-10 (the section above); the rest have unit tests only.
@@ -491,7 +502,7 @@ Some of wave 2 was already in the code when its tickets were still To Do. Rows t
 | W2-1 | A cap on concurrent sandboxes and on launches per turn and per job; watching the work dir's growth | open: the numbers, and whether a launch over the cap waits or is refused, are not decided |
 | W2-2 TEN-463 | HOME on its own tmpfs | done (D4): `--tmpfs /home/sandbox:rw,nosuid,nodev,size=64m,mode=0700,uid=65532,gid=65532` and `HOME=/home/sandbox` (`buildRunArgv`, `sandboxHome`); the image creates the folder. Passed live (`TestContainerLive_HomeIsATmpfsOfItsOwn`) |
 | W2-2 | Refusing a bare-repo work dir | done: `bareRepoLayout` in `specFor` refuses a work dir or write root that is itself a git directory (HEAD beside `objects` and `refs`); read-only it is allowed |
-| W2-2 | Read-only binds over `.git/hooks`, `.git/config` and the editor and agent folders | open: nested read-only binds are untested on 9p and must be tried on a live engine before they are on for every run; whether to create the missing folders in the operator's work dir is also not decided |
+| W2-2 | Read-only binds over `.git/hooks`, `.git/config` and the editor and agent folders | not built; tried by hand on a real engine on 2026-11-10 (below). Nested read-only binds work on 9p, but the list in §5 is not enough on its own: `.git` has to be a mount point too. Open: whether to create missing folders in the operator's work dir, and what to do for a work dir with no `.git`, a `.git` file (a worktree), submodule git dirs and repos the command creates itself |
 | W2-3 TEN-464 | The host treats the work dir as hostile | audited, part open. Already so: the file tools resolve every link, a dangling one by hand, and check the place it points at against the roots (`internal/plugins/osys/paths.go` `resolve`), so a link a container made does not move a host tool outside its roots; Tenant itself runs no git on the host, so there is no `core.fsmonitor` or `core.hooksPath` for it to neutralise. `resolve` now refuses a path it cannot relate to its resolved ancestor (it returned the path unresolved). Open: the check and the open are two steps, so a link swapped in between is followed; reparse points a container leaves on NTFS are not tried on a live engine |
 | W2-4 TEN-465 | Token auth on the SSE gateway | done (PR #63) |
 | W2-4 | `full` on a Tenant-owned bridge with inter-container traffic off | open |
