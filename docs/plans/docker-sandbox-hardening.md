@@ -469,16 +469,27 @@ Where wave 1 stands after PR #35 (Phase 1), PR #60 (wave-1 close), PR #63 (sweep
 
 Docker Desktop (engine 29.9.3, WSL 3.0.5, installed kernel 6.18.58, running kernel 6.18.54) was stuck in `starting` after a WSL update: `docker version`, `docker info` and an unfiltered `docker ps` answered, but `docker create`, `docker run` and `docker ps --filter label=…` never returned. The probe called the backend available, and the live tests then failed by timing out with empty output (`Identity`, `ReadOnlyRootAndSecret`, `LoopbackUnderNoneVsFull`, `OutputCapKills`; `SweepLeftovers` hung the suite). The two tests that only need a container to be gone passed. That run is why the container check exists. **No live case has yet been seen to pass on this machine**: they need a restarted Docker Desktop.
 
+### A live run on Windows, 2026-11-10, on a working engine
+
+After Docker Desktop was quit and started again (engine 29.9.3, running kernel 6.18.58.1), on `main` at the merge of #66:
+
+- `tenant sandbox image build` built the image from the pinned `debian:trixie-slim` (image id `sha256:a282e8fc…f43da8`, Debian 13.7).
+- `TENANT_SANDBOX_LIVE=1 go test ./internal/sandbox/ -run TestContainerLive`: 13 of 13 pass, the two new cases among them (`HomeIsATmpfsOfItsOwn`, `CPULimitStopsARunawayProcess`).
+- `tenant sandbox selftest --backend container`: 4 of 4 escape cases contained, every legitimate twin succeeded.
+- A new live case for the approved re-run, `TestContainerLive_ApprovedReRunStartsByImageID`, **failed and found a defect**: when the refused folder was already granted read-only, the re-run mounted it twice (read-only and writable) and the engine refused the container with "Duplicate mount point". The refusal stood, so nothing ran unconfined, but approving a write into a read-only grant had never worked on a real engine; the fake CLI accepts any argv. `specFor` now mounts each destination once, by its widest grant. With that, 14 of 14 live cases pass.
+
+Not run on a real engine: `tenant sandbox stop-all` (not run against this machine's engine) and a `tcp://` endpoint with TLS (no such engine here).
+
 ### Wave 2, checked against the code on 2026-11-10
 
-Some of wave 2 was already in the code when its tickets were still To Do. Nothing here has been run against a live engine.
+Some of wave 2 was already in the code when its tickets were still To Do. Rows that say "live" were run on a real engine on 2026-11-10 (the section above); the rest have unit tests only.
 
 | Ticket | Item | State |
 |---|---|---|
 | W2-1 TEN-462 | `--ulimit core=0` and `nofile=1024:4096` | in the code (`buildRunArgv`) |
-| W2-1 | The CPU budget | done (D5): a profile's `cpu_seconds` is `--ulimit cpu=N:N`, a cap per process (`buildRunArgv`); the run record's limits say `cpu=Ns/process`. Fake engine only; the live case is `TestContainerLive_CPULimitStopsARunawayProcess` |
+| W2-1 | The CPU budget | done (D5): a profile's `cpu_seconds` is `--ulimit cpu=N:N`, a cap per process (`buildRunArgv`); the run record's limits say `cpu=Ns/process`. Passed live (`TestContainerLive_CPULimitStopsARunawayProcess`) |
 | W2-1 | A cap on concurrent sandboxes and on launches per turn and per job; watching the work dir's growth | open: the numbers, and whether a launch over the cap waits or is refused, are not decided |
-| W2-2 TEN-463 | HOME on its own tmpfs | done (D4): `--tmpfs /home/sandbox:rw,nosuid,nodev,size=64m,mode=0700,uid=65532,gid=65532` and `HOME=/home/sandbox` (`buildRunArgv`, `sandboxHome`); the image creates the folder. Fake engine only; the live case is `TestContainerLive_HomeIsATmpfsOfItsOwn` |
+| W2-2 TEN-463 | HOME on its own tmpfs | done (D4): `--tmpfs /home/sandbox:rw,nosuid,nodev,size=64m,mode=0700,uid=65532,gid=65532` and `HOME=/home/sandbox` (`buildRunArgv`, `sandboxHome`); the image creates the folder. Passed live (`TestContainerLive_HomeIsATmpfsOfItsOwn`) |
 | W2-2 | Refusing a bare-repo work dir | done: `bareRepoLayout` in `specFor` refuses a work dir or write root that is itself a git directory (HEAD beside `objects` and `refs`); read-only it is allowed |
 | W2-2 | Read-only binds over `.git/hooks`, `.git/config` and the editor and agent folders | open: nested read-only binds are untested on 9p and must be tried on a live engine before they are on for every run; whether to create the missing folders in the operator's work dir is also not decided |
 | W2-3 TEN-464 | The host treats the work dir as hostile | audited, part open. Already so: the file tools resolve every link, a dangling one by hand, and check the place it points at against the roots (`internal/plugins/osys/paths.go` `resolve`), so a link a container made does not move a host tool outside its roots; Tenant itself runs no git on the host, so there is no `core.fsmonitor` or `core.hooksPath` for it to neutralise. `resolve` now refuses a path it cannot relate to its resolved ancestor (it returned the path unresolved). Open: the check and the open are two steps, so a link swapped in between is followed; reparse points a container leaves on NTFS are not tried on a live engine |
@@ -487,17 +498,17 @@ Some of wave 2 was already in the code when its tickets were still To Do. Nothin
 | W2-5 TEN-466 | The `program` refusal kind; ENOENT mapped back through the mounts | in the code (wave 1) |
 | W2-5 | Host-only names dropped from a container's environment; the log-join ids forwarded | in the code (`envNamesFor`) |
 | W2-5 TEN-466 | A warning on secret-looking names | done: `secretLookingEnv` on a surface's `env_pass`, shown by `tenant sandbox probe` (and `env_pass_secret_looking` in its JSON) and `tenant doctor`. A hint: the name is still passed |
-| W2-5 | Selftest asserting the exact env | in the code as a live test (`TestContainerLive_ExactEnv`), not yet run on an engine that starts containers |
+| W2-5 | Selftest asserting the exact env | done: the live test `TestContainerLive_ExactEnv` passes |
 | W2-6 TEN-467 | Container jobs run `sh -c` | in the code |
 | W2-6 | Jobs in cmd syntax stay on the host by declaration; a circuit breaker after 5 refusals or timeouts | open: how a paused surface is shown and resumed is not decided |
 | W2-7 TEN-468 | `tenant sandbox stop-all` | done with the PR that adds this table (`sandbox.StopAllContainers`) |
 | W2-7 | The run record in the Security log | done in part with the PR after that one: record `4201` holds the image and its id, mounts and modes, network, limits, output bytes, whether the cap hit, and the time (`sandbox.Confinement`, `confinementFields`); `4203` says where a re-run ran. The names of the environment variables passed in were added after (`Confinement.Env`). Not in the record yet: the policy version, an OOM kill as its own field, and a digest of changed files |
 | W2-7 TEN-468 | Control characters kept from the logs and the UI | done: the log files quote them (`internal/logs/entry.go`), the dashboard shows hidden characters as markers (`control.VisibleText`), and the terminal app now does too: `termText` on every agent, sub-agent, system and research line, `promptText` on an approval prompt, and `termText`/`styledText` on what a slash command prints (`internal/tui/safetext.go`) |
 | W2-7 | One setting that disables `container` and escalation; quarantine | open: the setting's name and place are not decided |
-| W2-8 TEN-469 | The image on trixie | done (D6): `baseImageRef` is `debian:trixie-slim` pinned to the index digest of 2026-11-04. Not yet built on an engine: `tenant sandbox image build` must be run and the live tests repeated on the new image |
+| W2-8 TEN-469 | The image on trixie | done (D6): `baseImageRef` is `debian:trixie-slim` pinned to the index digest of 2026-11-04. Built live, and the live suite and the selftest pass on the new image |
 | W2-8 | The seccomp delta; the image scanned and signed | open |
 | W2-9 TEN-470 | A network scope per run | open; needs the enforcement spike on Docker Desktop |
 
-The approval binding, as it stands: the re-run is started by the backend from the description it hashes (`PinnedEscalator`, `containerBackend.RunGrantedAs`). The spec is built once, its digest is compared with the approved one, and that spec is what runs, with the image named by the id in the digest. This closed the earlier limit, where the second digest was taken before the run and the run resolved its mounts and the image tag once more. What is left: the engine itself resolves a mount source when it starts the container, so a folder replaced by a link in that instant is followed by the engine. Not tried on a live engine.
+The approval binding, as it stands: the re-run is started by the backend from the description it hashes (`PinnedEscalator`, `containerBackend.RunGrantedAs`). The spec is built once, its digest is compared with the approved one, and that spec is what runs, with the image named by the id in the digest. This closed the earlier limit, where the second digest was taken before the run and the run resolved its mounts and the image tag once more. What is left: the engine itself resolves a mount source when it starts the container, so a folder replaced by a link in that instant is followed by the engine. Passed live (`TestContainerLive_ApprovedReRunStartsByImageID`), after the duplicate-mount fix above.
 
 Decisions D4 to D8 were taken on 2026-11-10, each as the recommended option (§7). D4, D5, D6 and D8 are in the code and in SECURITY.md; D7 changes nothing now (Podman on Windows stays in wave 3). No decision is open. Still undecided, and not numbered in §6: the name and place of the setting that disables `container` and escalation, what a launch over the concurrency cap does, how a paused surface is shown and resumed, and whether the read-only binds create missing folders in the operator's work dir.
