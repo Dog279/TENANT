@@ -221,6 +221,43 @@ func (b *containerBackend) command(ctx context.Context, args ...string) (*exec.C
 	return c, nil
 }
 
+// controlTimeout bounds one docker CLI call that manages the engine (version,
+// info, image inspect, ps, rm) rather than runs the operator's command, whose
+// limit is the policy's wall clock. The CLI can stall with the engine up: on
+// one Docker Desktop a `ps --filter label=…` never returned, and a caller that
+// passed a context with no deadline (serve's start-up sweep) waited on it for
+// good. A variable so tests can shorten it.
+var controlTimeout = 15 * time.Second
+
+// control is command for an engine-management call: the same CLI, environment
+// and endpoint, under controlTimeout. The caller runs the command and hands
+// its error to done, which releases the deadline and, when the deadline is
+// what ended the call, returns an error that says so (what names the call:
+// "an image check"). WaitDelay makes Output return soon after the deadline
+// kills the CLI even if something it started still holds the pipe.
+func (b *containerBackend) control(ctx context.Context, what string, args ...string) (c *exec.Cmd, done func(error) error, err error) {
+	ctx, cancel := context.WithTimeout(ctx, controlTimeout)
+	c, err = b.command(ctx, args...)
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	c.WaitDelay = 2 * time.Second
+	return c, func(runErr error) error {
+		defer cancel()
+		return stalled(ctx, what, runErr)
+	}, nil
+}
+
+// stalled rewrites err when ctx's deadline is what ended a docker CLI call,
+// so the operator reads why instead of "signal: killed".
+func stalled(ctx context.Context, what string, err error) error {
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("the docker CLI did not answer %s in time (is Docker Desktop stuck?): %w", what, context.DeadlineExceeded)
+	}
+	return err
+}
+
 // --- gates -------------------------------------------------------------------
 
 // gateReport is what the version and feature checks found: refusals stop the
@@ -575,20 +612,20 @@ func (b *containerBackend) probeOnce(ctx context.Context) (*probeFacts, error) {
 	if plaintextDaemonAnswers(ctx) {
 		return nil, errors.New("a Docker daemon answers on " + plaintextDaemonAddr + " without TLS; turn off \"Expose daemon on tcp://localhost:2375 without TLS\" in Docker Desktop's settings (the engine API is root on this machine)")
 	}
-	vc, err := b.command(ctx, "version", "--format", "{{json .}}")
+	vc, done, err := b.control(ctx, "a version check", "version", "--format", "{{json .}}")
 	if err != nil {
 		return nil, err
 	}
 	info, err := dockerVersion(vc)
-	if err != nil {
+	if err = done(err); err != nil {
 		return nil, fmt.Errorf("the container engine is not reachable (%s); is Docker running?", oneLine(err.Error()))
 	}
-	ic, err := b.command(ctx, "info", "--format", "{{json .}}")
+	ic, done, err := b.control(ctx, "an info request", "info", "--format", "{{json .}}")
 	if err != nil {
 		return nil, err
 	}
 	eng, err := dockerInfo(ic)
-	if err != nil {
+	if err = done(err); err != nil {
 		return nil, fmt.Errorf("docker info failed (%s)", oneLine(err.Error()))
 	}
 	ep, _ := b.endpoint(ctx)

@@ -17,11 +17,13 @@ package sandbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const fakeDockerEnv = "TENANT_FAKE_DOCKER"
@@ -66,7 +68,18 @@ func fakeDockerMain() int {
 	case "image":
 		return 0
 	case "ps":
-		fmt.Println(strings.ReplaceAll(os.Getenv("TENANT_FAKE_DOCKER_PS"), ",", "\n"))
+		// TENANT_FAKE_DOCKER_PS is "id=instance,id=instance,id": one line per
+		// container, the id and its instance label (empty without one), as the
+		// sweep's --format asks. TENANT_FAKE_DOCKER_STALL=ps never answers.
+		if os.Getenv("TENANT_FAKE_DOCKER_STALL") == "ps" {
+			time.Sleep(time.Minute)
+			return 0
+		}
+		for _, entry := range strings.Split(os.Getenv("TENANT_FAKE_DOCKER_PS"), ",") {
+			if id, instance, _ := strings.Cut(entry, "="); id != "" {
+				fmt.Printf("%s\t%s\n", id, instance)
+			}
+		}
 		return 0
 	case "rm", "kill":
 		return 0
@@ -221,11 +234,13 @@ func TestFakeDocker_RefusesBadEndpoint(t *testing.T) {
 	}
 }
 
-// W1-4: the startup sweep lists this install's containers by label and removes
-// exactly those.
+// W1-4: the startup sweep lists the containers with their instance label and
+// removes exactly this install's: not another install's, not an unlabelled
+// one. The engine's own label filter is not used (it stalled on one Docker
+// Desktop; see controlTimeout).
 func TestFakeDocker_SweepLeftovers(t *testing.T) {
 	b, logPath := fakeDocker(t)
-	t.Setenv("TENANT_FAKE_DOCKER_PS", "aaa111,bbb222")
+	t.Setenv("TENANT_FAKE_DOCKER_PS", "aaa111=inst-test,zzz999=inst-other,bbb222=inst-test,ccc333,ddd444=inst-test-2")
 	n, err := b.SweepLeftovers(context.Background())
 	if err != nil || n != 2 {
 		t.Fatalf("SweepLeftovers = (%d, %v), want (2, nil)", n, err)
@@ -235,12 +250,40 @@ func TestFakeDocker_SweepLeftovers(t *testing.T) {
 		seen = append(seen, strings.Join(c.argv[2:], " "))
 	}
 	want := []string{
-		"ps -aq --filter label=" + labelInstance + "=inst-test",
+		"ps -a --no-trunc --format {{.ID}}\t{{.Label \"" + labelInstance + "\"}}",
 		"rm -f aaa111",
 		"rm -f bbb222",
 	}
 	if strings.Join(seen, "|") != strings.Join(want, "|") {
 		t.Fatalf("sweep ran %q, want %q", seen, want)
+	}
+}
+
+// A docker CLI that never answers must not hold start-up: the sweep gives up
+// at its deadline with an error that says the CLI stalled, and removes
+// nothing. (serve waited on this call with no deadline.)
+func TestSweepContainers_StalledCLIIsBounded(t *testing.T) {
+	b, logPath := fakeDocker(t)
+	t.Setenv("TENANT_FAKE_DOCKER_STALL", "ps")
+	oldControl, oldSweep := controlTimeout, sweepTimeout
+	controlTimeout, sweepTimeout = 300*time.Millisecond, 2*time.Second
+	SetContainerDefaults(ContainerOptions{CLI: b.cli, Endpoint: b.explicitEP, Instance: b.instance})
+	t.Cleanup(func() {
+		controlTimeout, sweepTimeout = oldControl, oldSweep
+		SetContainerDefaults(ContainerOptions{})
+	})
+	start := time.Now()
+	n, err := SweepContainers(context.Background())
+	if took := time.Since(start); took > 10*time.Second {
+		t.Fatalf("the sweep took %s with a stalled CLI; it must give up at its deadline", took)
+	}
+	if n != 0 || !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "did not answer") {
+		t.Fatalf("SweepContainers = (%d, %v), want (0, an error saying the CLI did not answer)", n, err)
+	}
+	for _, c := range readCalls(t, logPath) {
+		if len(c.argv) > 2 && c.argv[2] == "rm" {
+			t.Fatalf("the sweep removed a container after the listing stalled: %q", c.argv)
+		}
 	}
 }
 

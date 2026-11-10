@@ -69,15 +69,11 @@ func livePolicy(work string, wall time.Duration) Policy {
 // leftovers lists the containers carrying b's instance label.
 func leftovers(t *testing.T, b *containerBackend) []string {
 	t.Helper()
-	c, err := b.command(context.Background(), "ps", "-aq", "--filter", "label="+labelInstance+"="+b.instance)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, err := c.Output()
+	ids, err := b.instanceContainers(context.Background())
 	if err != nil {
 		t.Skipf("could not list containers: %v", err)
 	}
-	return strings.Fields(string(out))
+	return ids
 }
 
 func TestContainerLive_Identity(t *testing.T) {

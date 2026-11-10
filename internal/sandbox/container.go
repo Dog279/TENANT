@@ -174,13 +174,25 @@ func Container(opts ContainerOptions) *containerBackend {
 // TEN-401 lesson applied to containers: a crash must not leave a `sleep 3600`
 // running under our label. A missing CLI or engine is not an error here —
 // there is nothing to sweep — so startup never fails on it.
+//
+// It runs before any surface starts work (a later sweep would remove this
+// run's own containers, which carry the same label), so start-up waits for it:
+// the whole sweep is held to sweepTimeout, and a CLI that does not answer is
+// an error the caller logs and carries on from, never a start-up that hangs.
 func SweepContainers(ctx context.Context) (int, error) {
 	b := Container(containerDefaults())
 	if _, err := b.resolvedBin(); err != nil {
 		return 0, nil
 	}
-	return b.SweepLeftovers(ctx)
+	ctx, cancel := context.WithTimeout(ctx, sweepTimeout)
+	defer cancel()
+	n, err := b.SweepLeftovers(ctx)
+	return n, stalled(ctx, "the start-up sweep", err)
 }
+
+// sweepTimeout bounds the whole start-up sweep: finding the endpoint, listing
+// and removing. A variable so tests can shorten it.
+var sweepTimeout = 20 * time.Second
 
 func (b *containerBackend) Name() string         { return "container" }
 func (b *containerBackend) Isolation() Isolation { return IsolationContainer }
@@ -235,11 +247,14 @@ func (b *containerBackend) Available(ctx context.Context) error {
 	if _, err := b.facts(ctx); err != nil {
 		return err
 	}
-	ic, err := b.command(ctx, "image", "inspect", b.image)
+	ic, done, err := b.control(ctx, "an image check", "image", "inspect", b.image)
 	if err != nil {
 		return err
 	}
-	if err := imagePresent(ic); err != nil {
+	if err := done(imagePresent(ic)); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return err // the CLI stalled: that is not "the image is missing"
+		}
 		return fmt.Errorf("the sandbox image %s is not built (run `tenant sandbox image build`)", b.image)
 	}
 	return nil
@@ -262,12 +277,16 @@ func (b *containerBackend) Probe(ctx context.Context) Capabilities {
 		caps.Detail = oneLine(err.Error())
 		return caps
 	}
-	ic, err := b.command(ctx, "image", "inspect", b.image)
+	ic, done, err := b.control(ctx, "an image check", "image", "inspect", b.image)
 	if err != nil {
 		caps.Detail = oneLine(err.Error())
 		return caps
 	}
-	if imgErr := imagePresent(ic); imgErr != nil {
+	if imgErr := done(imagePresent(ic)); imgErr != nil {
+		if errors.Is(imgErr, context.DeadlineExceeded) {
+			caps.Detail = oneLine(imgErr.Error()) // the CLI stalled: that is not "the image is missing"
+			return caps
+		}
 		caps.Detail = "the sandbox image " + b.image + " is not built (run `tenant sandbox image build`): " + oneLine(imgErr.Error())
 		return caps
 	}
@@ -525,22 +544,40 @@ func (b *containerBackend) reap(name string) error {
 // the TEN-401 lesson (an orphaned headless Chrome). It matches only this
 // instance's label, never another live Tenant's containers (W1-4).
 func (b *containerBackend) SweepLeftovers(ctx context.Context) (int, error) {
-	filter := labelInstance + "=" + b.instance
-	lc, err := b.command(ctx, "ps", "-aq", "--filter", "label="+filter)
+	ids, err := b.instanceContainers(ctx)
 	if err != nil {
 		return 0, err
 	}
-	list, err := lc.Output()
-	if err != nil {
-		return 0, err
-	}
-	ids := strings.Fields(string(list))
 	for _, id := range ids {
-		if rc, err := b.command(ctx, "rm", "-f", id); err == nil {
-			_ = rc.Run()
+		if rc, done, err := b.control(ctx, "a container removal", "rm", "-f", id); err == nil {
+			_ = done(rc.Run())
 		}
 	}
 	return len(ids), nil
+}
+
+// instanceContainers lists the containers, running or not, that carry this
+// install's instance label. Every container is listed with that label's value
+// and matched here: the engine's own `--filter label=…` is what stalled (see
+// controlTimeout), and an unfiltered list answers where it does not. An exact
+// match on the value, so another install's containers are never returned.
+func (b *containerBackend) instanceContainers(ctx context.Context) ([]string, error) {
+	lc, done, err := b.control(ctx, "a container listing", "ps", "-a", "--no-trunc", "--format", `{{.ID}}`+"\t"+`{{.Label "`+labelInstance+`"}}`)
+	if err != nil {
+		return nil, err
+	}
+	list, err := lc.Output()
+	if err = done(err); err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, line := range strings.Split(string(list), "\n") {
+		id, instance, _ := strings.Cut(strings.TrimRight(line, "\r"), "\t")
+		if id = strings.TrimSpace(id); id != "" && b.instance != "" && strings.TrimSpace(instance) == b.instance {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
 }
 
 // --- helpers ---------------------------------------------------------------
