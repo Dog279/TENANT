@@ -233,7 +233,7 @@ func TestAttributeContainer_ENOENT(t *testing.T) {
 }
 
 func TestValidImageRef(t *testing.T) {
-	for _, ok := range []string{"tenant-sandbox:latest", "tenant-sandbox@sha256:" + strings.Repeat("a", 64), "debian:bookworm-slim"} {
+	for _, ok := range []string{"tenant-sandbox:latest", "tenant-sandbox@sha256:" + strings.Repeat("a", 64), "debian:trixie-slim"} {
 		if err := validImageRef(ok); err != nil {
 			t.Errorf("validImageRef(%q) = %v, want nil", ok, err)
 		}
@@ -373,5 +373,23 @@ func TestSpecFor_RefusesABareRepoAsAWritableFolder(t *testing.T) {
 	}
 	if _, err := b.specFor(cmd, Policy{WorkDir: plain}); err != nil {
 		t.Errorf("a folder with only a HEAD file was refused: %v", err)
+	}
+}
+
+// D6: the image is built from trixie, pinned by digest, and gives the sandbox
+// user the folder its HOME tmpfs mounts on.
+func TestSandboxImageIsPinnedTrixie(t *testing.T) {
+	ref := BaseImageRef()
+	name, digest, ok := strings.Cut(ref, "@sha256:")
+	if !ok || name != "debian:trixie-slim" || len(digest) != 64 || strings.Trim(digest, "0123456789abcdef") != "" {
+		t.Errorf("base image = %q, want debian:trixie-slim pinned by a sha256 digest", ref)
+	}
+	if !strings.HasPrefix(imageDockerfile, "FROM "+ref+"\n") {
+		t.Errorf("the Dockerfile does not start from the pinned base:\n%s", imageDockerfile)
+	}
+	for _, want := range []string{"install -d -o 65532 -g 65532 -m 0700 " + sandboxHome, "USER 65532:65532", "chmod a-s"} {
+		if !strings.Contains(imageDockerfile, want) {
+			t.Errorf("the Dockerfile lacks %q", want)
+		}
 	}
 }
