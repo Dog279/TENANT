@@ -5,6 +5,42 @@ Releases page.
 
 ## Unreleased
 
+- **The MCP SSE gateway now requires a token. Existing SSE clients need one more setting.**
+  `tenant mcp-memory --sse-addr` had no authentication, and a loopback bind kept other
+  machines out but not the other programs on the same one, or a browser on it: the gateway
+  took a request under any Host, from any Origin, with any content type. Now every request
+  must carry `Authorization: Bearer <token>`, the token in `<config>/gateway-auth-token`,
+  created on first start (the gateway prints where it is, never the token). It is a token of
+  its own, not the dashboard's. **To update a client:** add that header to its configuration
+  for the gateway; a client that cannot send a header should launch `tenant mcp-memory` over
+  stdio. The gateway also refuses a request that carries another site's Origin; on a loopback
+  bind it answers only to `localhost` or a loopback address on its own port; a message must be
+  `application/json`; and each stream's endpoint carries a random `sessionId` that every
+  message must send back. `tenant security audit` now reports the listener as authenticated,
+  and `tenant doctor` audits the token file with the other secrets.
+- **The SQL tools stay inside their database, and the engine enforces it.** `sql_query` was
+  read-only by how a statement read: the text was classified and anything but a read refused.
+  The classifier tracked `'…'` and `"…"` quoting but not SQLite's `` `…` `` and `[…]`, so a
+  comment marker inside such a name could hide a second statement from it. `sql_query` now runs
+  on a connection the database engine holds to read-only (`query_only`), so a change fails
+  there whatever the text looked like, and the classifier reads all four quoting forms.
+  `ATTACH`, `DETACH` and `VACUUM INTO`, which reach a file other than the configured database
+  (and create one that is not there), are refused outright with no request for approval, and the
+  connection itself allows no attached database. A plain `VACUUM` still runs once confirmed.
+- **Fixed: `tenant serve` could stay down forever when the docker CLI stalled.** At start-up
+  serve removes containers a previous run left behind, and it waited on that `docker` call
+  with no time limit: on one Docker Desktop `docker ps --filter label=…` never returned, so
+  the dashboard never came up and nothing was logged. The sweep now gives up after 20 seconds
+  with a warning that says the CLI did not answer, and start-up carries on. It lists
+  containers with their label and matches this install's itself, which answers where the
+  engine's label filter did not. Every other `docker` call that manages the engine (version,
+  info, image check, removal) has a 15-second limit too, and a stalled image check is no
+  longer reported as "the sandbox image is not built".
+- **The dashboard never fetches an address an answer names.** An image in the agent's Markdown
+  was drawn as a picture, which a browser requests the moment the page shows it: a request no
+  approval saw, to an address the model wrote. An image is now a link showing its description,
+  and the dashboard's Content-Security-Policy loads images and media from the dashboard only
+  (`img-src 'self' data:; media-src 'self'`).
 - **Fixed: the Memory page's Knowledge time view** showed every fact ever learned, replaced
   and removed ones too, and on a narrow window its table squeezed the column names into
   one letter per line. It now shows the live facts, with **Show history** for the rest; the
