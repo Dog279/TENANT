@@ -17,7 +17,8 @@ package sandbox
 //   - W1-6: a Windows program exits 127 and is attributed as a program
 //     refusal; an OOM kill is attributed as a limit, never a refusal.
 //   - W1-2/W2-5: the environment inside is exactly the forwarded names plus
-//     the image's own, with HOME in the work dir and no DOCKER_*/NVIDIA_*.
+//     the image's own, with HOME on a tmpfs of its own (D4) and no
+//     DOCKER_*/NVIDIA_*.
 //
 // Still pending here (W1-7's list, needing image or harness work first): the
 // setuid control (the image strips setuid bits; needs a planted binary), the
@@ -270,7 +271,7 @@ func TestContainerLive_ProgramAndOOMAttribution(t *testing.T) {
 }
 
 // W1-2 / W2-5: exactly the forwarded names cross, plus the image's own (PATH,
-// HOME, HOSTNAME, PWD, TMPDIR); HOME is the work dir; nothing DOCKER_/NVIDIA_.
+// HOME, HOSTNAME, PWD, TMPDIR); HOME is /home/sandbox; nothing DOCKER_/NVIDIA_.
 func TestContainerLive_ExactEnv(t *testing.T) {
 	b := liveContainer(t)
 	work := liveWorkDir(t)
