@@ -7,10 +7,47 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// bridgeCfgDirs maps a test bridge's address to its config dir, where its
+// token file is.
+var bridgeCfgDirs sync.Map
+
+// bridgeToken is the bearer token of the bridge at addr, as a client would
+// read it from gateway-auth-token. The bridge writes it before it listens.
+func bridgeToken(t *testing.T, addr string) string {
+	t.Helper()
+	dir, ok := bridgeCfgDirs.Load(addr)
+	if !ok {
+		t.Fatalf("no config dir recorded for the bridge at %s", addr)
+	}
+	b, err := os.ReadFile(gatewayAuthTokenPath(dir.(string)))
+	if err != nil {
+		t.Fatalf("read the bridge's token: %v", err)
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// bridgeDo sends one request to the bridge at addr the way a configured
+// client does: with the bridge's token, and JSON for a body.
+func bridgeDo(t *testing.T, ctx context.Context, method, addr, path, body string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, method, "http://"+addr+path, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+bridgeToken(t, addr))
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	return resp
+}
 
 // oneSession opens a client session against the bridge: it starts the GET
 // stream, initializes, lists tools, and then drops the stream — exactly what a
@@ -22,6 +59,7 @@ func oneSession(t *testing.T, addr string) []string {
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/sse", nil)
 	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+bridgeToken(t, addr))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("open sse stream: %v", err)
@@ -46,10 +84,7 @@ func oneSession(t *testing.T, addr string) []string {
 	post := func(body any) {
 		t.Helper()
 		raw, _ := json.Marshal(body)
-		r, err := http.Post("http://"+addr+msgPath, "application/json", strings.NewReader(string(raw)))
-		if err != nil {
-			t.Fatalf("post: %v", err)
-		}
+		r := bridgeDo(t, ctx, http.MethodPost, addr, msgPath, string(raw))
 		r.Body.Close()
 		if r.StatusCode != http.StatusAccepted {
 			t.Fatalf("post status = %d, want 202", r.StatusCode)
@@ -104,10 +139,12 @@ func TestMCPBridge_SurvivesClientDisconnect(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
+	cfgDir, dataDir := t.TempDir(), t.TempDir()
+	bridgeCfgDirs.Store(addr, cfgDir)
 	go func() {
 		done <- cmdMCPMemory(ctx, []string{
 			"--backend", "echo", "--tools", "--sse-addr", addr,
-			"--config", t.TempDir(), "--data", t.TempDir(),
+			"--config", cfgDir, "--data", dataDir,
 		})
 	}()
 
@@ -163,10 +200,8 @@ func TestMCPBridge_ExposesTeamTools(t *testing.T) {
 // not end the live session: its POSTs still reach it.
 func TestMCPBridge_RefusedSecondClientKeepsTheLiveSession(t *testing.T) {
 	addr := startBridge(t)
-	live, err := http.Get("http://" + addr + "/sse")
-	if err != nil {
-		t.Fatalf("open live stream: %v", err)
-	}
+	ctx := context.Background()
+	live := bridgeDo(t, ctx, http.MethodGet, addr, "/sse", "")
 	defer live.Body.Close()
 	br := bufio.NewReader(live.Body)
 	msgPath := ""
@@ -180,20 +215,14 @@ func TestMCPBridge_RefusedSecondClientKeepsTheLiveSession(t *testing.T) {
 		}
 	}
 
-	second, err := http.Get("http://" + addr + "/sse")
-	if err != nil {
-		t.Fatalf("open second stream: %v", err)
-	}
+	second := bridgeDo(t, ctx, http.MethodGet, addr, "/sse", "")
 	second.Body.Close()
 	if second.StatusCode != http.StatusConflict {
 		t.Fatalf("second concurrent stream = %d, want 409", second.StatusCode)
 	}
 
-	r, err := http.Post("http://"+addr+msgPath, "application/json", strings.NewReader(
-		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`))
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
+	r := bridgeDo(t, ctx, http.MethodPost, addr, msgPath,
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`)
 	r.Body.Close()
 	if r.StatusCode != http.StatusAccepted {
 		t.Fatalf("live session's post after the refusal = %d, want 202", r.StatusCode)
@@ -211,6 +240,7 @@ func startBridge(t *testing.T) string {
 	ln.Close()
 
 	cfgDir, dataDir := t.TempDir(), t.TempDir()
+	bridgeCfgDirs.Store(addr, cfgDir)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	// Registered after the temp dirs, so it runs first: the server must be

@@ -259,8 +259,8 @@ func configuredListeners(lc *launchConfig) []listenerAudit {
 			lc.Dashboard.TLSCert != "" && lc.Dashboard.TLSKey != "", lc.Dashboard.Auth != "", "web control panel"),
 	}
 	if lc.Gateway.Mode == "sse" {
-		listeners = append(listeners, newListenerAudit("mcp-sse", true, lc.Gateway.SSEAddr, false, false,
-			"legacy SSE transport has no auth"))
+		listeners = append(listeners, newListenerAudit("mcp-sse", true, lc.Gateway.SSEAddr, false, true,
+			"bearer token (gateway-auth-token); plain HTTP, no TLS"))
 	} else {
 		listeners = append(listeners, listenerAudit{Name: "mcp-sse", Enabled: false})
 	}

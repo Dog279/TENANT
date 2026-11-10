@@ -587,6 +587,7 @@ func configDirFile(rel string) bool {
 		launchConfigPath(base),
 		credentialsPath(base),
 		dashboardAuthTokenPath(base),
+		gatewayAuthTokenPath(base),
 		chainKeyPath(base),
 		chainAnchorPath(base),
 		filepath.Join(base, filepath.Base(claudecode.LedgerPath())),

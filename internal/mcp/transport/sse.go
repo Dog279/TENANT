@@ -2,13 +2,21 @@ package transport
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"sync"
 	"sync/atomic"
 )
+
+// sessionParam is the query parameter of the endpoint URL that carries the
+// stream's session id, the name MCP's SSE clients already expect.
+const sessionParam = "sessionId"
 
 // SSE is the HTTP Server-Sent-Events MCP server transport — the classic
 // two-endpoint HTTP binding every pre-streamable MCP client speaks:
@@ -24,11 +32,24 @@ import (
 // returns io.EOF — the same clean-shutdown signal stdin EOF gives — so
 // Server.ServeTransport ends the session normally.
 //
+// Two checks keep a message tied to the client that opened the stream:
+//
+//   - the endpoint event names the POST URL with a random session id
+//     ({MessagePath}?sessionId=…), and a POST without that id is refused, so
+//     only whoever read the stream can send into its session;
+//   - a POST must be application/json. A web page can send a cross-origin
+//     text/plain POST with no questions asked; application/json makes the
+//     browser ask first (a preflight), and this transport never says yes.
+//
+// Neither is authentication: any client that can reach the listener can open
+// a stream of its own. Whoever mounts the transport decides who can reach it.
+//
 // SSE is itself an http.Handler: mount it on a mux or hand it straight
 // to an http.Server. Serve the transport via Server.ServeTransport.
 type SSE struct {
 	ssePath     string
 	messagePath string
+	session     string // this stream's id, required on every POST
 	maxSize     int
 
 	in      chan []byte   // POST bodies → Recv
@@ -66,9 +87,16 @@ func NewSSE(cfg SSEConfig) *SSE {
 	if cfg.MaxFrameSize == 0 {
 		cfg.MaxFrameSize = DefaultMaxFrameSize
 	}
+	id := make([]byte, 16)
+	if _, err := rand.Read(id); err != nil {
+		// crypto/rand does not fail on a supported platform; a guessable id
+		// is worse than no transport.
+		panic("transport: crypto/rand failed: " + err.Error())
+	}
 	return &SSE{
 		ssePath:     cfg.SSEPath,
 		messagePath: cfg.MessagePath,
+		session:     hex.EncodeToString(id),
 		maxSize:     cfg.MaxFrameSize,
 		in:          make(chan []byte, 16),
 		out:         make(chan []byte, 64),
@@ -117,8 +145,9 @@ func (s *SSE) handleSSE(w http.ResponseWriter, r *http.Request) {
 	h.Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
-	// First event names the POST endpoint the client must use.
-	fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", s.messagePath)
+	// First event names the POST endpoint the client must use, with this
+	// stream's session id: the client sends it back on every POST.
+	fmt.Fprintf(w, "event: endpoint\ndata: %s?%s=%s\n\n", s.messagePath, sessionParam, s.session)
 	flusher.Flush()
 
 	for {
@@ -141,6 +170,14 @@ func (s *SSE) handleSSE(w http.ResponseWriter, r *http.Request) {
 func (s *SSE) handleMessage(w http.ResponseWriter, r *http.Request) {
 	if s.closed.Load() {
 		http.Error(w, "transport closed", http.StatusGone)
+		return
+	}
+	if got := r.URL.Query().Get(sessionParam); subtle.ConstantTimeCompare([]byte(got), []byte(s.session)) != 1 {
+		http.Error(w, "unknown session: POST to the endpoint the stream's first event named", http.StatusForbidden)
+		return
+	}
+	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
+		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, int64(s.maxSize))

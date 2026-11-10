@@ -124,7 +124,9 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	// previous run of this install (a crash, a hard restart) that left one
 	// behind is swept before any surface starts work (W1-4 / TEN-458). Another
 	// install's containers, under another id, are never touched. No Docker here
-	// is nothing to sweep, not a failure.
+	// is nothing to sweep, not a failure. Start-up waits for the sweep, so it is
+	// held to a deadline (sandbox.SweepContainers): a docker CLI that does not
+	// answer is a warning here, never a hub that stays down.
 	sandbox.SetContainerDefaults(sandbox.ContainerOptions{Instance: sandbox.InstanceID(c.dataDir)})
 	if n, serr := sandbox.SweepContainers(ctx); serr != nil {
 		log.Warn("sandbox: could not sweep leftover containers", "err", serr)

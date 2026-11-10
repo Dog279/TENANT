@@ -355,11 +355,12 @@ func cmdMemory(ctx context.Context, args []string) error {
 
 // cmdMCPMemory runs the MCP memory server over stdio. NOTHING may be
 // written to stdout here except JSON-RPC frames — logs go to stderr.
-// checkSSEBindPolicy guards the legacy, UNAUTHENTICATED --sse-addr gateway
-// (TEN-185 scope ext 2A+5A): a non-loopback (or all-interfaces) bind is refused
-// unless the operator explicitly opts in with --insecure-lan, since that
-// transport ships no bearer auth. Loopback is always allowed — REGRESSION
-// invariant: behavior for 127.0.0.1/localhost is unchanged.
+// checkSSEBindPolicy guards the legacy --sse-addr gateway (TEN-185 scope ext
+// 2A+5A): a non-loopback (or all-interfaces) bind is refused unless the
+// operator explicitly opts in with --insecure-lan. The gateway asks for a
+// bearer token (ssegateway.go) but serves plain HTTP, so off loopback the
+// token and everything a client reads cross the network unencrypted.
+// Loopback is always allowed.
 func checkSSEBindPolicy(addr string, insecureLAN bool) error {
 	if addr == "" || insecureLAN {
 		return nil
@@ -372,9 +373,9 @@ func checkSSEBindPolicy(addr string, insecureLAN bool) error {
 		return nil
 	}
 	if host == "" {
-		return fmt.Errorf("--sse-addr %q binds ALL interfaces but the legacy SSE gateway has NO auth — use 127.0.0.1:PORT, or pass --insecure-lan to override", addr)
+		return fmt.Errorf("--sse-addr %q binds ALL interfaces but the SSE gateway serves plain HTTP: its token and everything a client reads would cross the network unencrypted — use 127.0.0.1:PORT, or pass --insecure-lan to override", addr)
 	}
-	return fmt.Errorf("--sse-addr %q binds a non-loopback address but the legacy SSE gateway has NO auth — use 127.0.0.1:PORT, or pass --insecure-lan to override", addr)
+	return fmt.Errorf("--sse-addr %q binds a non-loopback address but the SSE gateway serves plain HTTP: its token and everything a client reads would cross the network unencrypted — use 127.0.0.1:PORT, or pass --insecure-lan to override", addr)
 }
 
 func cmdMCPMemory(ctx context.Context, args []string) error {
@@ -383,7 +384,7 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 	writable := fs.Bool("allow-writes", false, "allow memory_fact_add")
 	exposeTools := fs.Bool("tools", false, "also expose the full plugin toolset (wiki/sql/os/…) over MCP, not just memory")
 	sseAddr := fs.String("sse-addr", "", "serve over HTTP+SSE on this address (e.g. 127.0.0.1:8765) instead of stdio")
-	insecureLAN := fs.Bool("insecure-lan", false, "allow --sse-addr to bind a non-loopback address despite the legacy SSE gateway having NO auth (TEN-185 secure-by-default opt-out)")
+	insecureLAN := fs.Bool("insecure-lan", false, "allow --sse-addr to bind a non-loopback address although the SSE gateway serves plain HTTP (its token crosses the network unencrypted; TEN-185 secure-by-default opt-out)")
 	allowNoMemory := fs.Bool("allow-no-memory", false, "serve even when semantic memory (embeddings) is down — amnesiac (no real vector recall)")
 	pf := bindPluginFlags(fs)
 	if err := fs.Parse(args); err != nil {
@@ -397,10 +398,19 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 	if *sseAddr == "" && c.lc != nil && c.lc.Gateway.Mode == "sse" {
 		*sseAddr = c.lc.Gateway.SSEAddr
 	}
-	// TEN-185 (scope ext 2A+5A): the legacy SSE gateway has NO auth, so a
+	// TEN-185 (scope ext 2A+5A): the legacy SSE gateway serves plain HTTP, so a
 	// non-loopback bind is refused unless the operator explicitly opts in.
 	if err := checkSSEBindPolicy(*sseAddr, *insecureLAN); err != nil {
 		return err
+	}
+	// The gateway's bearer token, read (or created on first use) before
+	// anything is opened: a gateway that cannot have a token does not start.
+	gatewayToken := ""
+	if *sseAddr != "" {
+		var terr error
+		if gatewayToken, terr = resolveGatewayAuth(c.cfgDir); terr != nil {
+			return terr
+		}
 	}
 	// Honor skills configured via `tenant setup`.
 	applyPluginConfig(c, pf)
@@ -527,8 +537,9 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 	}
 
 	// --sse-addr: serve over HTTP+SSE for clients that connect over the
-	// network (Cursor, Zed remote, browsers) rather than spawning us as a
-	// stdio subprocess. The transport's life is one client session.
+	// network (an editor, a coding assistant) rather than spawning us as a
+	// stdio subprocess. Not a web page: guardSSEGateway refuses a browser's
+	// cross-origin request. The transport's life is one client session.
 	if *sseAddr != "" {
 		// The SSE transport is single-session by contract: when a client GET
 		// stream drops, Recv reports EOF and the session ends. That is right for
@@ -601,12 +612,18 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 			sessMu.Unlock()
 			close(done)
 		})
-		httpSrv := newSSEHTTPServer(*sseAddr, handler)
+		httpSrv := newSSEHTTPServer(*sseAddr, guardSSEGateway(*sseAddr, gatewayToken, handler)) // Host, Origin and token: ssegateway.go
 		go func() {
 			<-ctx.Done()
 			_ = httpSrv.Shutdown(context.Background())
 		}()
 		log.Info("mcp-memory serving over HTTP+SSE", "addr", *sseAddr, "sse", "/sse", "message", "/message")
+		// Always shown (the logger above defaults to warnings only): without
+		// this line an operator has no way to learn a client needs a token, or
+		// where it is. It says where the token lives, never the token. On
+		// stdout, as serve's banner is: over SSE stdout carries no protocol
+		// frames (those are the stdio transport's).
+		fmt.Println("mcp-memory: serving MCP over HTTP+SSE on http://" + *sseAddr + "/sse; " + gatewayTokenHint(c.cfgDir))
 		errc := make(chan error, 1)
 		go func() {
 			err := httpSrv.ListenAndServe()

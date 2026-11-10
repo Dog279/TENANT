@@ -399,7 +399,8 @@ built-in profile, and takes `default`'s `enforce`: exec-defaults-dry-run.md.)
   needs its auth token on every listener, loopback included (TEN-323). The token is
   `dashboard.auth`, else the generated `dashboard-auth-token`, both in the config dir, which
   confined commands and the file tools cannot read. The legacy MCP HTTP+SSE gateway, when
-  enabled, has no auth: keep confined surfaces on `network: none` while it runs.
+  enabled, needs a token of its own on every request (`gateway-auth-token`, in the config
+  dir too), and refuses a request that carries another site's Origin.
 - **macOS:**
   - No CPU, memory or PID caps: a fork or memory bomb runs until the run's deadline stops it
     (the `os_exec` timeout, or the cron job's time limit).

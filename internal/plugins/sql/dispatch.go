@@ -133,8 +133,9 @@ func (d *Dispatcher) query(ctx context.Context, args json.RawMessage) (string, b
 		return "rejected: " + reason, true, nil
 	}
 	// sql_query is READ ONLY. Anything else is refused here even
-	// before the policy gate — and Query() only ever calls db.Query,
-	// so a non-SELECT physically can't mutate via this path anyway.
+	// before the policy gate, and Query() runs the statement on a
+	// connection the engine holds to query_only, so this path stays
+	// read-only even if the classification above were wrong.
 	if class != ClassRead {
 		return fmt.Sprintf("rejected: sql_query only runs read statements; %q is %s — use sql_exec (gated)",
 			kw, class), true, nil
@@ -165,6 +166,12 @@ func (d *Dispatcher) exec(ctx context.Context, args json.RawMessage) (string, bo
 	}
 	if class == ClassRead {
 		return fmt.Sprintf("rejected: %q is a read statement — use sql_query for reads", kw), true, nil
+	}
+	// Refused before the gate: an approval must never be asked for something
+	// that leaves the database the operator configured.
+	if LeavesDatabase(kw, a.SQL) {
+		return fmt.Sprintf("rejected: %s reaches a file other than the configured database, which this tool never does "+
+			"— it is a hard boundary, not approvable. Ask the operator if another database is needed", kw), true, nil
 	}
 	if err := d.policy.gate(ctx, class, a.SQL); err != nil {
 		return err.Error(), true, nil

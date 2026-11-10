@@ -89,34 +89,48 @@ func Classify(raw string) (Class, string, string) {
 	}
 }
 
+// LeavesDatabase reports whether a statement reaches a file other than the
+// configured database: ATTACH and DETACH, and VACUUM … INTO, which writes a
+// copy wherever it is told. The plugin serves one database, so these are
+// refused outright, before any approval is asked for; the connection also
+// refuses ATTACH itself (Store.conn). kw is the keyword Classify returned
+// for raw.
+func LeavesDatabase(kw, raw string) bool {
+	switch kw {
+	case "ATTACH", "DETACH":
+		return true
+	case "VACUUM":
+		up := " " + strings.ToUpper(spaceTokens(stripComments(raw))) + " "
+		return strings.Contains(up, " INTO ")
+	}
+	return false
+}
+
 // stripComments removes -- line comments and /* */ block comments
-// WITHOUT removing them inside string/identifier literals (a string
-// containing "--" must survive). Single-quote and double-quote aware.
+// WITHOUT removing them inside a quoted run (a string containing "--" must
+// survive). It has to see quoting exactly as SQLite does, or the two disagree
+// about where a comment starts and so about how many statements there are:
+// SQLite quotes with '…', "…", `…` and […], and all four are tracked here.
+// A doubled quote inside a run (SQL's escape for the quote itself) closes and
+// reopens it, which leaves the state right.
 func stripComments(s string) string {
 	var b strings.Builder
-	inS, inD := false, false // ' string, " ident
+	var closer byte // the byte that ends the quoted run we are in; 0 outside one
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if inS {
+		if closer != 0 {
 			b.WriteByte(c)
-			if c == '\'' {
-				inS = false
-			}
-			continue
-		}
-		if inD {
-			b.WriteByte(c)
-			if c == '"' {
-				inD = false
+			if c == closer {
+				closer = 0
 			}
 			continue
 		}
 		switch {
-		case c == '\'':
-			inS = true
+		case c == '\'' || c == '"' || c == '`':
+			closer = c
 			b.WriteByte(c)
-		case c == '"':
-			inD = true
+		case c == '[':
+			closer = ']'
 			b.WriteByte(c)
 		case c == '-' && i+1 < len(s) && s[i+1] == '-':
 			for i < len(s) && s[i] != '\n' {

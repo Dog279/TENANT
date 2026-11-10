@@ -40,16 +40,17 @@ func TestSSE_RoundTrip(t *testing.T) {
 	}
 	br := bufio.NewReader(resp.Body)
 
-	// 2. First event must name the POST endpoint.
+	// 2. First event must name the POST endpoint, with this stream's session id.
 	ev := readEvent(t, br)
-	if ev.event != "endpoint" || ev.data != "/message" {
-		t.Fatalf("first event = %q/%q, want endpoint//message", ev.event, ev.data)
+	if ev.event != "endpoint" || !strings.HasPrefix(ev.data, "/message?sessionId=") || len(ev.data) < len("/message?sessionId=")+32 {
+		t.Fatalf("first event = %q/%q, want endpoint//message?sessionId=<id>", ev.event, ev.data)
 	}
 
 	// 3. Client → server: POST a frame, expect it from Recv.
 	go func() {
-		preq, _ := http.NewRequest(http.MethodPost, hs.URL+"/message",
+		preq, _ := http.NewRequest(http.MethodPost, hs.URL+ev.data,
 			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+		preq.Header.Set("Content-Type", "application/json")
 		pr, perr := http.DefaultClient.Do(preq)
 		if perr == nil {
 			pr.Body.Close()
@@ -135,14 +136,88 @@ func TestSSE_AfterClose(t *testing.T) {
 	}
 }
 
+// openStream opens the GET stream of sse on a test server and returns the
+// POST endpoint its first event names (path and session id).
+func openStream(t *testing.T, sse *transport.SSE) (base, endpoint string) {
+	t.Helper()
+	hs := httptest.NewServer(sse)
+	t.Cleanup(hs.Close)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/sse", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /sse: %v", err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return hs.URL, readEvent(t, bufio.NewReader(resp.Body)).data
+}
+
+func postStatus(t *testing.T, url, contentType, body string) int {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
 func TestSSE_OversizedMessageRejected(t *testing.T) {
 	const max = 32
 	sse := transport.NewSSE(transport.SSEConfig{MaxFrameSize: max})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/message", strings.NewReader(strings.Repeat("x", max+1)))
-	sse.ServeHTTP(rec, req)
-	if rec.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	defer sse.Close()
+	base, endpoint := openStream(t, sse)
+	if got := postStatus(t, base+endpoint, "application/json", strings.Repeat("x", max+1)); got != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", got, http.StatusRequestEntityTooLarge)
+	}
+}
+
+// A message is accepted only at the endpoint the stream named: without the
+// session id, or with another one, it is refused and never reaches Recv. Only
+// whoever read the stream can send into its session.
+func TestSSE_MessageNeedsTheStreamsSession(t *testing.T) {
+	sse := transport.NewSSE(transport.SSEConfig{})
+	defer sse.Close()
+	base, endpoint := openStream(t, sse)
+	const frame = `{"jsonrpc":"2.0","id":1,"method":"ping"}`
+	for _, url := range []string{
+		base + "/message",
+		base + "/message?sessionId=",
+		base + "/message?sessionId=00000000000000000000000000000000",
+	} {
+		if got := postStatus(t, url, "application/json", frame); got != http.StatusForbidden {
+			t.Errorf("POST %s = %d, want 403", url, got)
+		}
+	}
+	if got := postStatus(t, base+endpoint, "application/json", frame); got != http.StatusAccepted {
+		t.Fatalf("POST to the named endpoint = %d, want 202", got)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if got, err := sse.Recv(ctx); err != nil || !strings.Contains(string(got), `"ping"`) {
+		t.Fatalf("Recv = %s, %v; want the one accepted frame", got, err)
+	}
+}
+
+// A message must be application/json: the content types a web page can send
+// across origins without the browser asking first are refused.
+func TestSSE_MessageMustBeJSON(t *testing.T) {
+	sse := transport.NewSSE(transport.SSEConfig{})
+	defer sse.Close()
+	base, endpoint := openStream(t, sse)
+	const frame = `{"jsonrpc":"2.0","id":1,"method":"ping"}`
+	for _, ct := range []string{"", "text/plain", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x", "text/plain; charset=application/json"} {
+		if got := postStatus(t, base+endpoint, ct, frame); got != http.StatusUnsupportedMediaType {
+			t.Errorf("Content-Type %q = %d, want 415", ct, got)
+		}
+	}
+	if got := postStatus(t, base+endpoint, "application/json; charset=utf-8", frame); got != http.StatusAccepted {
+		t.Fatalf("application/json with a charset = %d, want 202", got)
 	}
 }
 

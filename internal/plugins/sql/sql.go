@@ -3,6 +3,7 @@ package sql
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"sort"
@@ -11,7 +12,8 @@ import (
 
 	"tenant/internal/fsperm"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // Store wraps a database/sql handle. v1 ships SQLite (modernc, pure
@@ -154,16 +156,55 @@ type QueryResult struct {
 	Elapsed   time.Duration
 }
 
+// conn takes a connection from the pool with the plugin's engine limit on
+// it: no attached databases. The plugin serves the one configured database,
+// and ATTACH would reach any file the process can open (and create one that
+// isn't there). The limit belongs to the connection, and the pool replaces
+// connections, so it is set on every checkout; that is one cheap call.
+//
+// attached is 0 for everything but a plain VACUUM, which SQLite carries out
+// by attaching a scratch database of its own and so needs room for one.
+func (s *Store) conn(ctx context.Context, attached int) (*sql.Conn, error) {
+	c, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := sqlite.Limit(c, sqlite3.SQLITE_LIMIT_ATTACHED, attached); err != nil {
+		_ = c.Close()
+		return nil, err
+	}
+	return c, nil
+}
+
 // Query runs a SELECT-class statement. Caller MUST have classified it
-// Read; Query additionally only ever calls db.Query (a SELECT cannot
-// mutate even if classification were somehow fooled — defense in
-// depth). Bounded by ctx timeout + maxRows.
+// Read. Classification reads text, so it is not what keeps this path
+// read-only: the statement runs on a connection the engine holds to
+// query_only, where a change to the database fails. (database/sql's Query
+// does not do that by itself: it runs whatever statement it is given.)
+// Bounded by ctx timeout + maxRows.
 func (s *Store) Query(ctx context.Context, statement string, maxRows int) (*QueryResult, error) {
 	if maxRows <= 0 {
 		maxRows = 200
 	}
 	start := time.Now()
-	rows, err := s.db.QueryContext(ctx, statement)
+	c, err := s.conn(ctx, 0)
+	if err != nil {
+		return nil, fmt.Errorf("sql: query: %w", err)
+	}
+	defer c.Close()
+	// query_only makes the engine refuse a change to the database for as long
+	// as it is on, whatever the statement's text looked like to Classify. It
+	// is switched off again before the connection goes back to the pool, where
+	// Exec may pick it up; a connection that can't be switched back is dropped.
+	if _, err := c.ExecContext(ctx, "PRAGMA query_only=ON"); err != nil {
+		return nil, fmt.Errorf("sql: query: %w", err)
+	}
+	defer func() {
+		if _, err := c.ExecContext(context.WithoutCancel(ctx), "PRAGMA query_only=OFF"); err != nil {
+			_ = c.Raw(func(any) error { return driver.ErrBadConn })
+		}
+	}()
+	rows, err := c.QueryContext(ctx, statement)
 	if err != nil {
 		return nil, fmt.Errorf("sql: query: %w", err)
 	}
@@ -202,7 +243,16 @@ func (s *Store) Query(ctx context.Context, statement string, maxRows int) (*Quer
 // Exec runs a write/DDL statement. Caller MUST have gated it. Returns
 // rows affected.
 func (s *Store) Exec(ctx context.Context, statement string) (int64, error) {
-	r, err := s.db.ExecContext(ctx, statement)
+	attached := 0
+	if _, kw, reason := Classify(statement); reason == "" && kw == "VACUUM" && !LeavesDatabase(kw, statement) {
+		attached = 1 // VACUUM's own scratch database; VACUUM … INTO stays refused
+	}
+	c, err := s.conn(ctx, attached)
+	if err != nil {
+		return 0, fmt.Errorf("sql: exec: %w", err)
+	}
+	defer c.Close()
+	r, err := c.ExecContext(ctx, statement)
 	if err != nil {
 		return 0, fmt.Errorf("sql: exec: %w", err)
 	}

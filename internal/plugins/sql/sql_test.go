@@ -195,6 +195,103 @@ func TestQueryToolRejectsInjection(t *testing.T) {
 	}
 }
 
+// --- the engine holds the line, not the text classifier ---
+
+// Quoting must be read the way SQLite reads it, or a comment marker inside
+// a quoted name is taken for a comment and what follows it goes unseen.
+func TestClassify_AllQuotingForms(t *testing.T) {
+	// A comment marker inside each kind of quoted run is not a comment.
+	for _, q := range []string{
+		"SELECT 'a--b' AS x",
+		`SELECT "a--b" FROM t`,
+		"SELECT `a--b` FROM t",
+		"SELECT [a--b] FROM t",
+		"SELECT `a/*b` FROM t",
+		"SELECT [a/*b] FROM t",
+	} {
+		if cl, _, r := sqlp.Classify(q); r != "" || cl != sqlp.ClassRead {
+			t.Errorf("Classify(%q) = %v, reason %q; want read", q, cl, r)
+		}
+	}
+	// So a statement separator after such a name is still seen.
+	for _, q := range []string{
+		"SELECT 1 AS `a--b`; SELECT 2",
+		"SELECT 1 AS [a--b]; SELECT 2",
+		"SELECT 1 AS `a/*b`; SELECT 2",
+		"SELECT 1 AS [a/*b]; SELECT 2",
+	} {
+		if _, _, r := sqlp.Classify(q); r == "" {
+			t.Errorf("Classify(%q) accepted two statements", q)
+		}
+	}
+}
+
+// Store.Query is read-only in the engine: a statement that changes the
+// database fails there, whatever a caller classified it as.
+func TestQuery_EngineRefusesAChange(t *testing.T) {
+	st := mkStore(t)
+	ctx := context.Background()
+	for _, stmt := range []string{
+		"DELETE FROM products",
+		"INSERT INTO products (name, price) VALUES ('X', 1)",
+		"DROP TABLE products",
+	} {
+		if _, err := st.Query(ctx, stmt, 10); err == nil {
+			t.Errorf("Query(%q) succeeded; the engine must refuse a change", stmt)
+		}
+	}
+	res, err := st.Query(ctx, "SELECT COUNT(*) FROM products", 10)
+	if err != nil || len(res.Rows) != 1 || res.Rows[0][0] != "3" {
+		t.Fatalf("rows changed through Query: %v %v", res, err)
+	}
+	// The connection goes back to the pool writable.
+	if _, err := st.Exec(ctx, "INSERT INTO products (name, price) VALUES ('Y', 2)"); err != nil {
+		t.Fatalf("Exec after Query: %v", err)
+	}
+}
+
+// The plugin serves one database: nothing reaches another file, with or
+// without an approval, and no approval is asked for it.
+func TestExec_NeverLeavesTheDatabase(t *testing.T) {
+	st := mkStore(t)
+	ctx := context.Background()
+	other := filepath.Join(t.TempDir(), "other.db")
+	asked := 0
+	d := sqlp.NewDispatcher(st, sqlp.Policy{AllowWrite: true,
+		Confirm: func(context.Context, string, string) bool { asked++; return true }})
+	for _, stmt := range []string{
+		"ATTACH DATABASE '" + other + "' AS o",
+		"DETACH DATABASE o",
+		"VACUUM INTO '" + other + "'",
+		"vacuum main into '" + other + "'",
+	} {
+		out, isErr, _ := d.Dispatch(ctx, call("sql_exec", stmt))
+		if !isErr || !strings.Contains(out, "hard boundary") {
+			t.Errorf("%q: isErr=%v %q; want the hard-boundary refusal", stmt, isErr, out)
+		}
+	}
+	if asked != 0 {
+		t.Errorf("asked for approval %d times for statements that are never allowed", asked)
+	}
+	if _, err := os.Stat(other); err == nil {
+		t.Error("a second database file was created")
+	}
+	// And the connection itself refuses ATTACH, under the dispatcher.
+	if _, err := st.Exec(ctx, "ATTACH DATABASE '"+other+"' AS o"); err == nil {
+		t.Error("Store.Exec ran ATTACH; the connection limit must refuse it")
+	}
+	if _, err := st.Exec(ctx, "VACUUM INTO '"+other+"'"); err == nil {
+		t.Error("Store.Exec ran VACUUM INTO; the connection limit must refuse it")
+	}
+	if _, err := os.Stat(other); err == nil {
+		t.Error("a second database file was created under the dispatcher")
+	}
+	// A plain VACUUM is still an ordinary confirmed statement.
+	if out, isErr, _ := d.Dispatch(ctx, call("sql_exec", "VACUUM")); isErr {
+		t.Errorf("plain VACUUM should run once confirmed: %q", out)
+	}
+}
+
 // --- schema + result shaping ---
 
 func TestSchema(t *testing.T) {
