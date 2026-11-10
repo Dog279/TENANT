@@ -2251,14 +2251,16 @@ func (m *model) interrupt() {
 // sysChat appends a plain system message (shown in the terminal's default
 // foreground — readable, not dim — and copyable as-is).
 func (m *model) sysChat(s string) {
-	m.msgs = append(m.msgs, chatMsg{role: "system", content: s})
+	// What a command prints is often stored text (a fact, a skill, a job's
+	// name) a model wrote earlier: drawn like any other outside text.
+	m.msgs = append(m.msgs, chatMsg{role: "system", content: termText(s)})
 }
 
 // sysChatStyled appends a system message with a styled display form and a
 // separate plain form for the transcript. An empty styled falls back to
 // plain at render time.
 func (m *model) sysChatStyled(plain, styled string) {
-	m.msgs = append(m.msgs, chatMsg{role: "system", content: plain, rendered: styled})
+	m.msgs = append(m.msgs, chatMsg{role: "system", content: termText(plain), rendered: styledText(styled)})
 }
 
 // handleSlash runs a /command through the slash registry (cmd_registry.go)

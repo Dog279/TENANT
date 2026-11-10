@@ -214,3 +214,33 @@ func TestSafeTimeline_CopiesWhatItChanges(t *testing.T) {
 		t.Errorf("safe copy = %q, %q", got.Agent.SubQ, got.Plan.SubQuestions[0])
 	}
 }
+
+// What a slash command prints is often stored text. The plain form is
+// treated like any outside text; the styled form keeps the app's colors and
+// loses everything else a terminal would obey.
+func TestSystemMessages_AreDrawnSafely(t *testing.T) {
+	if got, want := styledText("\x1b[1mname\x1b[0m "+unruly), "\x1b[1mname\x1b[0m "+termText(unruly); got != want {
+		t.Errorf("styledText = %q, want %q", got, want)
+	}
+	for _, own := range []string{"\x1b[31mplain styled text\x1b[0m", "\x1b[1;38;5;8mgrey\x1b[m", "\x1b[48;2;8;8;8mdark\x1b[0m"} {
+		if got := styledText(own + "\x07"); got != own+"⟨U+0007⟩" {
+			t.Errorf("styledText changed the app's own styling: %q", got)
+		}
+	}
+	for _, hides := range []string{"\x1b[8m", "\x1b[1;8m", "\x1b[38;5;1;8m", "\x1b[38;2;1;2;3;8m"} {
+		if got := styledText(hides + "unseen"); got != "unseen" {
+			t.Errorf("styledText(%q...) = %q, want the concealing sequence gone", hides, got)
+		}
+	}
+	m := readyChatModel(Config{})
+	m.sysChat("fact: " + unruly)
+	m.sysChatStyled("skill: "+unruly, "\x1b[1mskill\x1b[0m: "+unruly)
+	for _, msg := range m.msgs {
+		drawnSafely(t, "system message (plain)", msg.content)
+		drawnSafely(t, "system message (styled)", msg.rendered)
+	}
+	drawnSafely(t, "chat", m.renderChat())
+	if out := stripANSI(m.renderChat()); !strings.Contains(out, "first words") || !strings.Contains(out, "second words") {
+		t.Errorf("the message's words did not survive:\n%s", out)
+	}
+}

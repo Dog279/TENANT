@@ -50,6 +50,50 @@ func termText(s string) string {
 	return b.String()
 }
 
+// ownSGR is a color or weight sequence, the only kind the app writes.
+var ownSGR = regexp.MustCompile(`\x1b\[[0-9;:]*m`)
+
+// styledText is termText for text the app has already styled: color and
+// weight sequences stay, except one that conceals (the app never writes
+// that), and everything else is treated as termText treats it. Stored text
+// inside the styling can therefore still change a color; it cannot hide
+// text outright, move the cursor, clear, retitle or overwrite.
+func styledText(s string) string {
+	if utf8.ValidString(s) && strings.IndexFunc(s, drawsNothingSafe) < 0 {
+		return s
+	}
+	var b strings.Builder
+	last := 0
+	for _, at := range ownSGR.FindAllStringIndex(s, -1) {
+		b.WriteString(termText(s[last:at[0]]))
+		if !conceals(s[at[0]:at[1]]) {
+			b.WriteString(s[at[0]:at[1]])
+		}
+		last = at[1]
+	}
+	b.WriteString(termText(s[last:]))
+	return b.String()
+}
+
+// conceals reports whether a color sequence turns on concealed text
+// (parameter 8). An 8 that is part of a color (38;5;8, 48;2;8;8;8) is not it.
+func conceals(sgr string) bool {
+	params := strings.Split(strings.TrimSuffix(strings.TrimPrefix(sgr, "\x1b["), "m"), ";")
+	for i := 0; i < len(params); i++ {
+		switch params[i] {
+		case "8":
+			return true
+		case "38", "48", "58": // an extended color takes the parameters after it
+			if i+1 < len(params) && params[i+1] == "5" {
+				i += 2
+			} else if i+1 < len(params) && params[i+1] == "2" {
+				i += 4
+			}
+		}
+	}
+	return false
+}
+
 // drawsNothingSafe reports a control character termText must not pass on.
 func drawsNothingSafe(r rune) bool {
 	return r != '\n' && r != '\t' && unicode.IsControl(r)
