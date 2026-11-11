@@ -2,6 +2,7 @@ package logs
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"maps"
@@ -34,27 +35,41 @@ func msgs(t *testing.T, st *store.Store, log string) []string {
 
 // Of two processes sharing a log book, exactly one runs the housekeeping
 // tasks; a failing task is logged and the loop goes on; when the holder dies
-// without letting go, the other takes over once its lease expires.
+// without letting go, the other takes over once its lease has run out, and
+// not before.
+//
+// Only the tick is shortened. The lease keeps its minute, so while both
+// processes live no stall can hand it on: with a 300ms lease a slow CI runner
+// starved the holder past it, the other rightly took over, and the test read
+// that as two holders. For the takeover the dead holder's lease is rewritten
+// in the store to run out in a moment, and the first task the other runs is
+// timed against that.
 func TestHousekeeperOneHolderAndTakeover(t *testing.T) {
-	every, ttl := leaseEvery, leaseTTL
-	leaseEvery, leaseTTL = 20*time.Millisecond, 300*time.Millisecond
-	t.Cleanup(func() { leaseEvery, leaseTTL = every, ttl }) // runs after the hubs close
+	every := leaseEvery
+	leaseEvery = 20 * time.Millisecond
+	t.Cleanup(func() { leaseEvery = every }) // runs after the hubs close
 	path := filepath.Join(t.TempDir(), "logbook.db")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	boot := func(i int) string { return fmt.Sprintf("%032x", i+1) }
 	var runs [2]atomic.Int32
-	hubs := make([]*Hub, 2)
+	var first [2]atomic.Int64 // when each first ran the task, in Unix nanoseconds
+	hubs, stores := make([]*Hub, 2), make([]*store.Store, 2)
 	for i := range hubs {
 		h, _, _ := openHub(t, Options{})
-		st, err := store.Open(path, store.Options{BootID: fmt.Sprintf("%032x", i+1)})
+		st, err := store.Open(path, store.Options{BootID: boot(i)})
 		if err != nil {
 			t.Fatal(err)
 		}
 		h.AttachStore(st)
-		h.Housekeep("count", 0, func(context.Context) error { runs[i].Add(1); return nil })
+		h.Housekeep("count", 0, func(context.Context) error {
+			first[i].CompareAndSwap(0, time.Now().UnixNano())
+			runs[i].Add(1)
+			return nil
+		})
 		h.Housekeep("boom", time.Hour, func(context.Context) error { return errors.New("boom") })
 		h.Start(ctx)
-		hubs[i] = h
+		hubs[i], stores[i] = h, st
 	}
 	waitFor(t, 5*time.Second, func() bool { return runs[0].Load()+runs[1].Load() >= 5 })
 	holder := 0
@@ -70,16 +85,39 @@ func TestHousekeeperOneHolderAndTakeover(t *testing.T) {
 		return slices.ContainsFunc(ring, func(e Entry) bool { return strings.Contains(e.Msg, "task boom failed") && e.Field("err") == "boom" })
 	})
 
-	closed := time.Now()
-	_ = hubs[holder].Close() // as if it died: the lease is left to expire
+	_ = hubs[holder].Close() // as if it died: the lease is left to run out
+	if who, until, err := stores[other].Lease(ctx, HousekeeperLease); err != nil || who != boot(holder) || !until.After(time.Now()) {
+		t.Fatalf("the dead holder's lease: held by %q until %v (%v), want it left in place", who, until, err)
+	}
+	expires := time.Now().Add(10 * leaseEvery)
+	setLeaseExpiry(t, path, expires)
 	waitFor(t, 5*time.Second, func() bool { return runs[other].Load() > 0 })
-	if took := time.Since(closed); took < leaseTTL/2 {
-		t.Errorf("took over after %v, before the lease could expire", took)
+	if at := time.Unix(0, first[other].Load()); at.Before(expires) {
+		t.Errorf("took over %v before the lease ran out", expires.Sub(at))
 	}
 	waitFor(t, 5*time.Second, func() bool { // the lease changing hands is an event
 		ring, _ := hubs[other].Snapshot()
 		return slices.ContainsFunc(ring, func(e Entry) bool { return e.Field("event") == "logbook/1007" })
 	})
+}
+
+// setLeaseExpiry rewrites when the housekeeper's lease in the log book at
+// path runs out, as time passing would: the store compares the stored time
+// with the clock, whoever wrote it.
+func setLeaseExpiry(t *testing.T, path string, at time.Time) {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	res, err := db.Exec(`UPDATE leases SET expires_ns = ? WHERE name = ?`, at.UnixNano(), leaseName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		t.Fatalf("rewrote %d lease rows, want 1", n)
+	}
 }
 
 func waitFor(t *testing.T, d time.Duration, ok func() bool) {
