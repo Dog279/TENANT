@@ -5,6 +5,12 @@ Releases page.
 
 ## Unreleased
 
+- **Log book housekeeping: a process whose lease has run out starts no further task.** The
+  process holding the housekeeper lease learned it had lost it only at its next 30-second
+  check. When that check was held up until the lease's minute had passed (a long write to the
+  log book, the machine asleep), another process took the lease over while the first went on
+  to the rest of its tasks. A run of the tasks now stops when its lease runs out, and what is left is done
+  under the next lease. A task already under way is not interrupted.
 - **Container sandbox: HOME is a folder of the container's own.** `HOME` was the work dir, so
   the dotfiles, caches and history a command wrote stayed in your folder on the host, where the
   next "fresh" container and your own tools read them. It is now `/home/sandbox`, a 64 MB

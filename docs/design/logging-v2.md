@@ -328,7 +328,7 @@ These are the changes to `internal/archtest/rules.go`, and they land in LOG-010:
   - vacuum and WAL checkpoints;
   - dead-boot checks.
 
-  These run in whichever process holds the `housekeeper` lease. The lease is a row taken under `BEGIN IMMEDIATE` and renewed every 30 seconds. If the holder dies, another process takes over within a minute, so a serve crash while the TUI is open is reported by the TUI.
+  These run in whichever process holds the `housekeeper` lease. The lease is a row taken under `BEGIN IMMEDIATE` and renewed every 30 seconds. If the holder dies, another process takes over within a minute, so a serve crash while the TUI is open is reported by the TUI. A holder that could not renew starts no further task once its lease has run out, since another process may hold it by then; a task already running is not interrupted.
 - **Long-running roles only.** Serve and the TUI keep boot records and can hold the lease. A one-shot command writes its events but keeps no boot record, so a Ctrl-C never reads as a crash.
 - **Non-Tenant writers** post to the API. When no Tenant process is up, they write to the spool with the protocol in §6.4.
 - **Child processes** never open the store. Their parent captures their output and files it (§8.4).

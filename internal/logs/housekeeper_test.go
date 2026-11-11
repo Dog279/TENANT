@@ -120,6 +120,74 @@ func setLeaseExpiry(t *testing.T, path string, at time.Time) {
 	}
 }
 
+// A holder whose loop is stuck past its lease starts no further task: the
+// lease has run out, so another process may hold it by now and be running its
+// own. What was left runs once the loop is back and holds the lease again.
+//
+// Nothing here is timed but the lease itself: the loop is stopped in its
+// disk-space reading, the first task is held until the store shows the lease
+// run out, and only the check that nothing followed waits a fixed while,
+// which a slow machine can only make more lenient.
+func TestHousekeeperStartsNoTaskAfterItsLeaseRanOut(t *testing.T) {
+	every, ttl := leaseEvery, leaseTTL
+	leaseEvery, leaseTTL = 20*time.Millisecond, 200*time.Millisecond
+	t.Cleanup(func() { leaseEvery, leaseTTL = every, ttl }) // runs after the hub closes
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // also lets go of the loop and the task, should the test fail while it holds them
+
+	h, _, _ := openHub(t, Options{})
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "logbook.db"), store.Options{BootID: fmt.Sprintf("%032x", 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.AttachStore(st)
+	reader := readerAt(t, dir)
+
+	var stick, stuck, entered, returned, after atomic.Bool
+	unstick, release := make(chan struct{}), make(chan struct{})
+	h.hk.diskSpace = func(string) (uint64, uint64, error) { // read by the loop at the top of each tick, before it renews
+		if stick.Load() {
+			stuck.Store(true)
+			select {
+			case <-unstick:
+			case <-ctx.Done():
+			}
+		}
+		return plenty("")
+	}
+	h.Housekeep("slow", 0, func(context.Context) error {
+		if entered.CompareAndSwap(false, true) { // the first run waits in its first task
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			returned.Store(true)
+		}
+		return nil
+	})
+	h.Housekeep("after", 0, func(context.Context) error { after.Store(true); return nil })
+	h.Start(ctx)
+
+	waitFor(t, 5*time.Second, entered.Load) // it holds the lease, and a run is under way
+	stick.Store(true)
+	waitFor(t, 5*time.Second, stuck.Load) // the loop renews no more
+	waitFor(t, 5*time.Second, func() bool {
+		who, until, err := reader.Lease(ctx, HousekeeperLease)
+		return err == nil && who != "" && time.Now().After(until)
+	})
+	close(release)
+	waitFor(t, 5*time.Second, returned.Load)
+	time.Sleep(10 * leaseEvery) // a run that went on would have started the next task at once
+	if after.Load() {
+		t.Fatal("a task was started after the lease had run out")
+	}
+
+	close(unstick) // the loop renews the lease nobody took, and the tasks left are run
+	stick.Store(false)
+	waitFor(t, 5*time.Second, after.Load)
+}
+
 func waitFor(t *testing.T, d time.Duration, ok func() bool) {
 	t.Helper()
 	for deadline := time.Now().Add(d); !ok(); time.Sleep(5 * time.Millisecond) {

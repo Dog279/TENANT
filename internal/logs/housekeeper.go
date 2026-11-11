@@ -21,6 +21,11 @@ import (
 // (the retention settings, each log's policy, the free disk space), then
 // takes or renews the lease and, while it holds it, runs the tasks that are
 // due, in a goroutine of their own so a long task never delays the renewal.
+//
+// A lease is a promise with an end: once it has run out, another process may
+// take it, whether or not this one's loop has come round to find out. So the
+// loop notes when the lease it last took or renewed runs out, and a run of
+// the tasks starts none after that (runChores).
 var (
 	leaseEvery = 30 * time.Second // the tick; tests shorten both
 	leaseTTL   = 60 * time.Second // a dead holder is replaced within this
@@ -43,6 +48,11 @@ type housekeeper struct {
 	chores []*chore
 
 	gate atomic.Pointer[gate] // what this process writes; nil until the first tick
+
+	// until is when the lease this process last took or renewed runs out
+	// (Unix nanoseconds), by this process's reckoning: never later than the
+	// store's.
+	until atomic.Int64
 
 	// diskSpace reports the data volume's free and total bytes (tests
 	// replace it).
@@ -120,6 +130,7 @@ func (h *Hub) housekeep(ctx context.Context) {
 		if st := h.store(); st != nil {
 			h.refresh(ctx, st)
 			h.watch(ctx, st)
+			asked := time.Now() // before the store's own reading of the clock
 			ok, err := st.TryLease(ctx, leaseName, leaseTTL)
 			if ok = ok && err == nil; ok != held {
 				held = ok
@@ -136,6 +147,7 @@ func (h *Hub) housekeep(ctx context.Context) {
 				}
 			}
 			if held {
+				h.hk.until.Store(asked.Add(leaseTTL).UnixNano())
 				select {
 				case busy <- struct{}{}:
 					running.Add(1)
@@ -160,13 +172,16 @@ func (h *Hub) housekeep(ctx context.Context) {
 
 // runChores runs the tasks that are due. A task is due half a tick early, so
 // one meant for every minute runs every other tick rather than every third.
+// It starts no task once the lease has run out unrenewed (the loop is stuck,
+// or the machine slept): by then another process may hold it and be running
+// its own. What is left stays due for the next run under a lease.
 func (h *Hub) runChores(ctx context.Context) {
 	h.hk.mu.Lock()
 	chores := slices.Clone(h.hk.chores)
 	h.hk.mu.Unlock()
 	for _, c := range chores {
 		now := time.Now()
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || now.UnixNano() >= h.hk.until.Load() {
 			return
 		}
 		if c.next.After(now.Add(leaseEvery / 2)) {
