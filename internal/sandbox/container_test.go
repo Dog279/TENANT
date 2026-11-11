@@ -393,3 +393,53 @@ func TestSandboxImageIsPinnedTrixie(t *testing.T) {
 		}
 	}
 }
+
+// A folder named by more than one grant is mounted once, by its widest
+// grant. Two mounts on one destination are refused by a real engine.
+func TestSpecFor_OneMountPerDestination(t *testing.T) {
+	b := &containerBackend{image: "img"}
+	work, shared, ro := t.TempDir(), t.TempDir(), t.TempDir()
+	spec, err := b.specFor(Command{Shell: "echo hi"}, Policy{
+		WorkDir:    work,
+		ReadRoots:  []string{work, shared, ro, ro},
+		WriteRoots: []string{shared, work},
+	})
+	if err != nil {
+		t.Fatalf("specFor: %v", err)
+	}
+	seen := map[string]bool{spec.work.ctr: true}
+	for _, m := range spec.mounts {
+		if seen[m.ctr] {
+			t.Errorf("destination %s is mounted twice: %+v", m.ctr, spec.mounts)
+		}
+		seen[m.ctr] = true
+	}
+	if len(spec.mounts) != 2 {
+		t.Fatalf("mounts = %+v, want the read-only folder and the shared one", spec.mounts)
+	}
+	for _, m := range spec.mounts {
+		switch m.host {
+		case canonForCompare(shared):
+			if m.ro {
+				t.Errorf("a folder granted read-only and writable must be writable: %+v", m)
+			}
+		case canonForCompare(ro):
+			if !m.ro {
+				t.Errorf("the read-only folder became writable: %+v", m)
+			}
+		}
+	}
+	// What an approval of a write into a read-only grant builds.
+	granted, err := grantedPolicy(Policy{WorkDir: work, ReadRoots: []string{ro}},
+		Result{ExitCode: 1, Violations: []Violation{{Kind: "filesystem", Detail: "read-only", Path: ro}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err = b.specFor(Command{Shell: "echo hi"}, granted)
+	if err != nil {
+		t.Fatalf("specFor of the granted policy: %v", err)
+	}
+	if len(spec.mounts) != 1 || spec.mounts[0].ro {
+		t.Errorf("the granted folder must be one writable mount: %+v", spec.mounts)
+	}
+}

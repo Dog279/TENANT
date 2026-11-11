@@ -7,7 +7,14 @@ TEN-468, TEN-469 (wave 2), all in part or in full as listed below. The plan and 
 are [docker-sandbox-hardening.md](../plans/docker-sandbox-hardening.md) (§7 decisions, §9 status).
 The backend itself is described in [docker-sandbox-container.md](docker-sandbox-container.md).
 
-**Status, read this first.** Everything here passes `go build ./...`, `go vet ./...` and
+**Update, later on 2026-11-10: it has now run on a real engine.** Docker Desktop was quit and
+started again after the merge. The image builds on trixie, 14 of 14 live cases pass and the
+selftest contains 4 of 4. The first live run found one defect, fixed in a follow-up pull
+request: an approved re-run of a write into a folder granted read-only mounted that folder twice,
+and the engine refused the container. See "Verified on a real engine" below. The paragraph that
+follows describes the state at the time of the merge.
+
+**Status at the merge.** Everything here passes `go build ./...`, `go vet ./...` and
 `go test ./...` on Windows, and #64's commits passed CI on Ubuntu, Windows and macOS. **None of it
 has run against an engine that starts containers.** On the development machine Docker Desktop
 (engine 29.9.3, WSL 3.0.5) was stuck in `starting` for the whole of this work: `docker version`,
@@ -138,20 +145,25 @@ Decisions D4 to D8 were taken on 2026-11-10, each as the plan's recommended opti
   returned a path unresolved.
 - Left: the check and the open are two steps, so a link swapped in between is followed.
 
-## Not verified
+## Verified on a real engine
 
-These have unit tests against the fake CLI and no run on a real engine. Each has a live test
-waiting, or needs one:
+Run on 2026-11-10 after the merge, on Windows 11 with Docker Desktop (engine 29.9.3, kernel
+6.18.58.1), on `main` at the merge of #66.
 
-| What | Risk if wrong | Live check |
+| What | Check | Result |
 |---|---|---|
-| The check container before first use | the backend reports unavailable and refuses everything | `tenant sandbox probe`; any live test |
-| HOME tmpfs with `uid`/`gid`/`mode` options | the engine rejects the mount, or HOME is not writable | `TestContainerLive_HomeIsATmpfsOfItsOwn` |
-| `--ulimit cpu` | a process is not stopped | `TestContainerLive_CPULimitStopsARunawayProcess` |
-| The image on trixie | `tenant sandbox image build` fails | build it, then the whole live suite and `selftest --backend container` |
-| A re-run started by image id | an approved re-run fails to start (it fails closed) | approve a refused command on a container surface |
-| `tcp://` with `--tlsverify` | a TLS endpoint does not connect | a run against a TLS engine |
-| `stop-all` | containers are left | start one, run it |
+| The check container before first use | `tenant sandbox selftest --backend container`, which is gated on it | passes |
+| HOME tmpfs with `uid`/`gid`/`mode` options | `TestContainerLive_HomeIsATmpfsOfItsOwn` | passes: writable by the sandbox user, a tmpfs, mode 700, nothing in the work dir, empty in the next container |
+| `--ulimit cpu` | `TestContainerLive_CPULimitStopsARunawayProcess` | passes: a busy loop under a 2-second cap is killed in about 3 seconds |
+| The image on trixie | `tenant sandbox image build` | builds (Debian 13.7); the live suite and the selftest pass on it |
+| A re-run started by image id | `TestContainerLive_ApprovedReRunStartsByImageID`, added for this | **failed first**, then passes. The fault was not the image id: a folder granted read-only and then granted writable by the approval was mounted twice, and the engine refused "Duplicate mount point". `specFor` now mounts each destination once, by its widest grant |
+| The escape suite | `tenant sandbox selftest --backend container` | 4 of 4 contained, every legitimate twin succeeded |
+| The rest of the live suite | `TestContainerLive` | 14 of 14 pass |
+
+Still not run on a real engine: `tenant sandbox stop-all`, and a `tcp://` endpoint with TLS.
+
+The lesson for this backend's tests: the fake CLI accepts any argv, so it cannot see what an
+engine refuses. A change to mounts or flags needs its live case run before it merges.
 
 ## Not done
 

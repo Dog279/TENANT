@@ -9,8 +9,15 @@ Releases page.
   process holding the housekeeper lease learned it had lost it only at its next 30-second
   check. When that check was held up until the lease's minute had passed (a long write to the
   log book, the machine asleep), another process took the lease over while the first went on
-  to the rest of its tasks. A run of the tasks now stops when its lease runs out, and what is left is done
-  under the next lease. A task already under way is not interrupted.
+  to the rest of its tasks. A run of the tasks now stops when its lease runs out, and what is
+  left is done under the next lease. A task already under way is not interrupted.
+- **Fixed: approving a write into a folder granted read-only never ran on a real engine.** When
+  the container sandbox refused a write to a folder the profile grants under `read_roots`, an
+  approved re-run added the folder as writable and kept the read-only grant, so the same folder
+  was mounted twice and the engine refused to start the container ("Duplicate mount point").
+  The refusal stood, so nothing ran unconfined, but the approval did nothing. A folder named by
+  more than one grant is now mounted once, by its widest grant. Found by the first run of the
+  live tests on a working engine.
 - **Container sandbox: HOME is a folder of the container's own.** `HOME` was the work dir, so
   the dotfiles, caches and history a command wrote stayed in your folder on the host, where the
   next "fresh" container and your own tools read them. It is now `/home/sandbox`, a 64 MB

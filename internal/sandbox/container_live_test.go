@@ -380,3 +380,59 @@ func TestContainerLive_RefusalPastOutputCap(t *testing.T) {
 		t.Fatalf("the refusal past the cap was not attributed: %+v", res.Violations)
 	}
 }
+
+// W1-6 on a real engine: a write into a folder granted read-only is refused
+// and names the folder; an approval re-runs the same command with that one
+// folder writable, started from the description that was hashed and by the
+// image's id; the file lands on the host. A digest that is not the approved
+// one starts nothing.
+func TestContainerLive_ApprovedReRunStartsByImageID(t *testing.T) {
+	b := liveContainer(t)
+	work, extra := liveWorkDir(t), t.TempDir()
+	pol := livePolicy(work, 30*time.Second)
+	pol.ReadRoots = []string{work, extra}
+	dest := containerDest(extra, runtime.GOOS)
+	cmd := Command{Shell: "echo granted > '" + dest + "/out.txt'", Surface: "test"}
+	ctx := context.Background()
+
+	refused, err := b.Run(ctx, cmd, pol)
+	if err != nil || !refused.Refused() {
+		t.Fatalf("a write into a read-only grant must be refused: %+v, %v", refused, err)
+	}
+	if _, err := os.Stat(filepath.Join(extra, "out.txt")); err == nil {
+		t.Fatal("the refused write reached the host")
+	}
+	if _, err := b.RunGrantedAs(ctx, cmd, pol, refused, "not-the-approved-digest"); err == nil {
+		t.Error("a re-run under a digest that was not approved started")
+	}
+	if _, err := os.Stat(filepath.Join(extra, "out.txt")); err == nil {
+		t.Fatal("the re-run that was not approved wrote the file")
+	}
+
+	asked := 0
+	res, err := Execute(ctx, b, cmd, pol, func(context.Context, Command, Result) bool { asked++; return true })
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if asked != 1 || !res.Escalated || res.ExitCode != 0 {
+		t.Fatalf("asked %d time(s), escalated %v, exit %d, violations %+v\n%s", asked, res.Escalated, res.ExitCode, res.Violations, res.Output)
+	}
+	got, err := os.ReadFile(filepath.Join(extra, "out.txt"))
+	if err != nil || strings.TrimSpace(string(got)) != "granted" {
+		t.Errorf("the approved re-run did not write the granted folder: %q, %v", got, err)
+	}
+	c := res.Confinement
+	if c == nil || c.Image != b.image || !strings.HasPrefix(c.ImageID, "sha256:") {
+		t.Fatalf("the re-run's record must name the tag and the id it ran: %+v", c)
+	}
+	writable := false
+	for _, m := range c.Mounts {
+		writable = writable || (strings.Contains(m, dest) && strings.HasSuffix(m, "(rw)"))
+	}
+	if !writable {
+		t.Errorf("the granted folder is not a writable mount of the re-run: %q", c.Mounts)
+	}
+	if left := leftovers(t, b); len(left) != 0 {
+		t.Errorf("containers left behind: %v", left)
+	}
+}
