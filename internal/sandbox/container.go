@@ -368,6 +368,13 @@ func (b *containerBackend) runSpec(ctx context.Context, cmd Command, pol Policy,
 	if err != nil {
 		return Result{Violations: []Violation{{Kind: "policy", Detail: oneLine(err.Error())}}}, err
 	}
+	if spec.network == sandboxNetwork {
+		// The bridge must be there, and be Tenant's, before a command is put
+		// on it. Anything else fails closed: never the default bridge.
+		if err := b.ensureNetwork(ctx); err != nil {
+			return Result{Violations: []Violation{{Kind: "policy", Detail: oneLine(err.Error())}}}, err
+		}
+	}
 
 	c, err := b.command(ctx, argv...)
 	if err != nil {
@@ -875,12 +882,14 @@ func windowsProgramInvoked(command string) (string, bool) {
 
 // dockerNetwork maps a NetworkMode to a docker --network value, failing closed:
 // inherit and allowlist become none until the Phase 4 proxy and W2-9 land; only
-// an explicit full opens the default bridge (W1-5). The bridge choice is the
-// operator's, gated at the profile layer, so the model can never select it.
+// an explicit full opens a network (W1-5), and that network is Tenant's own
+// bridge, never Docker's default one (W2-4, container_network.go). The choice
+// is the operator's, gated at the profile layer, so the model can never
+// select it.
 func dockerNetwork(n NetworkMode) string {
 	switch n {
 	case NetFull:
-		return "bridge"
+		return sandboxNetwork
 	default: // NetNone, NetAllowlist, NetInherit
 		return "none"
 	}

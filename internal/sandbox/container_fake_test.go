@@ -97,6 +97,34 @@ func fakeDockerMain() int {
 		return 0
 	case "rm", "kill":
 		return 0
+	case "network":
+		// TENANT_FAKE_DOCKER_NET is the network's state: "" = not there until
+		// created (a marker file beside the call log remembers a create),
+		// "open" = there, with traffic between its containers on.
+		marker := os.Getenv("TENANT_FAKE_DOCKER_LOG") + ".net"
+		_, statErr := os.Stat(marker)
+		switch {
+		case len(args) > 1 && args[1] == "create":
+			if os.Getenv("TENANT_FAKE_DOCKER_NET") == "nocreate" {
+				fmt.Fprintln(os.Stderr, "Error response from daemon: could not create")
+				return 1
+			}
+			os.WriteFile(marker, nil, 0o600)
+			fmt.Println("0123456789ab")
+			return 0
+		case len(args) > 1 && args[1] == "inspect":
+			if os.Getenv("TENANT_FAKE_DOCKER_NET") == "open" {
+				fmt.Println("true")
+				return 0
+			}
+			if statErr != nil {
+				fmt.Fprintln(os.Stderr, "Error response from daemon: network tenant-sbx not found")
+				return 1
+			}
+			fmt.Println("false")
+			return 0
+		}
+		return 2
 	case "context":
 		return 1
 	case "run":
@@ -817,5 +845,92 @@ func TestFakeDocker_RunGrantedAsStartsTheRunItHashed(t *testing.T) {
 	}
 	if n, _ := runs(); n != 1 {
 		t.Errorf("containers started = %d after the refused re-runs, want still 1", n)
+	}
+}
+
+// W2-4: a `full` command runs on Tenant's own bridge. The network is made on
+// first use with traffic between its containers off, looked at once and then
+// trusted for a while; one that lets its containers reach each other is
+// never used, and a command that needs no network never touches it.
+func TestFakeDocker_FullRunsOnTenantsOwnNetwork(t *testing.T) {
+	b, logPath := fakeDocker(t)
+	ctx := context.Background()
+	count := func(sub ...string) (n int, last []string) {
+		for _, c := range readCalls(t, logPath) {
+			joined := "\x00" + strings.Join(c.argv, "\x00") + "\x00"
+			if strings.Contains(joined, "\x00"+strings.Join(sub, "\x00")+"\x00") {
+				n, last = n+1, c.argv
+			}
+		}
+		return n, last
+	}
+	work := t.TempDir()
+	none := Policy{WorkDir: work, Network: NetNone, Enforce: true}
+	if _, err := b.Run(ctx, Command{Shell: "echo hi"}, none); err != nil {
+		t.Fatalf("a run with no network: %v", err)
+	}
+	if n, _ := count("network"); n != 0 {
+		t.Errorf("a command with no network touched the sandbox network %d time(s)", n)
+	}
+
+	full := Policy{WorkDir: work, Network: NetFull, Enforce: true}
+	res, err := b.Run(ctx, Command{Shell: "echo hi"}, full)
+	if err != nil {
+		t.Fatalf("a full run: %v", err)
+	}
+	n, create := count("network", "create")
+	if n != 1 {
+		t.Fatalf("network create ran %d time(s), want 1", n)
+	}
+	joined := strings.Join(create, " ")
+	for _, want := range []string{"--driver bridge", "-o com.docker.network.bridge.enable_icc=false", "--label tenant.sandbox=1", sandboxNetwork} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("network create lacks %q: %s", want, joined)
+		}
+	}
+	if _, run := count("run"); !strings.Contains(strings.Join(run, " "), "--network "+sandboxNetwork) {
+		t.Errorf("the full run is not on %s: %q", sandboxNetwork, run)
+	}
+	if res.Confinement == nil || res.Confinement.Network != sandboxNetwork {
+		t.Errorf("the record must name the network: %+v", res.Confinement)
+	}
+
+	// A second full run trusts the check: no further network calls.
+	before, _ := count("network")
+	if _, err := b.Run(ctx, Command{Shell: "echo hi"}, full); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := count("network"); after != before {
+		t.Errorf("the second full run made %d more network call(s)", after-before)
+	}
+}
+
+func TestFakeDocker_AnOpenNetworkOfThatNameIsRefused(t *testing.T) {
+	b, logPath := fakeDocker(t)
+	t.Setenv("TENANT_FAKE_DOCKER_NET", "open")
+	res, err := b.Run(context.Background(), Command{Shell: "echo hi"}, Policy{WorkDir: t.TempDir(), Network: NetFull, Enforce: true})
+	var u *Unavailable
+	if err == nil || !errors.As(err, &u) || !strings.Contains(err.Error(), "can reach each other") || !strings.Contains(u.Fix, "docker network rm "+sandboxNetwork) {
+		t.Fatalf("an open network must refuse the run with its fix: %v", err)
+	}
+	if len(res.Violations) != 1 || res.Violations[0].Kind != "policy" {
+		t.Errorf("the refusal must be a policy violation: %+v", res.Violations)
+	}
+	for _, c := range readCalls(t, logPath) {
+		for i, a := range c.argv {
+			if i <= 8 && (a == "run" || a == "create") {
+				t.Errorf("nothing may be started or created on a network that is not Tenant's: %q", c.argv)
+			}
+		}
+	}
+}
+
+func TestFakeDocker_ANetworkThatCannotBeMadeRefusesTheRun(t *testing.T) {
+	b, _ := fakeDocker(t)
+	t.Setenv("TENANT_FAKE_DOCKER_NET", "nocreate")
+	_, err := b.Run(context.Background(), Command{Shell: "echo hi"}, Policy{WorkDir: t.TempDir(), Network: NetFull, Enforce: true})
+	var u *Unavailable
+	if err == nil || !errors.As(err, &u) || !strings.Contains(err.Error(), "could not create the sandbox network") {
+		t.Fatalf("err = %v, want the create failure", err)
 	}
 }

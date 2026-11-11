@@ -409,7 +409,7 @@ type Confinement struct {
 	Image       string        // the image reference the container was started from
 	ImageID     string        // what that reference resolved to at the readiness check before the run; "" if not known
 	Mounts      []string      // each as "host -> container (rw|ro)"; the work dir first
-	Network     string        // the engine network: none or bridge
+	Network     string        // the engine network: none, or Tenant's own bridge (tenant-sbx)
 	Limits      string        // the caps applied, defaults included
 	Env         []string      // the names of the variables passed in from the host; never a value
 	OutputBytes int64         // what the command wrote, before the cap
