@@ -13,7 +13,7 @@ func TestDockerNetwork_FailsClosed(t *testing.T) {
 		NetInherit:   "none", // an entry naming a backend resolves to inherit → none
 		NetAllowlist: "none", // no proxy yet → none
 		NetNone:      "none",
-		NetFull:      "bridge",
+		NetFull:      sandboxNetwork, // Tenant's own bridge, never Docker's default
 	}
 	for mode, want := range cases {
 		if got := dockerNetwork(mode); got != want {
@@ -178,7 +178,7 @@ func TestAttributeContainer(t *testing.T) {
 		t.Errorf("expected network violation under none, got %+v ok=%v", v, ok)
 	}
 	// The same network failure with a bridge is NOT attributed to the sandbox.
-	if _, ok := attributeContainer(netFail, containerSpec{network: "bridge"}); ok {
+	if _, ok := attributeContainer(netFail, containerSpec{network: sandboxNetwork}); ok {
 		t.Error("did not expect a network violation when the bridge is up")
 	}
 	// An ordinary non-zero exit is not attributed (fails closed, not escalated).

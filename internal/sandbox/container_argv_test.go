@@ -56,7 +56,7 @@ func TestBuildRunArgv_NoForbiddenFlags(t *testing.T) {
 	// A spec that sets caps and full networking must still never emit an escape
 	// hatch: the forbidden flags are absent regardless of inputs.
 	s := sampleSpec()
-	s.network = "bridge"
+	s.network = sandboxNetwork
 	s.limits = Limits{MaxPIDs: 64, MemoryBytes: 512 << 20}
 	got, err := buildRunArgv(s)
 	if err != nil {
@@ -93,9 +93,14 @@ func TestBuildRunArgv_NoForbiddenFlags(t *testing.T) {
 		t.Error("--cap-drop ALL missing")
 	}
 	// --pull never is enforced by the backend at call time; the schema never adds
-	// a pull. The bridge value is the only concession to full networking.
-	if !slices.Contains(got, "bridge") {
-		t.Error("expected bridge for full networking")
+	// a pull. Tenant's own network is the only concession to full networking,
+	// and Docker's default bridge is never named.
+	if i := slices.Index(got, "--network"); i < 0 || got[i+1] != sandboxNetwork {
+		t.Errorf("expected --network %s for full networking: %q", sandboxNetwork, got)
+	}
+	s.network = "bridge"
+	if _, err := buildRunArgv(s); err == nil {
+		t.Error("the default bridge must be refused as a network")
 	}
 }
 
