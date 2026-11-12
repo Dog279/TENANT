@@ -5,6 +5,12 @@ Releases page.
 
 ## Unreleased
 
+- **Log book housekeeping: a process whose lease has run out starts no further task.** The
+  process holding the housekeeper lease learned it had lost it only at its next 30-second
+  check. When that check was held up until the lease's minute had passed (a long write to the
+  log book, the machine asleep), another process took the lease over while the first went on
+  to the rest of its tasks. A run of the tasks now stops when its lease runs out, and what is
+  left is done under the next lease. A task already under way is not interrupted.
 - **Container sandbox: `full` networking no longer shares Docker's default bridge.** A command
   given `"network": "full"` ran on the default bridge, where every container without a network
   of its own lives and where containers reach each other: on a real engine a sandboxed command
