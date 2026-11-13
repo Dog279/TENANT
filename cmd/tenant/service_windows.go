@@ -10,13 +10,24 @@ package main
 // killed. --system is a real SCM service as SYSTEM (svc_windows.go), which
 // gets a proper stop control and a longer grace; it needs elevation, and it
 // keeps runas.go's consequences (browsing off under a service account).
+//
+// The task is registered from XML (taskXML), not with `schtasks /SC ONLOGON`.
+// That switch makes a trigger for any user's logon, which only an
+// administrator may register ("Access is denied" for everyone else), and it
+// leaves schtasks' defaults in place: the task is ended after 72 hours, is
+// not started on battery power and is ended when the machine goes onto it.
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
+	"encoding/xml"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"golang.org/x/sys/windows"
 )
@@ -24,17 +35,93 @@ import (
 // isElevated is swapped by tests; --system needs an administrator token.
 var isElevated = func() bool { return windows.GetCurrentProcessToken().IsElevated() }
 
-// maxTR is schtasks' limit on the /TR string. A .cmd wrapper is no way
-// around it: /End would kill cmd.exe and orphan tenant.exe.
-const maxTR = 261
+// taskUser names whoever is installing the task, as the SID of this
+// process's token: no account lookup, so it works off the domain, and it is
+// the same account whatever it is renamed to. Tests swap it.
+var taskUser = func() (string, error) {
+	u, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return "", fmt.Errorf("read this account's SID: %w", err)
+	}
+	return u.User.Sid.String(), nil
+}
+
+// writeTaskXML puts the task's definition in a temporary file for schtasks
+// to read, as UTF-16 with a byte-order mark, the encoding the XML declares.
+// Tests swap it to see the definition.
+var writeTaskXML = func(def string) (path string, remove func(), err error) {
+	f, err := os.CreateTemp("", "tenant-task-*.xml")
+	if err != nil {
+		return "", nil, err
+	}
+	var b bytes.Buffer
+	_ = binary.Write(&b, binary.LittleEndian, append([]uint16{0xFEFF}, utf16.Encode([]rune(def))...))
+	_, werr := f.Write(b.Bytes())
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		_ = os.Remove(f.Name())
+		return "", nil, werr
+	}
+	return f.Name(), func() { _ = os.Remove(f.Name()) }, nil
+}
+
+// args is what follows the binary on the command line.
+func (s serviceSpec) args() string {
+	a := fmt.Sprintf(`serve --config "%s" --data "%s" --stop-budget %s`, s.CfgDir, s.DataDir, secs(s.StopBudget))
+	if !s.System {
+		a += " --hidden"
+	}
+	return a
+}
 
 // cmdLine is what the task or service runs.
-func (s serviceSpec) cmdLine() string {
-	line := fmt.Sprintf(`"%s" serve --config "%s" --data "%s" --stop-budget %s`, s.Exe, s.CfgDir, s.DataDir, secs(s.StopBudget))
-	if !s.System {
-		line += " --hidden"
+func (s serviceSpec) cmdLine() string { return `"` + s.Exe + `" ` + s.args() }
+
+// taskXML is the logon task: started when user (a SID) logs on, as that
+// user with their interactive token and no elevation, which is what an
+// unelevated account may register for itself. It runs until it is stopped:
+// no execution time limit and no battery conditions.
+func (s serviceSpec) taskXML(user string) string {
+	esc := func(v string) string {
+		var b strings.Builder
+		_ = xml.EscapeText(&b, []byte(v))
+		return b.String()
 	}
-	return line
+	return `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Tenant agent (tenant serve)</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>` + esc(user) + `</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>` + esc(user) + `</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>` + esc(s.Exe) + `</Command>
+      <Arguments>` + esc(s.args()) + `</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+`
 }
 
 func (s serviceSpec) unitText() string {
@@ -48,10 +135,16 @@ func (s serviceSpec) install(ctx context.Context) error {
 	if s.System {
 		return s.installService(ctx)
 	}
-	if n := len(s.cmdLine()); n > maxTR {
-		return fmt.Errorf("the task's command line is %d characters and schtasks allows %d: shorten --config/--data", n, maxTR)
+	user, err := taskUser()
+	if err != nil {
+		return err
 	}
-	if out, err := runCmd(ctx, "schtasks", "/Create", "/F", "/TN", s.Label, "/SC", "ONLOGON", "/RL", "LIMITED", "/TR", s.cmdLine()); err != nil {
+	file, remove, err := writeTaskXML(s.taskXML(user))
+	if err != nil {
+		return fmt.Errorf("write the task's definition: %w", err)
+	}
+	defer remove()
+	if out, err := runCmd(ctx, "schtasks", "/Create", "/F", "/TN", s.Label, "/XML", file); err != nil {
 		return cmdErr("schtasks /Create", out, err)
 	}
 	return s.start(ctx)
