@@ -758,7 +758,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 
 	dashAddr := ""
 	if *dashboardOn {
-		if addr, derr := dashMgr.Enable(); derr != nil {
+		if addr, derr := dashMgr.EnableAtBoot(); derr != nil {
 			pushSys("dashboard: " + derr.Error())
 		} else {
 			dashAddr = addr
