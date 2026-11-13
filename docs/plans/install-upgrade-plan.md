@@ -108,7 +108,7 @@ type serviceSpec struct {
 |---|---|---|---|---|
 | Unit | LaunchAgent plist (same keys as the old template plus `ExitTimeOut 100`) | systemd user unit: `Restart=on-failure`, `RestartSec=10`, `TimeoutStopSec=100`, `WantedBy=default.target` | Scheduled task `\Tenant\Serve`, interactive token, `--hidden` | SCM service `Tenant`, `start= auto`, `sc failure … restart/10000/restart/60000/restart/300000` |
 | Path | `~/Library/LaunchAgents/<label>.plist` | `~/.config/systemd/user/tenant.service` | Task Scheduler | Services |
-| install | write → `launchctl bootstrap gui/<uid> <plist>` → `launchctl kickstart -k gui/<uid>/<label>` | write → `systemctl --user daemon-reload` → `enable --now tenant` → linger check | `schtasks /Create /F /TN \Tenant\Serve /SC ONLOGON /TR "<exe> serve --config … --data … --stop-budget 4s --hidden"` → `/Run` | `sc create Tenant binPath= "…serve … --stop-budget 120s" start= auto` → `sc description` → `sc failure` → `sc start` (needs an elevated terminal; detected and said) |
+| install | write → `launchctl bootstrap gui/<uid> <plist>` → `launchctl kickstart -k gui/<uid>/<label>` | write → `systemctl --user daemon-reload` → `enable --now tenant` → linger check | write the task's XML (a logon trigger for the installing account's SID, least privilege, no time limit, no battery conditions; action `<exe> serve --config … --data … --stop-budget 4s --hidden`) → `schtasks /Create /F /TN \Tenant\Serve /XML <file>` → `/Run` | `sc create Tenant binPath= "…serve … --stop-budget 120s" start= auto` → `sc description` → `sc failure` → `sc start` (needs an elevated terminal; detected and said) |
 | uninstall | `launchctl bootout` → remove plist | `disable --now` → remove unit → `daemon-reload` | `schtasks /End` → `/Delete /F` | `sc stop` (wait) → `sc delete` |
 | start / stop | `kickstart` / `bootout` + `bootstrap` | `systemctl --user start|stop` | `/Run` / `/End` | `sc start` / `sc stop` |
 | restart | `kickstart -k` (SIGTERM) | `systemctl --user restart` (SIGTERM) | `/End` then `/Run` (hard kill) | `sc stop` + wait STOPPED + `sc start` (SCM Stop control, graceful) |
@@ -126,9 +126,17 @@ Details that matter:
   `syscall.NewLazyDLL`, ~8 lines) instead of freeing it. The window shows for a moment at logon; the live test checks
   that this is tolerable. If not, the alternative is a no-password S4U task (`schtasks /NP`), which runs in session 0
   with no window but does not work for Microsoft-account logons; that is a later decision, not a blocker.
-- **Windows `/TR` is limited to 261 characters.** `install` refuses over the limit with "shorten --config/--data". A
-  `.cmd` wrapper is not an option: `/End` would kill `cmd.exe` and orphan `tenant.exe`.
-- **Windows without `/RU`** creates the task as the invoking user, "run only when user is logged on", no password.
+- **The Windows task is registered from XML, not with `/SC ONLOGON`** (changed 2026-11-13, after the first run on
+  an account that is not an administrator). `/SC ONLOGON` makes a trigger for any user's logon, which only an
+  administrator may register: everyone else got "Access is denied". It also left schtasks' defaults in place: the
+  task ended after 72 hours, did not start on battery power and ended when the machine went onto it. The XML names
+  one account, by SID, in the trigger and the principal ("run only when user is logged on", no password), sets no
+  time limit and no battery conditions, and has no `/TR`, so the 261-character limit on the command line is gone. A
+  `.cmd` wrapper was never an option: `/End` would kill `cmd.exe` and orphan `tenant.exe`.
+- **A restarted serve waits for the dashboard's address** (same date). `restart` on the task is `/End` then `/Run`,
+  and the new process started about 200 ms later, while the old one still held the port. It then ran without a
+  dashboard, and `tenant update` could not have seen it come up. At start-up serve now waits up to 10 seconds for
+  an address that is in use (`dashboardManager.EnableAtBoot`); any other bind error is reported at once.
   That is D1. The `--system` service keeps `runas.go`'s consequences (browsing off under a service account).
 - **macOS TCC:** refuse `install` when `Exe`, `CfgDir` or `DataDir` sits under `~/Desktop`, `~/Documents` or
   `~/Downloads`, naming the path and a good home.
@@ -145,7 +153,7 @@ Details that matter:
 | `TestWaitDrained` | `service_test.go` | `httptest` `/api/status` returns `turn_active: true` twice then `false`; restart's `runCmd` fires only after; `--now` skips; timeout returns "still busy" |
 | `TestUnitText` | per-OS `_test.go` | Rendered unit equals a golden string for a fixture with spaces in paths (plist: byte-equal to the old template for the same values, plus `ExitTimeOut`) |
 | `TestInstallArgv` / `TestUninstallArgv` / `TestRestartArgv` | per-OS `_test.go` | The recorder's argv list, in order, equals the table above, for user mode and `--system` on Windows |
-| `TestInstallRefusesLongTR` | `service_windows_test.go` | 262-character command line refused; 261 accepted |
+| `TestInstallLongAndReservedPaths` / `TestWriteTaskXML` | `service_windows_test.go` | A command line past the old 261-character limit installs; `&` and `<` in a path are escaped and read back as written; the definition is written as UTF-16 with a byte-order mark and removed |
 | `TestSvcHandler` | `svc_windows_test.go` | Fake control channel: `Stop`, `Shutdown` and `PreShutdown` each cancel serve's context once; status goes Running → StopPending → Stopped; the accepted set includes `AcceptPreShutdown` |
 | `TestClassifyTenantService` | `osys/classify_test.go` | `tenant service uninstall` and `tenant update --yes` classify as destructive |
 | `TestServiceLive` | per-OS `_test.go`, gated `TENANT_LIVE_SERVICE=1` | Real install with a test label pointing at `tenant version`, then `installed()` true, `uninstall`, `installed()` false. On Windows both modes (`--system` from an elevated terminal). By hand on a Mac and a Windows box |
@@ -456,7 +464,7 @@ re-parented under TEN-495 and closed by PR A.
 | Windows gives seconds, not minutes | The 4 s budget for the user task; the SCM service with pre-shutdown for `--system` |
 | Discord DMs sent during a reboot vanish | Per-channel cursor and catch-up on READY (iMessage already has this) |
 | Supply chain through the update path | HTTPS + SHA-256 always; cosign when on PATH; never automatic; agent-run `tenant update` needs approval |
-| Windows `/TR` limit | Measured and refused with a clear message |
+| Windows task needs an administrator, or is ended by schtasks' defaults | Registered from XML for one account; `TestServiceLive` passes from a terminal that is not elevated |
 | Linux service dies at logout | Linger checked; the command printed |
 | Repo rename at the public cut | `Repo` is an ldflag from `GITHUB_REPOSITORY`; scripts are stamped at release time |
 | Runner support for a real service install | Tried on the rc tag; falls back to `--print` + unit verification |
