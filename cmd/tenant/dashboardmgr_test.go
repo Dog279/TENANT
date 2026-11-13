@@ -251,3 +251,66 @@ func TestDashboardManager_Lifecycle(t *testing.T) {
 		}
 	}
 }
+
+// A serve that starts while the process it replaces still holds the
+// dashboard's address waits for it and then serves; Enable, which the
+// operator's /dashboard uses, still fails at once.
+func TestDashboardManager_EnableAtBootWaitsOutAnAddressInUse(t *testing.T) {
+	prev := dashBootWait
+	dashBootWait = time.Minute // the address is freed long before
+	t.Cleanup(func() { dashBootWait = prev })
+	old, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	rp := &recordingPersist{}
+	mgr := &dashboardManager{
+		base:    context.Background(),
+		cfg:     dashboard.Config{Addr: old.Addr().String(), Auth: "test-token"},
+		tools:   fakeDashTools{},
+		broker:  agent.NewBroker(0),
+		notify:  func(string) {},
+		persist: rp.persist,
+	}
+	t.Cleanup(func() { _ = mgr.Shutdown() })
+
+	if _, err := mgr.Enable(); err == nil || !addrInUse(err) {
+		t.Fatalf("Enable on a taken address: err = %v, want address in use", err)
+	}
+	go func() { // the old process goes away a moment after the new one starts
+		time.Sleep(300 * time.Millisecond)
+		_ = old.Close()
+	}()
+	addr, err := mgr.EnableAtBoot()
+	if err != nil {
+		t.Fatalf("EnableAtBoot: %v", err)
+	}
+	if !healthzUp(addr, 2*time.Second) {
+		t.Fatal("the dashboard did not come up once the address was free")
+	}
+}
+
+// Only an address in use is waited for, and only while the context lives.
+func TestListenWaitGivesUp(t *testing.T) {
+	start := time.Now()
+	if ln, err := listenWait(context.Background(), "127.0.0.1:not-a-port", time.Minute); err == nil || addrInUse(err) {
+		t.Errorf("a bad address: listener %v, err = %v", ln, err)
+	}
+	old, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	if _, err := listenWait(context.Background(), old.Addr().String(), 0); err == nil || !addrInUse(err) {
+		t.Errorf("no wait: err = %v, want address in use", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := listenWait(ctx, old.Addr().String(), time.Minute); err == nil || !addrInUse(err) {
+		t.Errorf("a cancelled context: err = %v, want address in use", err)
+	}
+	if took := time.Since(start); took > 30*time.Second {
+		t.Errorf("took %v: something waited that should not have", took)
+	}
+}

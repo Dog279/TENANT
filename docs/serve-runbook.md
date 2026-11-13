@@ -184,8 +184,11 @@ Everything the hub does is in the log book either way (`tenant logs`, the dashbo
   `~/.config/tenant`, `~/Library/Application Support/tenant`.
 - **Linux (linger):** the user manager stops at logout unless the account lingers; `install` prints
   `loginctl enable-linger <user>` when it is off. Run it once.
-- **Windows:** the task keeps a hidden console, which is how logoff and shutdown reach the process;
-  `restart` and `stop` end the task hard (hence the 4-second budget). `--system` is a real service with
+- **Windows:** installing the task needs no administrator: it is registered for your account alone,
+  with no time limit and no battery conditions. The task keeps a hidden console, which is how logoff
+  and shutdown reach the process; `restart` and `stop` end the task hard (hence the 4-second budget),
+  and a serve that starts while the old one still holds the dashboard's address waits up to 10
+  seconds for it. `--system` is a real service with
   a Stop control and `sc failure` restarts; `sc`/the Services app work on it too.
 
 ## Upgrade and roll back

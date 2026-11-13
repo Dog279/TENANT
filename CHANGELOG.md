@@ -5,6 +5,20 @@ Releases page.
 
 ## Unreleased
 
+- **Fixed: `tenant service install` on Windows needed an administrator.** From an ordinary terminal
+  it failed with "Access is denied": the scheduled task was registered to start at any user's
+  logon, which Windows allows only an administrator to set up. It is now registered for your
+  account alone and needs no elevation. The same change removes two limits the old registration
+  carried: Windows ended the task after 72 hours, and neither started it on battery power nor kept
+  it running when the machine went onto it. A command line longer than 261 characters is no longer
+  refused. `--system` is unchanged and still needs an elevated terminal.
+- **Fixed: `tenant service restart` on Windows left Tenant running without its dashboard.** The new
+  process started a fraction of a second after the old one was ended, found the dashboard's
+  address still taken, and gave up on it, so `tenant service status` said "not reachable" and a
+  `tenant update` would not have seen the new version come up. A `tenant serve` that starts now
+  waits up to 10 seconds for an address that is in use.
+- **The install scripts in a release no longer have their own header comment rewritten.** The
+  release replaced the repository placeholder everywhere, including the comment that names it.
 - **Log book housekeeping: a process whose lease has run out starts no further task.** The
   process holding the housekeeper lease learned it had lost it only at its next 30-second
   check. When that check was held up until the lease's minute had passed (a long write to the

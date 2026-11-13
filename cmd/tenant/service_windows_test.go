@@ -4,10 +4,13 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
+	"encoding/xml"
 	"os"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 )
 
 func windowsFixture(system bool) serviceSpec {
@@ -19,7 +22,8 @@ func windowsFixture(system bool) serviceSpec {
 	return s
 }
 
-const userTR = `"C:\Program Files\Tenant\tenant.exe" serve --config "C:\Users\Jane Doe\AppData\Roaming\tenant" --data "C:\Users\Jane Doe\AppData\Local\tenant" --stop-budget 4s --hidden`
+const userArgs = `serve --config "C:\Users\Jane Doe\AppData\Roaming\tenant" --data "C:\Users\Jane Doe\AppData\Local\tenant" --stop-budget 4s --hidden`
+const userTR = `"C:\Program Files\Tenant\tenant.exe" ` + userArgs
 const systemCmd = `"C:\Program Files\Tenant\tenant.exe" serve --config "C:\Users\Jane Doe\AppData\Roaming\tenant" --data "C:\Users\Jane Doe\AppData\Local\tenant" --stop-budget 120s`
 
 // What --print shows: the task or service, and the command line it runs.
@@ -39,13 +43,59 @@ func elevated(t *testing.T, yes bool) {
 	t.Cleanup(func() { isElevated = prev })
 }
 
+const testSID = "S-1-5-21-1004336348-1177238915-682003330-1001"
+
+// taskFile swaps the account and the temporary file for fixed ones, and
+// returns where the definition handed to schtasks ends up.
+func taskFile(t *testing.T) *string {
+	t.Helper()
+	def := new(string)
+	prevUser, prevWrite := taskUser, writeTaskXML
+	taskUser = func() (string, error) { return testSID, nil }
+	writeTaskXML = func(d string) (string, func(), error) { *def = d; return "task.xml", func() {}, nil }
+	t.Cleanup(func() { taskUser, writeTaskXML = prevUser, prevWrite })
+	return def
+}
+
+// taskDef is the part of a task definition the tests read back.
+type taskDef struct {
+	TriggerUser string `xml:"Triggers>LogonTrigger>UserId"`
+	User        string `xml:"Principals>Principal>UserId"`
+	LogonType   string `xml:"Principals>Principal>LogonType"`
+	RunLevel    string `xml:"Principals>Principal>RunLevel"`
+	TimeLimit   string `xml:"Settings>ExecutionTimeLimit"`
+	NoBattery   string `xml:"Settings>DisallowStartIfOnBatteries"`
+	StopBattery string `xml:"Settings>StopIfGoingOnBatteries"`
+	Command     string `xml:"Actions>Exec>Command"`
+	Arguments   string `xml:"Actions>Exec>Arguments"`
+}
+
+func parseTask(t *testing.T, def string) taskDef {
+	t.Helper()
+	var d taskDef
+	// The declaration names UTF-16, which the file is and this string is not.
+	if err := xml.Unmarshal([]byte(strings.Replace(def, `encoding="UTF-16"`, `encoding="UTF-8"`, 1)), &d); err != nil {
+		t.Fatalf("the task definition is not well-formed: %v\n%s", err, def)
+	}
+	return d
+}
+
 func TestInstallArgv(t *testing.T) {
 	rec := &cmdRecorder{}
 	rec.install(t)
+	def := taskFile(t)
 	if err := windowsFixture(false).install(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	rec.want(t, `schtasks /Create /F /TN \Tenant\Serve /SC ONLOGON /RL LIMITED /TR `+userTR, `schtasks /Run /TN \Tenant\Serve`)
+	// Never /SC ONLOGON: that is a trigger for any user's logon, which an
+	// account that is not an administrator may not register.
+	rec.want(t, `schtasks /Create /F /TN \Tenant\Serve /XML task.xml`, `schtasks /Run /TN \Tenant\Serve`)
+	want := taskDef{TriggerUser: testSID, User: testSID, LogonType: "InteractiveToken", RunLevel: "LeastPrivilege",
+		TimeLimit: "PT0S", NoBattery: "false", StopBattery: "false",
+		Command: `C:\Program Files\Tenant\tenant.exe`, Arguments: userArgs}
+	if got := parseTask(t, *def); got != want {
+		t.Errorf("task definition:\n%+v\nwant:\n%+v", got, want)
+	}
 
 	rec.calls = nil
 	elevated(t, true)
@@ -113,32 +163,55 @@ func TestRestartArgv(t *testing.T) {
 	rec.want(t, "sc stop Tenant", "sc query Tenant", "sc query Tenant", "sc start Tenant")
 }
 
-// 261 characters of /TR go through; 262 are refused before schtasks runs.
-func TestInstallRefusesLongTR(t *testing.T) {
+// A command line longer than the 261 characters `schtasks /TR` allowed is
+// installed, and a path with characters XML reserves comes back as written.
+func TestInstallLongAndReservedPaths(t *testing.T) {
 	rec := &cmdRecorder{}
 	rec.install(t)
+	def := taskFile(t)
 	spec := windowsFixture(false)
-	spec.DataDir = ""
-	spec.DataDir = strings.Repeat("x", maxTR-len(spec.cmdLine()))
-	if n := len(spec.cmdLine()); n != maxTR {
-		t.Fatalf("fixture is %d characters", n)
-	}
+	spec.CfgDir = `C:\Users\R&D <team>\tenant`
+	spec.DataDir = `D:\` + strings.Repeat("x", 400)
 	if err := spec.install(context.Background()); err != nil || len(rec.calls) != 2 {
-		t.Errorf("261: err = %v, %d calls", err, len(rec.calls))
+		t.Fatalf("err = %v, %d calls", err, len(rec.calls))
 	}
-	rec.calls = nil
-	spec.DataDir += "x"
-	if err := spec.install(context.Background()); err == nil || !strings.Contains(err.Error(), "shorten --config/--data") {
-		t.Errorf("262: err = %v", err)
+	if strings.Contains(*def, "R&D <team>") {
+		t.Error("the definition carries the path unescaped")
 	}
-	if len(rec.calls) != 0 {
-		t.Errorf("262 still ran schtasks: %v", rec.calls)
+	if got := parseTask(t, *def); got.Arguments != spec.args() || got.Command != spec.Exe {
+		t.Errorf("read back:\n%s %s\nwant:\n%s %s", got.Command, got.Arguments, spec.Exe, spec.args())
+	}
+}
+
+// The definition reaches schtasks as UTF-16 with a byte-order mark, in a
+// file that is removed afterwards.
+func TestWriteTaskXML(t *testing.T) {
+	const def = `<?xml version="1.0" encoding="UTF-16"?><Task>D:\données\tenant</Task>`
+	path, remove, err := writeTaskXML(def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || len(raw) < 2 || len(raw)%2 != 0 {
+		t.Fatalf("read %d bytes: %v", len(raw), err)
+	}
+	units := make([]uint16, len(raw)/2)
+	for i := range units {
+		units[i] = binary.LittleEndian.Uint16(raw[2*i:])
+	}
+	if units[0] != 0xFEFF || string(utf16.Decode(units[1:])) != def {
+		t.Errorf("the file holds %q", string(utf16.Decode(units)))
+	}
+	remove()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("the file is still there: %v", err)
 	}
 }
 
 // TestServiceLive registers a real logon task under a test name that runs
 // this test binary (which exits at once on serve's flags), then removes it;
-// from an elevated terminal, the --system service too.
+// from an elevated terminal, the --system service too. The task half must
+// pass from a terminal that is not elevated: that is the default install.
 func TestServiceLive(t *testing.T) {
 	if os.Getenv("TENANT_LIVE_SERVICE") != "1" {
 		t.Skip("TENANT_LIVE_SERVICE=1 runs this against the Task Scheduler and the SCM")

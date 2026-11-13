@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"time"
 
 	"tenant/internal/agent"
 	"tenant/internal/dashboard"
@@ -67,16 +68,51 @@ type dashboardManager struct {
 	tailnetHost string
 }
 
+// dashBootWait is how long a serve that has just started waits for the
+// dashboard's address while something still holds it.
+var dashBootWait = 10 * time.Second
+
+const listenRetryEvery = 200 * time.Millisecond
+
+// listenWait is net.Listen that waits out an address in use, for up to
+// wait. Any other error, and an address still taken after wait, is returned
+// as it is.
+func listenWait(ctx context.Context, addr string, wait time.Duration) (net.Listener, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		ln, err := net.Listen("tcp", addr)
+		if err == nil || !addrInUse(err) || !time.Now().Before(deadline) {
+			return ln, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(listenRetryEvery):
+		}
+	}
+}
+
 // Enable starts the dashboard if it isn't already running and persists the
 // "on" choice. Returns the bind address. A bind/startup failure is reported
 // to the feed from the serving goroutine (Enable itself doesn't block on it).
-func (m *dashboardManager) Enable() (string, error) {
+func (m *dashboardManager) Enable() (string, error) { return m.enable(0) }
+
+// EnableAtBoot is Enable for a serve that has just been started. A restart
+// starts the new process while the one it replaces may still hold the
+// address: `tenant service restart` on a Windows logon task ends the old
+// process and starts the new one a fraction of a second later, and the new
+// one then ran without a dashboard, so `tenant update` could not see it come
+// up. An address in use is therefore waited out for dashBootWait before it
+// counts as a failure; nothing else is retried.
+func (m *dashboardManager) EnableAtBoot() (string, error) { return m.enable(dashBootWait) }
+
+func (m *dashboardManager) enable(wait time.Duration) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.running {
 		return m.addr, nil
 	}
-	ln, err := net.Listen("tcp", m.cfg.Addr)
+	ln, err := listenWait(m.base, m.cfg.Addr, wait)
 	if err != nil {
 		m.track(lifecycle.Failed, err)
 		return m.cfg.Addr, err
