@@ -156,7 +156,12 @@ func (c *commonFlags) resolve() error {
 	if err := c.resolveDirs(); err != nil {
 		return err
 	}
+	return c.resolveConfig()
+}
 
+// resolveConfig is resolve's second half, for a command that has work to do
+// even when config.json does not load (`tenant service uninstall`).
+func (c *commonFlags) resolveConfig() error {
 	// Merge persisted config (explicit flags win), then apply smart
 	// defaults, then ask the vLLM server for its model (if unset) and its
 	// context length. This is what lets everyday launch be `tenant tui` with

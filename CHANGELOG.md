@@ -5,6 +5,18 @@ Releases page.
 
 ## Unreleased
 
+- **Fixed: a power cut soon after a settings change could leave `config.json` unreadable.** A save
+  wrote the new file and renamed it into place without first flushing it to the disk. When the
+  power went within seconds, the file could come back with the right name and length and nothing
+  but zero bytes in it, and Tenant then refused to start (`config.json corrupt at line 1, column
+  1`). Seen on Windows Server 2025 with the `--system` service. Every save of `config.json`, an
+  agent's settings file, the cron jobs, the Discord cursor and the interrupted-turn record is now
+  flushed before it replaces the old file; a flush that fails leaves the old file in place.
+- **Fixed: `tenant service uninstall` and `tenant service stop` refused to run when `config.json`
+  did not load.** They stopped at the same "config.json corrupt" error as everything else, so a
+  service that could not start on a broken config could not be stopped or removed either. Both
+  now print the error as a warning and carry on: neither needs anything from the config. `install`,
+  `start`, `restart` and `status` still stop at the error.
 - **Fixed: `tenant service install` on Windows needed an administrator.** From an ordinary terminal
   it failed with "Access is denied": the scheduled task was registered to start at any user's
   logon, which Windows allows only an administrator to set up. It is now registered for your
