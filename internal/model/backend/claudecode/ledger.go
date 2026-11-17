@@ -134,8 +134,28 @@ func (l *ledger) save(lf ledgerFile) error {
 		return err
 	}
 	tmp := l.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	if err := writeFlushed(tmp, b); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, l.path)
+}
+
+// writeFlushed writes data to path and flushes it to the disk.
+func writeFlushed(path string, data []byte) error {
+	// On the disk before the rename: without the flush a power cut can
+	// leave the new name on a file of zero bytes (fsperm.Replace says more;
+	// this package may not import it).
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }

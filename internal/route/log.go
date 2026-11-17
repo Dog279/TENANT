@@ -727,23 +727,7 @@ func replaceDecisionLog(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	defer func() { _ = os.Remove(tmp) }()
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmp, info.Mode().Perm()); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return fsperm.ReplaceWithMode(path, data, info.Mode().Perm())
 }
 
 func (e *Engine) decisionsForStats() []Decision {

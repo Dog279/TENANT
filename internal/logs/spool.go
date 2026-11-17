@@ -27,8 +27,9 @@ import (
 const spoolDir = "spool"
 
 // Spool leaves evs in the spool under root (the logs root) for the
-// housekeeper to file, as every writer must: into <name>.tmp, closed, then
-// renamed <name>.ndjson, so a file is never read half-written.
+// housekeeper to file, as every writer must: into a .tmp file, flushed to
+// the disk, closed, then renamed <name>.ndjson (fsperm.Replace), so a file
+// is never read half-written or, after a power cut, empty.
 func Spool(root string, evs ...event.Event) error {
 	var b bytes.Buffer
 	for _, e := range evs {
@@ -43,11 +44,7 @@ func Spool(root string, evs ...event.Event) error {
 		return err
 	}
 	name := filepath.Join(dir, strconv.FormatInt(time.Now().UnixNano(), 10)+"-"+runtrace.NewID()[:8])
-	if err := fsperm.WriteFile(name+".tmp", b.Bytes()); err != nil {
-		_ = os.Remove(name + ".tmp")
-		return err
-	}
-	return os.Rename(name+".tmp", name+".ndjson")
+	return fsperm.Replace(name+".ndjson", b.Bytes())
 }
 
 // drainSpool files the spool's finished files: it claims each <name>.ndjson

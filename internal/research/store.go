@@ -381,14 +381,10 @@ func (r *Run) writeManifestLocked() error {
 	if err != nil {
 		return fmt.Errorf("research: marshal manifest: %w", err)
 	}
-	// Atomic write — temp file + rename — so a crash mid-write never leaves
-	// half a manifest that breaks List().
-	tmp := filepath.Join(r.dir, "run.json.tmp")
-	if err := fsperm.WriteFile(tmp, b); err != nil {
-		return fmt.Errorf("research: write tmp manifest: %w", err)
-	}
-	if err := os.Rename(tmp, filepath.Join(r.dir, "run.json")); err != nil {
-		return fmt.Errorf("research: rename manifest: %w", err)
+	// Written beside it, flushed, then renamed (fsperm.Replace), so a crash
+	// or a power cut never leaves half a manifest that breaks List().
+	if err := fsperm.Replace(filepath.Join(r.dir, "run.json"), b); err != nil {
+		return fmt.Errorf("research: write manifest: %w", err)
 	}
 	return nil
 }

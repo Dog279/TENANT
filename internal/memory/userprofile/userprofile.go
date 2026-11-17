@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -115,7 +114,9 @@ func Load(dataDir, agentID string) (*Profile, error) {
 // HasContent reports whether the profile has any synthesized body.
 func (p *Profile) HasContent() bool { return strings.TrimSpace(p.Body()) != "" }
 
-// Save writes the profile atomically (tmp + rename).
+// Save replaces the profile: written beside it, flushed to the disk, then
+// renamed into place (fsperm.Replace), so a crash or a power cut leaves the
+// old profile or the new one.
 func (p *Profile) Save(dataDir string) error {
 	if p.AgentID == "" {
 		return fmt.Errorf("userprofile: AgentID required")
@@ -123,17 +124,7 @@ func (p *Profile) Save(dataDir string) error {
 	if err := fsperm.MkdirAll(dataDir); err != nil {
 		return err
 	}
-	final := Path(dataDir, p.AgentID)
-	tmp := final + ".tmp"
-	if err := fsperm.WriteFile(tmp, []byte(strings.TrimSpace(p.Body())+"\n")); err != nil {
-		return err
-	}
-	if runtime.GOOS == "windows" {
-		if _, err := os.Stat(final); err == nil {
-			_ = os.Remove(final) // Windows rename can't overwrite
-		}
-	}
-	return os.Rename(tmp, final)
+	return fsperm.Replace(Path(dataDir, p.AgentID), []byte(strings.TrimSpace(p.Body())+"\n"))
 }
 
 // Render returns the system-prompt block, fenced as learned/advisory so
