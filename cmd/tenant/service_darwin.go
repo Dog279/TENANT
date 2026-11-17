@@ -79,10 +79,16 @@ func (s serviceSpec) unitText() string {
 	return b.String()
 }
 
-func (s serviceSpec) unitPath() string {
+// unitDir is where this user's LaunchAgents live. A variable so that the tests keep
+// away from this account's real units (service_darwin_test.go): `tenant doctor
+// --fix` rewrites a unit that does not match the binary and dirs it is run
+// with, and under test those are the test binary and temporary dirs.
+var unitDir = func() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "Library", "LaunchAgents", s.Label+".plist")
+	return filepath.Join(home, "Library", "LaunchAgents")
 }
+
+func (s serviceSpec) unitPath() string { return filepath.Join(unitDir(), s.Label+".plist") }
 
 func (s serviceSpec) domain() string { return fmt.Sprintf("gui/%d", os.Getuid()) }
 func (s serviceSpec) target() string { return s.domain() + "/" + s.Label }
@@ -191,3 +197,7 @@ func (s serviceSpec) unload(ctx context.Context) error {
 	}
 	return nil
 }
+
+// ownTaskInstalled is Windows' question (service_windows.go): there is no
+// `--system` install here to choose against.
+func ownTaskInstalled(context.Context) bool { return false }

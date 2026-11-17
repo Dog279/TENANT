@@ -43,7 +43,7 @@ func TestNoTestReachesTheServiceManagerByDefault(t *testing.T) {
 	if _, err := runCmd(context.Background(), "schtasks", "/Query", "/TN", `\Tenant\Serve`); !errors.Is(err, errNoServiceManager) {
 		t.Fatalf("runCmd under test = %v, want the refusal: a test could rewrite this machine's own service", err)
 	}
-	if systemInstalled(context.Background()) {
+	if actsOnSystem(context.Background()) {
 		t.Error("a --system install was found without asking a service manager")
 	}
 }

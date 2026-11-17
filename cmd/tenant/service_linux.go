@@ -48,10 +48,16 @@ func (s serviceSpec) unitText() string {
 
 func (s serviceSpec) unit() string { return s.Label + ".service" }
 
-func (s serviceSpec) unitPath() string {
+// unitDir is where this user's systemd units live. A variable so that the tests keep
+// away from this account's real units (service_linux_test.go): `tenant doctor
+// --fix` rewrites a unit that does not match the binary and dirs it is run
+// with, and under test those are the test binary and temporary dirs.
+var unitDir = func() string {
 	cfg, _ := os.UserConfigDir() // $XDG_CONFIG_HOME, else ~/.config
-	return filepath.Join(cfg, "systemd", "user", s.unit())
+	return filepath.Join(cfg, "systemd", "user")
 }
+
+func (s serviceSpec) unitPath() string { return filepath.Join(unitDir(), s.unit()) }
 
 func (s serviceSpec) install(ctx context.Context) error {
 	if err := os.MkdirAll(filepath.Dir(s.unitPath()), 0o755); err != nil {
@@ -113,3 +119,7 @@ func (s serviceSpec) systemctl(ctx context.Context, args ...string) error {
 	}
 	return nil
 }
+
+// ownTaskInstalled is Windows' question (service_windows.go): there is no
+// `--system` install here to choose against.
+func ownTaskInstalled(context.Context) bool { return false }

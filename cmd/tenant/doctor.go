@@ -1555,7 +1555,7 @@ func isLoopbackAddr(host string) bool {
 // answers. Not installed is a WARN with the one command that fixes it; a
 // drifted unit is rewritten under --fix.
 func checkService(ctx context.Context, e *doctorEnv) checkResult {
-	spec, err := newServiceSpec(e.c, systemInstalled(ctx))
+	spec, err := newServiceSpec(e.c, actsOnSystem(ctx))
 	if err != nil {
 		return checkResult{Status: statusSkip, Detail: err.Error()}
 	}

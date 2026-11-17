@@ -104,7 +104,7 @@ func cmdUpdate(ctx context.Context, args []string) error {
 	token, _ := dashboardClientToken(c.cfgDir, c.lc, true) // "" when none yet; the hub then just isn't reachable
 	u := &updateEnv{c: c, exe: exe, hub: attachBaseURL("", c.lc), token: token, repo: updateRepo(),
 		client: &http.Client{Timeout: 10 * time.Minute}, stdin: os.Stdin, out: os.Stdout}
-	if spec, err := newServiceSpec(c, systemInstalled(ctx)); err == nil {
+	if spec, err := newServiceSpec(c, actsOnSystem(ctx)); err == nil {
 		if ok, _ := spec.installed(ctx); ok {
 			u.restart = func(ctx context.Context, now bool) error { return serviceRestart(ctx, spec, u.hub, u.token, now) }
 		}
