@@ -171,6 +171,10 @@ tenant service uninstall
 `tenant doctor` warns when no service is installed or when the unit no longer matches the
 dirs or binary this command uses; `--fix` rewrites it.
 
+`uninstall` and `stop` work when `config.json` does not load (they print the error as a warning):
+a serve that refuses a broken config can still be stopped and removed. The other verbs stop at
+the error, like every other command.
+
 | | macOS | Linux | Windows | Windows `--system` |
 |---|---|---|---|---|
 | Unit | LaunchAgent `~/Library/LaunchAgents/com.tenant.serve.plist` | systemd user unit `~/.config/systemd/user/tenant.service` | Scheduled task `\Tenant\Serve` at logon, as you | Windows service `Tenant` as SYSTEM (elevated terminal; headless boxes) |

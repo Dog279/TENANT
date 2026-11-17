@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -188,5 +189,55 @@ func TestWaitDrained(t *testing.T) {
 	gone.Close()
 	if err := waitDrained(ctx, gone.URL, "", time.Second); err != nil {
 		t.Errorf("unreachable hub: err = %v, want nil", err)
+	}
+}
+
+// The power-cut finding (Windows Server 2025, 2026-11-17): config.json came
+// back unreadable, serve refused to start on it, and `tenant service
+// uninstall` refused too, so the broken service could not be removed.
+// Stopping and removing the unit need nothing from the config; the verbs
+// that do still say what is wrong with it.
+func TestServiceUninstallAndStopWorkWithoutAConfig(t *testing.T) {
+	home := t.TempDir()
+	for _, k := range []string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME"} {
+		t.Setenv(k, home) // a unit path under here, never the developer's own
+	}
+	cfg, data := filepath.Join(home, "cfg"), filepath.Join(home, "data")
+	if err := os.MkdirAll(cfg, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// What the power cut left: the right length, every byte zero.
+	if err := os.WriteFile(filepath.Join(cfg, "config.json"), make([]byte, 64), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := func(verb string) (*cmdRecorder, error) {
+		rec := &cmdRecorder{reply: func(argv []string) (string, error) {
+			// No --system service (Windows) and nothing loaded (macOS), so
+			// neither waits for a stop that the recorder never performs.
+			if argv[0] == "sc" || argv[0] == "launchctl" && argv[1] == "print" {
+				return "", errors.New("exit status 1")
+			}
+			return "", nil
+		}}
+		rec.install(t)
+		return rec, cmdService(context.Background(), []string{verb, "--config", cfg, "--data", data})
+	}
+	for _, verb := range []string{"uninstall", "stop"} {
+		rec, err := run(verb)
+		if err != nil {
+			t.Errorf("service %s with a corrupt config: %v", verb, err)
+		}
+		if len(rec.calls) == 0 {
+			t.Errorf("service %s reached no service manager", verb)
+		}
+	}
+	for _, verb := range []string{"install", "start", "restart", "status"} {
+		rec, err := run(verb)
+		if err == nil || !strings.Contains(err.Error(), "config.json corrupt") {
+			t.Errorf("service %s with a corrupt config = %v, want the config error", verb, err)
+		}
+		if len(rec.calls) != 0 {
+			t.Errorf("service %s ran %v before reading the config", verb, rec.calls)
+		}
 	}
 }

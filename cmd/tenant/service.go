@@ -63,8 +63,18 @@ func cmdService(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := c.resolve(); err != nil { // loads c.lc: the dashboard address and token
+	if err := c.resolveDirs(); err != nil {
 		return err
+	}
+	// The config gives the dashboard address and token, which restart and
+	// status ask for. Stopping and removing the unit need neither, and a
+	// config.json that no longer loads is when the operator most needs them:
+	// serve will not start on it, and the unit keeps trying.
+	if err := c.resolveConfig(); err != nil {
+		if !serviceWorksWithoutConfig(verb) {
+			return err
+		}
+		fmt.Printf("warning: %v\n(%s does not need the config; carrying on)\n", err, verb)
 	}
 	// Without --system, the verbs that act on what is there act on a
 	// --system install when that is what is installed (Windows).
@@ -94,6 +104,9 @@ func cmdService(ctx context.Context, args []string) error {
 	}
 	return fmt.Errorf("unknown service command %q\n%s", verb, serviceUsage)
 }
+
+// serviceWorksWithoutConfig names the verbs that act on the unit alone.
+func serviceWorksWithoutConfig(verb string) bool { return verb == "uninstall" || verb == "stop" }
 
 // newServiceSpec is the unit for this binary and this command's dirs.
 func newServiceSpec(c *commonFlags, system bool) (serviceSpec, error) {
