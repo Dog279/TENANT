@@ -229,7 +229,7 @@ tidier end to the turn in flight.
 | SQLite stores (episodic, semantic, usage, runtrace, log book) | WAL, `synchronous(NORMAL)`, busy timeout | Committed transactions survive a process kill; an OS shutdown flushes the page cache, so NORMAL is enough for D8 (power loss is out of scope) |
 | T5 archive (JSONL) | fsync per event by default (`archive.go:119`) | Safe |
 | Working memory (T1) | In memory, mirrored to T5 on every append | Safe; rebuilt from T5 |
-| `config.json`, settings | temp + rename (`internal/config/persist.go`) | Safe |
+| `config.json`, settings | temp + flush + rename (`internal/config/persist.go`) | Safe. The flush was added on 2026-11-17: without it a power cut on Windows Server 2025 left `config.json` as zero bytes, and serve would not start. Power loss stays out of scope for D8, but a config that stops the next start is worth the flush |
 | Backups | temp `.partial` + rename (`internal/backup/create.go:159`) | Safe |
 | Boot record / crash files | written at start, marked at clean stop | Safe by design: an unclean stop is detected, not hidden |
 | **`os_write_file` / `os_edit_file`** | `Truncate(0)` then `WriteAt` in place (`internal/plugins/osys/osys.go:182`) | **Not safe:** a kill between the truncate and the write leaves the operator's file empty or partial. Fix: write to a temp file in the same directory, preserve the original mode, `os.Rename` over the target, with the same `vet` applied to the destination path so `Roots.Protect` and the symlink guards keep their meaning. `os_append_file` stays as is (`O_APPEND` writes are atomic per call) |

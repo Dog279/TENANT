@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"tenant/internal/fsperm"
@@ -209,6 +210,12 @@ func Persist(cfgDir string, mem *Launch, fn func(*Launch)) error {
 // from the settings page, the credentials watcher, and /model at once — never
 // share one ".tmp" path and clobber each other mid-write. The rename is atomic,
 // so a concurrent reader always sees either the whole old or whole new file.
+//
+// The bytes are flushed to the disk before the rename. Without that a power
+// cut soon after a save can leave the new name on a file whose contents never
+// left the write cache: found on Windows Server 2025 (2026-11-17), where
+// config.json came back as a run of zero bytes and serve refused to start.
+// A flush that fails leaves the old file in place.
 func AtomicWrite(path string, data []byte) error {
 	dir, base := filepath.Dir(path), filepath.Base(path)
 	f, err := os.CreateTemp(dir, base+".*.tmp")
@@ -222,11 +229,37 @@ func AtomicWrite(path string, data []byte) error {
 		_ = f.Close()
 		return err
 	}
+	if err := syncFile(f); err != nil {
+		_ = f.Close()
+		return err
+	}
 	if err := f.Close(); err != nil {
 		return err
 	}
 	if err := fsperm.RestrictFile(tmp); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	syncDir(dir)
+	return nil
+}
+
+// syncFile flushes a file's contents to the disk. Tests swap it to see when
+// it runs and to make it fail.
+var syncFile = func(f *os.File) error { return f.Sync() }
+
+// syncDir flushes a directory, which is what makes a rename in it survive a
+// power cut on Linux and macOS. Best effort: the file is whole either way,
+// and Windows, whose file system journals the rename itself, does not allow
+// a directory to be flushed.
+func syncDir(dir string) {
+	if runtime.GOOS == "windows" {
+		return
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
 }
