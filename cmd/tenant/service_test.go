@@ -31,19 +31,21 @@ func noServiceManager(context.Context, string, ...string) (string, error) {
 }
 
 // liveServiceManager gives a test the real launchctl, systemctl, schtasks
-// and sc: the TENANT_LIVE_SERVICE tests, which install a unit of their own.
+// and sc, and the real unit dir (useRealUnitDir): the TENANT_LIVE_SERVICE
+// tests, which install a unit of their own under a test name.
 func liveServiceManager(t *testing.T) {
 	t.Helper()
 	prev := runCmd
 	runCmd = realRunCmd
 	t.Cleanup(func() { runCmd = prev })
+	useRealUnitDir(t)
 }
 
 func TestNoTestReachesTheServiceManagerByDefault(t *testing.T) {
 	if _, err := runCmd(context.Background(), "schtasks", "/Query", "/TN", `\Tenant\Serve`); !errors.Is(err, errNoServiceManager) {
 		t.Fatalf("runCmd under test = %v, want the refusal: a test could rewrite this machine's own service", err)
 	}
-	if systemInstalled(context.Background()) {
+	if actsOnSystem(context.Background()) {
 		t.Error("a --system install was found without asking a service manager")
 	}
 }

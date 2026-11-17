@@ -5,6 +5,28 @@ Releases page.
 
 ## Unreleased
 
+- **Fixed: a power cut could leave more files than `config.json` unreadable.** The fix that
+  flushes a saved file to the disk before it replaces the old one now covers every file Tenant
+  saves that way: the user profile, a research run's manifest, the Claude Code session ledger, the
+  tool statistics, the route decision log, a log-book spool file, a downloaded Discord attachment,
+  and a file rewritten by a privacy erase. Saving the user profile on Windows no longer deletes the
+  old profile before the new one is in place. A temporary file that a power cut left behind in the
+  middle of a save is removed by the next save of the same file.
+- **Fixed: on Windows, a standard user's `tenant service` commands acted on someone else's
+  service.** On a machine where an administrator had installed Tenant with `--system`, another
+  account's `tenant service status` described that service, and its `tenant service uninstall`
+  tried to stop it, failed with "Access is denied" and left the account's own task in place.
+  Without `--system` the commands now act on your own logon task when you have one, and on the
+  `--system` service only when that is all there is; `--system` always names the service.
+  `tenant service status` says when both are installed. `tenant doctor` and `tenant update`
+  follow the same rule.
+- **Fixed: a scheduled shell job that a stop cut short was recorded as a failed command.** Its
+  history said "command failed: exit status 1"; it now says "interrupted: Tenant stopped", as a
+  scheduled prompt already did.
+- **Tests no longer touch a service unit in your home directory (Linux, macOS).** On a machine
+  with Tenant installed as a background service, the tests that run `tenant doctor --fix` rewrote
+  the real systemd unit or LaunchAgent to start the test binary. Reproduced on Linux; the same
+  code path exists on macOS. The Windows half was fixed earlier.
 - **Fixed: on Windows, `tenant update`, `tenant service restart` and `tenant service stop` ended
   the background task without a clean stop.** They ended the scheduled task, which Windows does by
   killing the process, so every update and every restart left "The previous run ended

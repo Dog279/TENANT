@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"tenant/internal/fsperm"
 	"tenant/internal/model"
 )
 
@@ -133,9 +134,7 @@ func (l *ledger) save(lf ledgerFile) error {
 	if err != nil {
 		return err
 	}
-	tmp := l.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, l.path)
+	// Flushed to the disk before it replaces the old ledger (fsperm.Replace
+	// says why).
+	return fsperm.ReplaceWithMode(l.path, b, 0o644)
 }

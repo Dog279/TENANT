@@ -28,10 +28,10 @@ block for drift.
 | Measure | Result |
 |---|---:|
 | Go packages | 102 |
-| Go files | 1,354 |
-| Test files | 648 |
-| Production Go LOC | 180,214 |
-| Test Go LOC | 129,988 |
+| Go files | 1,358 |
+| Test files | 651 |
+| Production Go LOC | 180,295 |
+| Test Go LOC | 130,236 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -161,7 +161,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/peering` | `internal/httplimits`, `internal/secrets` |  |
 | `internal/mcp` | `internal/mcp/transport` | wire protocol only, no LLM knowledge |
 | `internal/model` | `internal/model/profiles`, `internal/runtrace` | no memory, agent or plugins |
-| `internal/model/**` | `internal/model/**`, `internal/runtrace` |  |
+| `internal/model/**` | `internal/model/**`, `internal/runtrace`, `internal/fsperm` |  |
 | `internal/orchestra` | `internal/model` |  |
 | `internal/attach` | `internal/model`, `internal/fsperm` | image attachments: sniff, scale, save; decodes every image a message carries |
 | `internal/route` | `internal/model`, `internal/fsperm`, `internal/datalock`, `internal/runtrace` |  |
@@ -175,7 +175,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/mcpserver` | `internal/mcp/**`, `internal/memory/**`, `internal/model` |  |
 | `internal/agent` | `internal/attach`, `internal/logs`, `internal/memory/**`, `internal/model/**`, `internal/orchestra`, `internal/runtrace` | the turn loop; knows no plugin and no surface |
 | `internal/approval` | `internal/agent`, `internal/control`, `internal/logs`, `internal/runtrace` | the approval decision point; knows no plugin and no surface |
-| `internal/toolmux` | `internal/agent`, `internal/model`, `internal/memory/cosine`, `internal/plugins/mcpremote`, `internal/peering`, `internal/control` | the tool registry and dispatcher; builds no plugin itself |
+| `internal/toolmux` | `internal/agent`, `internal/model`, `internal/memory/cosine`, `internal/plugins/mcpremote`, `internal/peering`, `internal/control`, `internal/fsperm` | the tool registry and dispatcher; builds no plugin itself |
 | `internal/md/goldmark/**` | `internal/md/goldmark/**` | Tenant's copy of goldmark (MIT); imports itself and the standard library only |
 | `internal/md` | `internal/md/goldmark/**` | Markdown: parse, and HTML for the dashboard; the terminal app renders the tree itself |
 | `internal/uicomp` | `internal/model` | the components the model answers with: schema, caps, the note, HTML; the terminal app draws them itself |

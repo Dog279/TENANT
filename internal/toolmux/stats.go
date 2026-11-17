@@ -32,6 +32,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tenant/internal/fsperm"
 )
 
 const toolStatsSchemaVersion = 1
@@ -259,12 +261,9 @@ func (s *Stats) flush() {
 	}
 	s.flushMu.Lock()
 	defer s.flushMu.Unlock()
-	// Write-temp-then-rename so a crash mid-write never truncates history.
-	tmp := s.path + ".tmp"
-	err = os.WriteFile(tmp, data, 0o644)
-	if err == nil {
-		err = os.Rename(tmp, s.path)
-	}
+	// A temporary file, flushed, then renamed (fsperm.Replace), so neither a
+	// crash mid-write nor a power cut truncates history.
+	err = fsperm.ReplaceWithMode(s.path, data, 0o644)
 	// The next tick retries, so a streak of failures is logged once.
 	if err != nil && !s.failing {
 		StatsNotSaved.Log(context.Background(), "path", s.path, "err", err)

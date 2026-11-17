@@ -40,6 +40,7 @@ WantedBy=default.target
 func liveSpec(t *testing.T) serviceSpec {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	useRealUnitDir(t) // under the temp XDG config home
 	spec, err := specFor("linux", filepath.Join(t.TempDir(), "tenant"), t.TempDir(), t.TempDir(), false)
 	if err != nil {
 		t.Fatal(err)

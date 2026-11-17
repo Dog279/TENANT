@@ -379,12 +379,7 @@ func scrubLines(path, match string) (int, error) {
 	if n == 0 {
 		return 0, nil
 	}
-	tmp := path + ".privacy.tmp"
-	if err := fsperm.WriteFile(tmp, []byte(strings.Join(keep, "\n"))); err != nil {
-		return 0, err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if err := fsperm.Replace(path, []byte(strings.Join(keep, "\n"))); err != nil {
 		return 0, err
 	}
 	return n, nil

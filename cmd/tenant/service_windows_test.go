@@ -118,6 +118,10 @@ func TestInstallArgv(t *testing.T) {
 	}
 }
 
+// useRealUnitDir is Linux's and macOS's (service_units_test.go): Windows has
+// no unit files, only the Task Scheduler and the SCM behind runCmd.
+func useRealUnitDir(*testing.T) {}
+
 // recordAsk swaps askTaskToStop: the ask is recorded among the commands, in
 // order, and answers whether serve stopped.
 func recordAsk(t *testing.T, rec *cmdRecorder, stopped bool) {
@@ -290,5 +294,44 @@ func TestStopAsksTheTaskBeforeItEndsIt(t *testing.T) {
 			t.Errorf("%s: stop = %v, want an error: %v", tc.name, err, tc.wantErr)
 		}
 		rec.want(t, `ask C:\Users\Jane Doe\AppData\Local\tenant 6s`, `schtasks /End /TN \Tenant\Serve`)
+	}
+}
+
+// Which install a command without --system acts on. A standard user's own
+// task used to lose to a service an administrator had installed: their
+// `status` described the service and their `uninstall` failed on it with
+// "Access is denied" (Windows Server 2025, 2026-11-17). The task wins when
+// it is this account's; a task that names another account is not.
+func TestOwnTaskWinsOverTheSystemService(t *testing.T) {
+	taskFile(t) // this account is testSID
+	mine := windowsFixture(false).taskXML(testSID)
+	theirs := windowsFixture(false).taskXML("S-1-5-21-1004336348-1177238915-682003330-1002")
+	for _, tc := range []struct {
+		name    string
+		service bool
+		task    string // "" for none
+		want    bool
+		calls   []string
+	}{
+		{"only the service", true, "", true, []string{"sc query Tenant", `schtasks /Query /TN \Tenant\Serve /XML`}},
+		{"the service and this account's task", true, mine, false, []string{"sc query Tenant", `schtasks /Query /TN \Tenant\Serve /XML`}},
+		{"the service and another account's task", true, theirs, true, []string{"sc query Tenant", `schtasks /Query /TN \Tenant\Serve /XML`}},
+		{"only this account's task", false, mine, false, []string{"sc query Tenant"}},
+		{"nothing", false, "", false, []string{"sc query Tenant"}},
+	} {
+		rec := &cmdRecorder{reply: func(argv []string) (string, error) {
+			switch {
+			case argv[0] == "sc" && tc.service:
+				return "SERVICE_NAME: Tenant", nil
+			case argv[0] == "schtasks" && tc.task != "":
+				return tc.task, nil
+			}
+			return "", errors.New("exit status 1")
+		}}
+		rec.install(t)
+		if got := actsOnSystem(context.Background()); got != tc.want {
+			t.Errorf("%s: acts on the --system service = %v, want %v", tc.name, got, tc.want)
+		}
+		rec.want(t, tc.calls...)
 	}
 }

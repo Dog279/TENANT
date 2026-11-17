@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"tenant/internal/fsperm"
 	"tenant/internal/plugins/discord"
 )
 
@@ -174,6 +175,9 @@ func (ai *attachmentIngestor) download(ctx context.Context, a discord.Attachment
 	// truncated (the Discord-reported Size was already checked, but the
 	// body is what actually counts).
 	n, err := io.Copy(f, io.LimitReader(resp.Body, maxAttachmentBytes+1))
+	if err == nil {
+		err = fsperm.Flush(f) // on the disk before the rename below (fsperm.Replace says why)
+	}
 	cerr := f.Close()
 	if err != nil || cerr != nil {
 		_ = os.Remove(tmp)

@@ -47,6 +47,18 @@ var taskUser = func() (string, error) {
 	return u.User.Sid.String(), nil
 }
 
+// ownTaskInstalled reports a logon task that is this account's own: the
+// task exists and names this account's SID, as taskXML writes it. Another
+// account's task, which an administrator can see, is not this one's.
+func ownTaskInstalled(ctx context.Context) bool {
+	sid, err := taskUser()
+	if err != nil {
+		return false
+	}
+	out, err := runCmd(ctx, "schtasks", "/Query", "/TN", `\Tenant\Serve`, "/XML")
+	return err == nil && strings.Contains(out, "<UserId>"+sid+"</UserId>")
+}
+
 // writeTaskXML puts the task's definition in a temporary file for schtasks
 // to read, as UTF-16 with a byte-order mark, the encoding the XML declares.
 // Tests swap it to see the definition.

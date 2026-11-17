@@ -78,6 +78,7 @@ func liveSpec(t *testing.T) serviceSpec {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	useRealUnitDir(t) // under the temp home
 	spec, err := specFor("darwin", filepath.Join(home, ".local", "bin", "tenant"), filepath.Join(home, ".config", "tenant"),
 		filepath.Join(home, "Library", "Application Support", "tenant"), false)
 	if err != nil {

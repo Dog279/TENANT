@@ -2,6 +2,7 @@ package cron
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -451,23 +452,7 @@ func TestEnginePerRunZeroKeepsDefault(t *testing.T) {
 // A run that Tenant stopping cuts is recorded as interrupted, not as the
 // job's failure (TEN-499); a per-run timeout keeps its own error.
 func TestCronInterruptedLabel(t *testing.T) {
-	started := make(chan struct{})
-	e, clk := newTestEngine(
-		func(ctx context.Context, j Job) (string, string, error) {
-			close(started)
-			<-ctx.Done()
-			return "", "", ctx.Err()
-		},
-		nil,
-	)
-	e.tick = 5 * time.Millisecond
-	j, _ := addJob(e, "a", "@every 5m", "p")
-	clk.set(j.NextRun.Add(time.Second))
-	if err := e.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	<-started
-	e.Stop()
+	e := cutByStop(t, func(ctx context.Context) error { return ctx.Err() })
 	hist := e.History()
 	if len(hist) != 1 || hist[0].OK || hist[0].Err != "interrupted: Tenant stopped" {
 		t.Fatalf("history = %+v, want one run marked interrupted", hist)
@@ -483,5 +468,49 @@ func TestCronInterruptedLabel(t *testing.T) {
 	e2.perRun = 5 * time.Millisecond
 	if rec := e2.RunOnce(context.Background(), JobDef{ID: "b", Spec: "@every 5m", Prompt: "p", Enabled: true}); rec.Err != "context deadline exceeded" {
 		t.Errorf("a timed-out run reads %q, want its deadline error", rec.Err)
+	}
+}
+
+// cutByStop runs one job whose runner waits for the engine to stop and then
+// returns what the runner of that kind returns, and hands back the stopped
+// engine.
+func cutByStop(t *testing.T, result func(ctx context.Context) error) *Engine {
+	t.Helper()
+	started := make(chan struct{})
+	e, clk := newTestEngine(
+		func(ctx context.Context, j Job) (string, string, error) {
+			close(started)
+			<-ctx.Done()
+			return "", "", result(ctx)
+		},
+		nil,
+	)
+	e.tick = 5 * time.Millisecond
+	j, _ := addJob(e, "a", "@every 5m", "p")
+	clk.set(j.NextRun.Add(time.Second))
+	if err := e.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	e.Stop()
+	return e
+}
+
+// A shell job that a stop cuts does not come back with the context's error:
+// its process is killed and the runner reports the exit status. It is an
+// interrupted run all the same, not a failed command (seen on a Windows
+// logon task, 2026-11-17: three stops, three "command failed: exit status
+// 1" in the history).
+func TestCronInterruptedLabelForAKilledCommand(t *testing.T) {
+	failed := errors.New("command failed: exit status 1")
+	e := cutByStop(t, func(context.Context) error { return failed })
+	if hist := e.History(); len(hist) != 1 || hist[0].OK || hist[0].Err != "interrupted: Tenant stopped" {
+		t.Fatalf("history = %+v, want one run marked interrupted", hist)
+	}
+
+	// A command that fails while Tenant keeps running is the job's failure.
+	e2, _ := newTestEngine(func(context.Context, Job) (string, string, error) { return "", "", failed }, nil)
+	if rec := e2.RunOnce(context.Background(), JobDef{ID: "b", Spec: "@every 5m", Prompt: "p", Enabled: true}); rec.Err != failed.Error() {
+		t.Errorf("a failed command reads %q, want its own error", rec.Err)
 	}
 }

@@ -77,8 +77,8 @@ func cmdService(ctx context.Context, args []string) error {
 		fmt.Printf("warning: %v\n(%s does not need the config; carrying on)\n", err, verb)
 	}
 	// Without --system, the verbs that act on what is there act on a
-	// --system install when that is what is installed (Windows).
-	spec, err := newServiceSpec(c, *system || verb != "install" && systemInstalled(ctx))
+	// --system install when that is what this account has (actsOnSystem).
+	spec, err := newServiceSpec(c, *system || verb != "install" && actsOnSystem(ctx))
 	if err != nil {
 		return err
 	}
@@ -100,7 +100,13 @@ func cmdService(ctx context.Context, args []string) error {
 	case "restart":
 		return serviceRestart(ctx, spec, base, token, *now)
 	case "status":
-		return serviceStatus(ctx, os.Stdout, spec, base, token)
+		if err := serviceStatus(ctx, os.Stdout, spec, base, token); err != nil {
+			return err
+		}
+		if !spec.System && systemServiceInstalled(ctx) {
+			fmt.Println("also:      Windows service Tenant is installed (`tenant service status --system` shows it)")
+		}
+		return nil
 	}
 	return fmt.Errorf("unknown service command %q\n%s", verb, serviceUsage)
 }
@@ -166,14 +172,28 @@ func specFor(goos, exe, cfgDir, dataDir string, system bool) (serviceSpec, error
 	return s, nil
 }
 
-// systemInstalled reports a Windows `--system` install, so status, stop,
-// restart and uninstall act on it without the flag. False elsewhere.
-func systemInstalled(ctx context.Context) bool {
+// systemServiceInstalled reports a Windows `--system` install. False
+// elsewhere.
+func systemServiceInstalled(ctx context.Context) bool {
 	if runtime.GOOS != "windows" {
 		return false
 	}
 	_, err := runCmd(ctx, "sc", "query", "Tenant") // the --system label (specFor)
 	return err == nil
+}
+
+// actsOnSystem reports whether a command given without --system acts on the
+// Windows `--system` service: status, stop, restart, uninstall, doctor and
+// update do when that service is what this account has. An account with a
+// logon task of its own acts on its task, and --system names the service.
+//
+// The task used to lose: on a machine where an administrator had installed
+// the service, a standard user's `tenant service status` described the
+// service and their `uninstall` tried to stop it ("OpenService FAILED 5:
+// Access is denied") and left their task in place (Windows Server 2025,
+// 2026-11-17).
+func actsOnSystem(ctx context.Context) bool {
+	return systemServiceInstalled(ctx) && !ownTaskInstalled(ctx)
 }
 
 // installService installs and starts the unit and says where it went; setup
