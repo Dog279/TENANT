@@ -4,8 +4,9 @@ package main
 
 // svc_windows.go (TEN-498): the Windows service entry. `tenant service
 // install --system` registers tenant.exe with the SCM, which starts it with
-// no console, so the console control events a logon task gets at shutdown
-// never come; Stop, Shutdown and PreShutdown arrive here instead and end
+// no console and in no user's session, so neither a console event nor the
+// window messages a logon task gets at shutdown (sessionend_windows.go)
+// ever come; Stop, Shutdown and PreShutdown arrive here instead and end
 // serve the way SIGTERM does. PreShutdown is accepted because it carries the
 // longer grace (180 s by default) a teardown mid-turn needs (PR E).
 
@@ -86,7 +87,9 @@ func (t *tenantService) Execute(_ []string, r <-chan svc.ChangeRequest, s chan<-
 }
 
 // hideConsoleWindow is serve's --hidden: the logon task's console window
-// goes away while the console itself stays (see the file comment).
+// goes away. Calling into user32.dll has a cost: Windows no longer sends
+// this process a logoff or a shutdown as a console event. They arrive at
+// serve's own window instead (sessionend_windows.go).
 func hideConsoleWindow() {
 	hwnd, _, _ := syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleWindow").Call()
 	if hwnd != 0 {

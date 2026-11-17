@@ -48,6 +48,7 @@ func main() {
 		openCommandLog = openOneShotLog
 	}
 	err := c.Run(ctx, os.Args[2:])
+	sessionEndFinished() // Windows: answers a logoff or shutdown that serve was stopped by
 	closeCommandLog()
 	if err != nil {
 		// `tenant <command> --help`: the flag package has already printed

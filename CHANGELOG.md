@@ -5,6 +5,14 @@ Releases page.
 
 ## Unreleased
 
+- **Fixed: on Windows, a restart, shutdown or logoff ended the background task without a clean
+  stop.** The Tenant that `tenant service install` starts at logon was simply ended: no shutdown
+  step ran, a turn in flight got no "I was stopped" notice, and the next start logged "The previous
+  run ended unexpectedly". Windows was never telling it: a program that hides its console window is
+  told about the end of a session through a window, not through its console, and Tenant listened
+  only on the console. It now listens on a window of its own (never shown) and stops the way it does
+  for any other stop request. Windows allows about five seconds; Tenant takes well under one when
+  idle. `--system` was not affected: the service manager tells a service directly.
 - **Fixed: a power cut soon after a settings change could leave `config.json` unreadable.** A save
   wrote the new file and renamed it into place without first flushing it to the disk. When the
   power went within seconds, the file could come back with the right name and length and nothing

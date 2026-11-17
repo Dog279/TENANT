@@ -73,7 +73,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	dashboardAddr := fs.String("dashboard-addr", "", "dashboard listen address (default 127.0.0.1:9770)")
 	allowNoMemory := fs.Bool("allow-no-memory", false, "start even when semantic memory (embeddings) is down — runs amnesiac (no real vector recall)")
 	stopBudget := fs.Duration("stop-budget", 5*time.Second, "how long a stop may take before the teardown is cut short (the unit `tenant service install` writes passes the OS's grace)")
-	hidden := fs.Bool("hidden", false, "Windows: hide the console window (the logon task passes it; the console itself stays so logoff and shutdown reach the process)")
+	hidden := fs.Bool("hidden", false, "Windows: hide the console window (the logon task passes it)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -81,6 +81,11 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	if *hidden {
 		hideConsoleWindow()
 	}
+	// Windows tells a program in a user's session about a logoff or a
+	// shutdown through a window (sessionend_windows.go). main says when serve
+	// has returned (sessionEndFinished), after every deferred close here:
+	// Windows may end the process once it hears that.
+	sessionEnding, sessionErr := watchSessionEnd()
 	if err := c.resolve(); err != nil {
 		return err
 	}
@@ -109,7 +114,11 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	}
 	scrubLogSecrets(hub, c) // TEN-361: credentials never reach a log line
 	defer hub.Close()
-	// A stop (Ctrl-C, SIGTERM, the service manager) flips serveStopping
+	if sessionErr != nil {
+		log.Warn("a logoff or shutdown will end serve without a clean stop", "err", sessionErr)
+	}
+	// A stop (Ctrl-C, SIGTERM, the service manager, a Windows logoff or
+	// shutdown) flips serveStopping
 	// BEFORE anything downstream sees its context cancelled (TEN-499), so a
 	// turn, relay or cron run that wakes on the cancel knows it is a stop and
 	// skips what a stop makes pointless (the salvage synthesis, a reply).
@@ -117,7 +126,14 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	ctx, cancel := context.WithCancel(context.WithoutCancel(sigCtx))
 	stop := func() { stopSignals(); cancel() } // released with the process, as the signal context was
 	defer stop()
-	go func() { <-sigCtx.Done(); serveStopping.Store(true); cancel() }()
+	go func() {
+		select {
+		case <-sigCtx.Done():
+		case <-sessionEnding: // nil, so never, where there is no window
+		}
+		serveStopping.Store(true)
+		cancel()
+	}()
 	hub.Start(ctx)
 	startRetention(ctx, c)
 	// The container sandbox labels every container with this install's id, so a

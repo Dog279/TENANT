@@ -4,10 +4,11 @@ package main
 
 // service_windows.go (TEN-498): two shapes. The default is a scheduled task
 // at logon as whoever installed it (D1): no stored password, an interactive
-// token, and a console, hidden by --hidden, because logoff and shutdown
-// reach a Windows process as console control events, which the Go runtime
-// turns into SIGTERM; a process without a console gets nothing and is just
-// killed. --system is a real SCM service as SYSTEM (svc_windows.go), which
+// token, and a console window hidden by --hidden. A logoff or a shutdown
+// reaches that serve through a window of its own (sessionend_windows.go),
+// not as a console event: hiding the console window loads user32.dll, and
+// Windows sends a process that has it loaded window messages instead.
+// --system is a real SCM service as SYSTEM (svc_windows.go), which
 // gets a proper stop control and a longer grace; it needs elevation, and it
 // keeps runas.go's consequences (browsing off under a service account).
 //
