@@ -107,6 +107,7 @@ func TestServiceLive(t *testing.T) {
 	if os.Getenv("TENANT_LIVE_SERVICE") != "1" {
 		t.Skip("TENANT_LIVE_SERVICE=1 runs this against systemd --user")
 	}
+	liveServiceManager(t)
 	exe, _ := os.Executable()
 	spec, err := specFor("linux", exe, t.TempDir(), t.TempDir(), false)
 	if err != nil {

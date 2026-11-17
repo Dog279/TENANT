@@ -15,6 +15,39 @@ import (
 	"time"
 )
 
+// No test reaches this machine's service manager unless it asks for it
+// (liveServiceManager): TestMain puts noServiceManager in runCmd's place.
+// Found on 2026-11-17 on a machine with Tenant installed as a logon task: the
+// tests that run `tenant doctor --fix` saw the task, found it did not match
+// the test binary and its temporary dirs, and rewrote it, so the developer's
+// own task then started the test binary. With no manager to ask, doctor sees
+// no service installed.
+var realRunCmd = runCmd
+
+var errNoServiceManager = errors.New("no service manager under test")
+
+func noServiceManager(context.Context, string, ...string) (string, error) {
+	return "", errNoServiceManager
+}
+
+// liveServiceManager gives a test the real launchctl, systemctl, schtasks
+// and sc: the TENANT_LIVE_SERVICE tests, which install a unit of their own.
+func liveServiceManager(t *testing.T) {
+	t.Helper()
+	prev := runCmd
+	runCmd = realRunCmd
+	t.Cleanup(func() { runCmd = prev })
+}
+
+func TestNoTestReachesTheServiceManagerByDefault(t *testing.T) {
+	if _, err := runCmd(context.Background(), "schtasks", "/Query", "/TN", `\Tenant\Serve`); !errors.Is(err, errNoServiceManager) {
+		t.Fatalf("runCmd under test = %v, want the refusal: a test could rewrite this machine's own service", err)
+	}
+	if systemInstalled(context.Background()) {
+		t.Error("a --system install was found without asking a service manager")
+	}
+}
+
 // cmdRecorder swaps runCmd: argv in order, and a reply per command.
 type cmdRecorder struct {
 	calls [][]string
