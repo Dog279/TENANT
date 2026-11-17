@@ -171,6 +171,11 @@ tenant service uninstall
 `tenant doctor` warns when no service is installed or when the unit no longer matches the
 dirs or binary this command uses; `--fix` rewrites it.
 
+Without `--system`, the verbs other than `install` act on your own logon task when you have one, and
+on a `--system` service only when that is all this account has; `--system` names the service. So a
+standard user on a machine where an administrator installed the service sees and removes their own
+task, and `status` adds a line when both are installed.
+
 `uninstall` and `stop` work when `config.json` does not load (they print the error as a warning):
 a serve that refuses a broken config can still be stopped and removed. The other verbs stop at
 the error, like every other command.
