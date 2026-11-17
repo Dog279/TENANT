@@ -126,6 +126,11 @@ Details that matter:
   `syscall.NewLazyDLL`, ~8 lines) instead of freeing it. The window shows for a moment at logon; the live test checks
   that this is tolerable. If not, the alternative is a no-password S4U task (`schtasks /NP`), which runs in session 0
   with no window but does not work for Microsoft-account logons; that is a later decision, not a blocker.
+  **Corrected 2026-11-17:** the console was not enough. Calling `ShowWindow` loads `user32.dll`, and Windows
+  sends a process that has it loaded no `CTRL_LOGOFF_EVENT` or `CTRL_SHUTDOWN_EVENT`: it sends
+  `WM_QUERYENDSESSION` and `WM_ENDSESSION` to the process's top-level windows instead. On Windows Server 2025
+  every restart and logoff ended the task's serve with no shutdown step. serve now owns a window that is never
+  shown and starts the stop on `WM_ENDSESSION` (`cmd/tenant/sessionend_windows.go`).
 - **The Windows task is registered from XML, not with `/SC ONLOGON`** (changed 2026-11-13, after the first run on
   an account that is not an administrator). `/SC ONLOGON` makes a trigger for any user's logon, which only an
   administrator may register: everyone else got "Access is denied". It also left schtasks' defaults in place: the
