@@ -32,6 +32,7 @@ func TestMain(m *testing.M) {
 	// sandbox can do: a test about the built-in default says which it wants
 	// (withBuiltinExec, execprofiles_test.go).
 	builtinExec = func() (string, string) { return "host", "" }
+	runCmd = noServiceManager // service_test.go: no test reaches this machine's own
 	os.Exit(m.Run())
 }
 

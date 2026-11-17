@@ -153,6 +153,7 @@ func specFor(goos, exe, cfgDir, dataDir string, system bool) (serviceSpec, error
 		}
 		s.Label, s.LogDir = "com.tenant.serve", filepath.Join(home, "Library", "Logs", "tenant")
 	case "windows":
+		// 4 s: a logoff gives a window about five (sessionend_windows.go).
 		s.Label, s.StopBudget = `\Tenant\Serve`, 4*time.Second
 		if system {
 			s.Label, s.StopBudget = "Tenant", 120*time.Second

@@ -192,8 +192,10 @@ Everything the hub does is in the log book either way (`tenant logs`, the dashbo
   with no time limit and no battery conditions. Its console window is hidden. A logoff or a shutdown
   reaches serve through a window of its own that is never shown (Windows sends them as window
   messages, not as console events, to a process that has hidden its console window), and serve has
-  about 4.5 seconds to finish before Windows ends it; `restart` and `stop` end the task hard (hence
-  the 4-second budget),
+  about 4.5 seconds to finish before Windows ends it. `restart`, `stop` and `uninstall` (and so
+  `tenant update`) ask serve to stop through the same window and wait for it, up to the 4-second
+  stop budget and a 2-second margin; only then is the task ended, which is a hard kill and all that
+  a serve from 0.2.0-rc.3 or earlier understands,
   and a serve that starts while the old one still holds the dashboard's address waits up to 10
   seconds for it. `--system` is a real service with
   a Stop control and `sc failure` restarts; `sc`/the Services app work on it too.

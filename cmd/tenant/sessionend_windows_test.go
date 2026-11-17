@@ -3,8 +3,13 @@
 package main
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 // sendWindow sends a message the way Windows does at the end of a session
@@ -16,7 +21,7 @@ func sendWindow(hwnd uintptr, msg uint32, wparam uintptr) uintptr {
 
 func newTestSessionWatch(t *testing.T) *sessionWatch {
 	t.Helper()
-	w, err := newSessionWatch()
+	w, err := newSessionWatch(serveWindowTitle(t.TempDir()))
 	if err != nil {
 		t.Fatalf("no window: %v", err)
 	}
@@ -90,5 +95,76 @@ func TestSessionEndGivesUpAfterTheWait(t *testing.T) {
 	case <-w.ending:
 	default:
 		t.Error("the stop was not started")
+	}
+}
+
+// findWindow is the handle of the serve window for dataDir, 0 for none.
+func findWindow(t *testing.T, dataDir string) uintptr {
+	t.Helper()
+	title, err := windows.UTF16PtrFromString(serveWindowTitle(dataDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _, _ := procFindWindowW.Call(uintptr(unsafe.Pointer(sessionClassName)), uintptr(unsafe.Pointer(title)))
+	return h
+}
+
+// `tenant service stop` and `restart` ask through the window (WM_CLOSE). The
+// ask starts the stop and leaves the window up: serve is still running, and
+// a logoff in the next second must still find it.
+func TestServeWindowTakesAStopRequest(t *testing.T) {
+	dir := t.TempDir()
+	w, err := newSessionWatch(serveWindowTitle(dir))
+	if err != nil {
+		t.Fatalf("no window: %v", err)
+	}
+	t.Cleanup(w.done)
+	if h := findWindow(t, dir); h != w.hwnd {
+		t.Fatalf("the window for the data dir is %#x, want %#x", h, w.hwnd)
+	}
+	// The same folder spelled another way is the same install.
+	if h := findWindow(t, strings.ToUpper(dir)+string(filepath.Separator)+"."); h != w.hwnd {
+		t.Errorf("the window was not found under another spelling of the data dir")
+	}
+	if h := findWindow(t, t.TempDir()); h != 0 {
+		t.Errorf("another install's data dir found this window")
+	}
+	sendWindow(w.hwnd, wmClose, 0)
+	select {
+	case <-w.ending:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WM_CLOSE did not start the stop")
+	}
+	if findWindow(t, dir) == 0 {
+		t.Error("the stop request took the window down while serve was still running")
+	}
+	w.done()
+	deadline := time.Now().Add(5 * time.Second)
+	for findWindow(t, dir) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the window is still there after serve returned")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A command must never stop itself, and finds nothing where no serve runs.
+func TestAskServeToStopWithNoOtherServe(t *testing.T) {
+	if askServeToStop(t.TempDir(), 50*time.Millisecond) {
+		t.Error("asked a serve that does not exist, and it stopped")
+	}
+	dir := t.TempDir()
+	w, err := newSessionWatch(serveWindowTitle(dir))
+	if err != nil {
+		t.Fatalf("no window: %v", err)
+	}
+	t.Cleanup(w.done)
+	if askServeToStop(dir, 50*time.Millisecond) {
+		t.Error("the window belongs to this process, and the ask reported a stop")
+	}
+	select {
+	case <-w.ending:
+		t.Error("a process asked itself to stop")
+	case <-time.After(100 * time.Millisecond):
 	}
 }

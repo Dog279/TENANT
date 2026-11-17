@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/xml"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -117,13 +118,26 @@ func TestInstallArgv(t *testing.T) {
 	}
 }
 
+// recordAsk swaps askTaskToStop: the ask is recorded among the commands, in
+// order, and answers whether serve stopped.
+func recordAsk(t *testing.T, rec *cmdRecorder, stopped bool) {
+	t.Helper()
+	prev := askTaskToStop
+	askTaskToStop = func(dataDir string, wait time.Duration) bool {
+		rec.calls = append(rec.calls, []string{"ask", dataDir, wait.String()})
+		return stopped
+	}
+	t.Cleanup(func() { askTaskToStop = prev })
+}
+
 func TestUninstallArgv(t *testing.T) {
 	rec := &cmdRecorder{}
 	rec.install(t)
+	recordAsk(t, rec, false)
 	if err := windowsFixture(false).uninstall(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	rec.want(t, `schtasks /End /TN \Tenant\Serve`, `schtasks /Delete /F /TN \Tenant\Serve`)
+	rec.want(t, `ask C:\Users\Jane Doe\AppData\Local\tenant 6s`, `schtasks /End /TN \Tenant\Serve`, `schtasks /Delete /F /TN \Tenant\Serve`)
 
 	rec.calls = nil
 	rec.reply = func(argv []string) (string, error) {
@@ -141,10 +155,11 @@ func TestUninstallArgv(t *testing.T) {
 func TestRestartArgv(t *testing.T) {
 	rec := &cmdRecorder{}
 	rec.install(t)
+	recordAsk(t, rec, false)
 	if err := windowsFixture(false).restart(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	rec.want(t, `schtasks /End /TN \Tenant\Serve`, `schtasks /Run /TN \Tenant\Serve`)
+	rec.want(t, `ask C:\Users\Jane Doe\AppData\Local\tenant 6s`, `schtasks /End /TN \Tenant\Serve`, `schtasks /Run /TN \Tenant\Serve`)
 
 	rec.calls = nil
 	queries := 0
@@ -216,6 +231,7 @@ func TestServiceLive(t *testing.T) {
 	if os.Getenv("TENANT_LIVE_SERVICE") != "1" {
 		t.Skip("TENANT_LIVE_SERVICE=1 runs this against the Task Scheduler and the SCM")
 	}
+	liveServiceManager(t)
 	exe, _ := os.Executable()
 	ctx := context.Background()
 	modes := []bool{false}
@@ -244,5 +260,35 @@ func TestServiceLive(t *testing.T) {
 		if ok, _ := spec.installed(ctx); ok {
 			t.Errorf("system=%v: installed() after uninstall", system)
 		}
+	}
+}
+
+// Ending a task is a hard kill: until this was fixed every `tenant update`
+// and `tenant service restart` left "The previous run ended unexpectedly" in
+// the log (seen with 0.2.0-rc.3, 2026-11-17). stop asks serve first, for the
+// stop budget and a margin. A serve that stopped has already ended its task,
+// so schtasks finding nothing to end is then not an error.
+func TestStopAsksTheTaskBeforeItEndsIt(t *testing.T) {
+	nothingToEnd := func(argv []string) (string, error) {
+		return "ERROR: There are no running instances of the task.", errors.New("exit status 1")
+	}
+	for _, tc := range []struct {
+		name    string
+		stopped bool
+		reply   func([]string) (string, error)
+		wantErr bool
+	}{
+		{"serve stopped when asked, nothing left to end", true, nothingToEnd, false},
+		{"serve did not stop, the task is ended", false, nil, false},
+		{"no serve and no running task", false, nothingToEnd, true},
+	} {
+		rec := &cmdRecorder{reply: tc.reply}
+		rec.install(t)
+		recordAsk(t, rec, tc.stopped)
+		err := windowsFixture(false).stop(context.Background())
+		if (err != nil) != tc.wantErr {
+			t.Errorf("%s: stop = %v, want an error: %v", tc.name, err, tc.wantErr)
+		}
+		rec.want(t, `ask C:\Users\Jane Doe\AppData\Local\tenant 6s`, `schtasks /End /TN \Tenant\Serve`)
 	}
 }
