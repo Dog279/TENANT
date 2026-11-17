@@ -82,13 +82,14 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		hideConsoleWindow()
 	}
 	// Windows tells a program in a user's session about a logoff or a
-	// shutdown through a window (sessionend_windows.go). main says when serve
+	// shutdown through a window (sessionend_windows.go), and `tenant service
+	// stop` asks the same window. main says when serve
 	// has returned (sessionEndFinished), after every deferred close here:
 	// Windows may end the process once it hears that.
-	sessionEnding, sessionErr := watchSessionEnd()
 	if err := c.resolve(); err != nil {
 		return err
 	}
+	sessionEnding, sessionErr := watchSessionEnd(c.dataDir)
 	applyPluginConfig(c, pf)
 	expandPluginPaths(pf)
 	// Semantic memory is a core pillar (TEN-254): a 24/7 hub running amnesiac is

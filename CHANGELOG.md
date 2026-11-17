@@ -5,6 +5,17 @@ Releases page.
 
 ## Unreleased
 
+- **Fixed: on Windows, `tenant update`, `tenant service restart` and `tenant service stop` ended
+  the background task without a clean stop.** They ended the scheduled task, which Windows does by
+  killing the process, so every update and every restart left "The previous run ended
+  unexpectedly" in the log as a critical error. They now ask Tenant to stop first and wait for it
+  (up to 6 seconds), and end the task only if it is still there. The first update from 0.2.0-rc.3
+  or earlier still ends the old version the hard way: it does not know how to be asked.
+  `tenant service uninstall` asks first too. `--system` was not affected.
+- **Tests no longer touch the service installed on the machine they run on.** On a machine where
+  Tenant was installed as a background service, the tests that run `tenant doctor --fix` found the
+  real service, saw that it did not match the test binary, and rewrote it to start the test binary.
+  The tests now have no service manager to talk to unless one asks for it (`TENANT_LIVE_SERVICE=1`).
 - **Fixed: on Windows, a restart, shutdown or logoff ended the background task without a clean
   stop.** The Tenant that `tenant service install` starts at logon was simply ended: no shutdown
   step ran, a turn in flight got no "I was stopped" notice, and the next start logged "The previous

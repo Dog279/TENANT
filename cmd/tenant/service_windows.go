@@ -189,6 +189,7 @@ func (s serviceSpec) uninstall(ctx context.Context) error {
 		}
 		return nil
 	}
+	askTaskToStop(s.DataDir, s.StopBudget+taskStopMargin)
 	_, _ = runCmd(ctx, "schtasks", "/End", "/TN", s.Label) // not running is fine
 	if out, err := runCmd(ctx, "schtasks", "/Delete", "/F", "/TN", s.Label); err != nil {
 		return cmdErr("schtasks /Delete", out, err)
@@ -209,11 +210,23 @@ func (s serviceSpec) start(ctx context.Context) error {
 	return nil
 }
 
-// stop ends the task (a hard kill: the budget is 4 s for a reason), or
-// sends the service its Stop control and waits for STOPPED.
+// askTaskToStop asks the task's serve to stop and waits for it to end
+// (sessionend_windows.go). Tests swap it.
+var askTaskToStop = askServeToStop
+
+// taskStopMargin is what the wait adds to the stop budget: serve cuts its
+// own teardown at the budget, and then has to exit.
+const taskStopMargin = 2 * time.Second
+
+// stop asks the task's serve to stop and then ends the task, or sends the
+// service its Stop control and waits for STOPPED. Ending a task is a hard
+// kill, so it comes second: it is all an older serve understands, and it
+// takes down one that did not stop in time. A serve that stopped when asked
+// has already ended its task, and schtasks then has nothing to end.
 func (s serviceSpec) stop(ctx context.Context) error {
 	if !s.System {
-		if out, err := runCmd(ctx, "schtasks", "/End", "/TN", s.Label); err != nil {
+		stopped := askTaskToStop(s.DataDir, s.StopBudget+taskStopMargin)
+		if out, err := runCmd(ctx, "schtasks", "/End", "/TN", s.Label); err != nil && !stopped {
 			return cmdErr("schtasks /End", out, err)
 		}
 		return nil

@@ -20,12 +20,21 @@ package main
 // Windows may end the process as soon as the message is answered. Windows
 // allows a window about five seconds; the wait is a little under that.
 //
+// The same window is how `tenant service stop`, `restart` and `uninstall`
+// (and so `tenant update`) ask the logon task's serve to stop before they
+// end the task: WM_CLOSE starts the stop. Ending a task is a hard kill, and
+// until 0.2.0-rc.3 every update left "The previous run ended unexpectedly"
+// in the log for that reason. The window's title names the data dir, so the
+// command finds the serve of its own install and no other.
+//
 // A service (`--system`) is told by the service control manager
 // (svc_windows.go) and gets no window.
 
 import (
 	"fmt"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,6 +49,7 @@ const (
 	wmClose           = 0x0010
 	wmQueryEndSession = 0x0011
 	wmEndSession      = 0x0016
+	wmDestroyWatch    = 0x8000 + 1 // WM_APP+1, ours: serve has returned, take the window down
 )
 
 // sessionEndWait is how long WM_ENDSESSION is held for serve to finish.
@@ -47,16 +57,19 @@ const (
 var sessionEndWait = 4500 * time.Millisecond
 
 var (
-	user32               = windows.NewLazySystemDLL("user32.dll")
-	procRegisterClassExW = user32.NewProc("RegisterClassExW")
-	procCreateWindowExW  = user32.NewProc("CreateWindowExW")
-	procDefWindowProcW   = user32.NewProc("DefWindowProcW")
-	procGetMessageW      = user32.NewProc("GetMessageW")
-	procDispatchMessageW = user32.NewProc("DispatchMessageW")
-	procPostQuitMessage  = user32.NewProc("PostQuitMessage")
-	procPostMessageW     = user32.NewProc("PostMessageW")
-	procSendMessageW     = user32.NewProc("SendMessageW")
-	procGetModuleHandleW = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetModuleHandleW")
+	user32                       = windows.NewLazySystemDLL("user32.dll")
+	procRegisterClassExW         = user32.NewProc("RegisterClassExW")
+	procCreateWindowExW          = user32.NewProc("CreateWindowExW")
+	procDefWindowProcW           = user32.NewProc("DefWindowProcW")
+	procGetMessageW              = user32.NewProc("GetMessageW")
+	procDispatchMessageW         = user32.NewProc("DispatchMessageW")
+	procPostQuitMessage          = user32.NewProc("PostQuitMessage")
+	procPostMessageW             = user32.NewProc("PostMessageW")
+	procDestroyWindow            = user32.NewProc("DestroyWindow")
+	procFindWindowW              = user32.NewProc("FindWindowW")
+	procGetWindowThreadProcessID = user32.NewProc("GetWindowThreadProcessId")
+	procSendMessageW             = user32.NewProc("SendMessageW")
+	procGetModuleHandleW         = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetModuleHandleW")
 )
 
 type wndClassEx struct {
@@ -103,14 +116,24 @@ var (
 // serveSessionWatch is the window of the serve this process runs, if any.
 var serveSessionWatch atomic.Pointer[sessionWatch]
 
+// serveWindowTitle is the title of the window of the serve that uses
+// dataDir: how a command of the same install finds it.
+func serveWindowTitle(dataDir string) string {
+	if abs, err := filepath.Abs(dataDir); err == nil {
+		dataDir = abs
+	}
+	return "tenant serve " + strings.ToLower(filepath.Clean(dataDir))
+}
+
 // watchSessionEnd gives serve a channel that is closed when the user's
-// session is ending. With no window (a service, or Windows refusing one) the
-// channel is nil and err says why, when there is something to say.
-func watchSessionEnd() (ending <-chan struct{}, err error) {
+// session is ending or a command asks serve to stop. With no window (a
+// service, or Windows refusing one) the channel is nil and err says why,
+// when there is something to say.
+func watchSessionEnd(dataDir string) (ending <-chan struct{}, err error) {
 	if ok, _ := svc.IsWindowsService(); ok {
 		return nil, nil
 	}
-	w, err := newSessionWatch()
+	w, err := newSessionWatch(serveWindowTitle(dataDir))
 	if err != nil {
 		return nil, err
 	}
@@ -126,10 +149,14 @@ func sessionEndFinished() {
 	}
 }
 
-func newSessionWatch() (*sessionWatch, error) {
+func newSessionWatch(title string) (*sessionWatch, error) {
+	t, err := windows.UTF16PtrFromString(title)
+	if err != nil {
+		return nil, err
+	}
 	w := &sessionWatch{ending: make(chan struct{}), finished: make(chan struct{})}
 	ready := make(chan error, 1)
-	go w.loop(ready)
+	go w.loop(t, ready)
 	if err := <-ready; err != nil {
 		return nil, err
 	}
@@ -141,13 +168,13 @@ func newSessionWatch() (*sessionWatch, error) {
 func (w *sessionWatch) done() {
 	w.finOnce.Do(func() {
 		close(w.finished)
-		_, _, _ = procPostMessageW.Call(w.hwnd, wmClose, 0, 0)
+		_, _, _ = procPostMessageW.Call(w.hwnd, wmDestroyWatch, 0, 0)
 	})
 }
 
 // loop makes the window and runs its messages. A window belongs to the
 // thread that made it, so the goroutine keeps its thread until it ends.
-func (w *sessionWatch) loop(ready chan<- error) {
+func (w *sessionWatch) loop(title *uint16, ready chan<- error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	inst, _, _ := procGetModuleHandleW.Call(0)
@@ -164,7 +191,7 @@ func (w *sessionWatch) loop(ready chan<- error) {
 	}
 	// Top-level (no parent) and never shown: a message-only window is not
 	// sent the end-of-session messages.
-	hwnd, _, e := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(sessionClassName)), uintptr(unsafe.Pointer(sessionClassName)),
+	hwnd, _, e := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(sessionClassName)), uintptr(unsafe.Pointer(title)),
 		0, 0, 0, 0, 0, 0, 0, inst, 0)
 	if hwnd == 0 {
 		ready <- fmt.Errorf("CreateWindowEx: %w", e)
@@ -199,6 +226,12 @@ func sessionWndProc(hwnd uintptr, msg uint32, wparam, lparam uintptr) uintptr {
 				}
 			}
 			return 0
+		case wmClose: // `tenant service stop`, or anything that closes windows politely
+			w.endOnce.Do(func() { close(w.ending) })
+			return 0 // the window stays: serve is still running
+		case wmDestroyWatch:
+			_, _, _ = procDestroyWindow.Call(hwnd)
+			return 0
 		case wmDestroy:
 			_, _, _ = procPostQuitMessage.Call(0)
 			return 0
@@ -206,4 +239,34 @@ func sessionWndProc(hwnd uintptr, msg uint32, wparam, lparam uintptr) uintptr {
 	}
 	r, _, _ := procDefWindowProcW.Call(hwnd, uintptr(msg), wparam, lparam)
 	return r
+}
+
+// askServeToStop asks the serve that uses dataDir to stop, through its
+// window, and waits for the process to end. False when there is no such
+// window (no serve, an older one, or one on another desktop) or the process
+// is still there after wait; the caller then ends the task the hard way.
+func askServeToStop(dataDir string, wait time.Duration) bool {
+	title, err := windows.UTF16PtrFromString(serveWindowTitle(dataDir))
+	if err != nil {
+		return false
+	}
+	hwnd, _, _ := procFindWindowW.Call(uintptr(unsafe.Pointer(sessionClassName)), uintptr(unsafe.Pointer(title)))
+	if hwnd == 0 {
+		return false
+	}
+	var pid uint32
+	_, _, _ = procGetWindowThreadProcessID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	if pid == 0 || pid == windows.GetCurrentProcessId() {
+		return false
+	}
+	h, err := windows.OpenProcess(windows.SYNCHRONIZE, false, pid)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+	if ok, _, _ := procPostMessageW.Call(hwnd, wmClose, 0, 0); ok == 0 {
+		return false
+	}
+	ev, err := windows.WaitForSingleObject(h, uint32(wait/time.Millisecond))
+	return err == nil && ev == windows.WAIT_OBJECT_0
 }

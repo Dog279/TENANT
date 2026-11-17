@@ -111,7 +111,7 @@ type serviceSpec struct {
 | install | write → `launchctl bootstrap gui/<uid> <plist>` → `launchctl kickstart -k gui/<uid>/<label>` | write → `systemctl --user daemon-reload` → `enable --now tenant` → linger check | write the task's XML (a logon trigger for the installing account's SID, least privilege, no time limit, no battery conditions; action `<exe> serve --config … --data … --stop-budget 4s --hidden`) → `schtasks /Create /F /TN \Tenant\Serve /XML <file>` → `/Run` | `sc create Tenant binPath= "…serve … --stop-budget 120s" start= auto` → `sc description` → `sc failure` → `sc start` (needs an elevated terminal; detected and said) |
 | uninstall | `launchctl bootout` → remove plist | `disable --now` → remove unit → `daemon-reload` | `schtasks /End` → `/Delete /F` | `sc stop` (wait) → `sc delete` |
 | start / stop | `kickstart` / `bootout` + `bootstrap` | `systemctl --user start|stop` | `/Run` / `/End` | `sc start` / `sc stop` |
-| restart | `kickstart -k` (SIGTERM) | `systemctl --user restart` (SIGTERM) | `/End` then `/Run` (hard kill) | `sc stop` + wait STOPPED + `sc start` (SCM Stop control, graceful) |
+| restart | `kickstart -k` (SIGTERM) | `systemctl --user restart` (SIGTERM) | ask serve to stop through its window and wait (since 2026-11-17), then `/End` (a hard kill, for a serve that did not stop), then `/Run` | `sc stop` + wait STOPPED + `sc start` (SCM Stop control, graceful) |
 | installed? | `launchctl print gui/<uid>/<label>` exit 0 | unit file exists | `schtasks /Query` exit 0 | `sc query Tenant` exit 0 |
 | Logs | `~/Library/Logs/tenant/serve.log`, `serve.err.log` | `journalctl --user -u tenant` | none for stdout (the log book holds everything; panics land in the data dir's crash files) | same |
 
