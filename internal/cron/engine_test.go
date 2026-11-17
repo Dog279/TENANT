@@ -2,6 +2,7 @@ package cron
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -483,5 +484,41 @@ func TestCronInterruptedLabel(t *testing.T) {
 	e2.perRun = 5 * time.Millisecond
 	if rec := e2.RunOnce(context.Background(), JobDef{ID: "b", Spec: "@every 5m", Prompt: "p", Enabled: true}); rec.Err != "context deadline exceeded" {
 		t.Errorf("a timed-out run reads %q, want its deadline error", rec.Err)
+	}
+}
+
+// A shell job that a stop cuts does not come back with the context's error:
+// its process is killed and the runner reports the exit status. It is an
+// interrupted run all the same, not a failed command (seen on a Windows
+// logon task, 2026-11-17: three stops, three "command failed: exit status
+// 1" in the history).
+func TestCronInterruptedLabelForAKilledCommand(t *testing.T) {
+	started := make(chan struct{})
+	e, clk := newTestEngine(
+		func(ctx context.Context, j Job) (string, string, error) {
+			close(started)
+			<-ctx.Done()
+			return "", "", errors.New("command failed: exit status 1")
+		},
+		nil,
+	)
+	e.tick = 5 * time.Millisecond
+	j, _ := addJob(e, "a", "@every 5m", "p")
+	clk.set(j.NextRun.Add(time.Second))
+	if err := e.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	e.Stop()
+	if hist := e.History(); len(hist) != 1 || hist[0].OK || hist[0].Err != "interrupted: Tenant stopped" {
+		t.Fatalf("history = %+v, want one run marked interrupted", hist)
+	}
+
+	// A command that fails while Tenant keeps running is the job's failure.
+	e2, _ := newTestEngine(func(context.Context, Job) (string, string, error) {
+		return "", "", errors.New("command failed: exit status 1")
+	}, nil)
+	if rec := e2.RunOnce(context.Background(), JobDef{ID: "b", Spec: "@every 5m", Prompt: "p", Enabled: true}); rec.Err != "command failed: exit status 1" {
+		t.Errorf("a failed command reads %q, want its own error", rec.Err)
 	}
 }

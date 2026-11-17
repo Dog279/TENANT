@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -535,10 +534,14 @@ func (e *Engine) execute(ctx context.Context, job Job) RunRecord {
 	rec.OK = err == nil
 	if err != nil {
 		rec.Err = err.Error()
-		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
+		if ctx.Err() != nil {
 			// The run's own context (the loop's, or RunNow's caller's) is
 			// gone: Tenant stopping cut the run (TEN-499). Say so, rather
-			// than "context canceled", which reads as the job's fault.
+			// than what the runner made of it, which reads as the job's
+			// fault: "context canceled" from a prompt job, and from a shell
+			// job "command failed: exit status 1", because its process was
+			// killed (seen on a Windows logon task, 2026-11-17). A per-run
+			// timeout is runCtx's, not ctx's, and keeps its own error.
 			rec.Err = "interrupted: Tenant stopped"
 		}
 	}
