@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 )
 
 // leftovers lists the temporary files Replace left in dir.
@@ -109,6 +110,40 @@ func TestReplaceModes(t *testing.T) {
 		}
 		if got := info.Mode().Perm(); got != want {
 			t.Errorf("%s has mode %o, want %o", filepath.Base(path), got, want)
+		}
+	}
+}
+
+// A power cut between the write and the rename leaves the temporary file
+// behind (seen on Linux, 2026-11-17). The next save of the same path removes
+// it once it is old; a young one may be another writer's and stays, and so
+// does any file that is not this path's.
+func TestReplaceRemovesStaleTemporaryFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	old := time.Now().Add(-2 * staleAfter)
+	stale := filepath.Join(dir, "config.json.123.tmp")
+	young := filepath.Join(dir, "config.json.456.tmp")
+	other := filepath.Join(dir, "settings.main.json.789.tmp")
+	for _, f := range []string{stale, young, other} {
+		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{stale, other} {
+		if err := os.Chtimes(f, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Replace(path, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the stale temporary file is still there (%v)", err)
+	}
+	for _, f := range []string{young, other, path} {
+		if _, err := os.Stat(f); err != nil {
+			t.Errorf("%s is gone: %v", filepath.Base(f), err)
 		}
 	}
 }

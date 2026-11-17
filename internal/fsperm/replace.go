@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"time"
 )
 
 // Replace puts data at path as a private file without ever leaving a torn or
@@ -61,7 +63,33 @@ func replace(path string, data []byte, mode os.FileMode, private bool) error {
 		return err
 	}
 	FlushDir(dir)
+	sweepStale(dir, base)
 	return nil
+}
+
+// staleAfter is how old a temporary file of Replace's must be before the
+// next save of the same path removes it. A writer holds its temporary file
+// for milliseconds; one this old was left by a process that died, or a
+// power cut, between the write and the rename (seen after a cut on Linux,
+// 2026-11-17: the file was whole, with an orphan beside it).
+const staleAfter = 10 * time.Minute
+
+// sweepStale removes the stale temporary files of one path. Best effort.
+func sweepStale(dir, base string) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-staleAfter)
+	for _, e := range ents {
+		name := e.Name()
+		if e.IsDir() || !strings.HasPrefix(name, base+".") || !strings.HasSuffix(name, ".tmp") {
+			continue
+		}
+		if info, err := e.Info(); err == nil && info.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(dir, name))
+		}
+	}
 }
 
 // Flush forces a file's contents to the disk: the step a writer that streams

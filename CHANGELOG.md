@@ -10,7 +10,8 @@ Releases page.
   saves that way: the user profile, a research run's manifest, the Claude Code session ledger, the
   tool statistics, the route decision log, a log-book spool file, a downloaded Discord attachment,
   and a file rewritten by a privacy erase. Saving the user profile on Windows no longer deletes the
-  old profile before the new one is in place.
+  old profile before the new one is in place. A temporary file that a power cut left behind in the
+  middle of a save is removed by the next save of the same file.
 - **Fixed: on Windows, a standard user's `tenant service` commands acted on someone else's
   service.** On a machine where an administrator had installed Tenant with `--system`, another
   account's `tenant service status` described that service, and its `tenant service uninstall`
