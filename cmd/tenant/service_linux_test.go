@@ -109,7 +109,6 @@ func TestServiceLive(t *testing.T) {
 		t.Skip("TENANT_LIVE_SERVICE=1 runs this against systemd --user")
 	}
 	liveServiceManager(t)
-	useRealUnitDir(t) // a unit of its own, under a test name
 	exe, _ := os.Executable()
 	spec, err := specFor("linux", exe, t.TempDir(), t.TempDir(), false)
 	if err != nil {
@@ -130,11 +129,3 @@ func TestServiceLive(t *testing.T) {
 		t.Error("installed() after uninstall")
 	}
 }
-
-// What service_units_test.go needs to know about this OS: the variable that
-// moves the unit dir, and the name of the unit `tenant service install`
-// writes.
-const (
-	unitHomeEnv = "XDG_CONFIG_HOME"
-	ownUnitFile = "tenant.service"
-)

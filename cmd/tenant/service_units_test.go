@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build linux || darwin
 
 package main
 
@@ -13,10 +13,18 @@ import (
 // realUnitDir is where this account's units really live. Under test unitDir
 // names a folder that does not exist instead, so no test sees, reads or
 // rewrites a unit the developer installed, unless it asks (useRealUnitDir)
-// after pointing unitHomeEnv at a temporary directory or giving the unit a
-// test name. unitHomeEnv and ownUnitFile are each OS's
-// (service_linux_test.go, service_darwin_test.go).
+// after pointing the home variable at a temporary directory or giving the
+// unit a test name.
 var realUnitDir = unitDir
+
+// unitNames is what differs between the two: the variable that moves the
+// unit dir, and the name of the unit `tenant service install` writes.
+func unitNames() (homeEnv, unitFile string) {
+	if runtime.GOOS == "darwin" {
+		return "HOME", "com.tenant.serve.plist"
+	}
+	return "XDG_CONFIG_HOME", "tenant.service"
+}
 
 func init() {
 	unitDir = func() string { return filepath.Join(os.TempDir(), "tenant-test-no-units") }
@@ -35,8 +43,9 @@ func useRealUnitDir(t *testing.T) {
 // where the real one would be came back as ExecStart="…/tenant.test" serve.
 // It must come through a doctor --fix untouched.
 func TestDoctorFixLeavesTheAccountsOwnUnitAlone(t *testing.T) {
-	t.Setenv(unitHomeEnv, t.TempDir()) // stands in for the real one
-	own := filepath.Join(realUnitDir(), ownUnitFile)
+	homeEnv, unitFile := unitNames()
+	t.Setenv(homeEnv, t.TempDir()) // stands in for the real one
+	own := filepath.Join(realUnitDir(), unitFile)
 	if err := os.MkdirAll(filepath.Dir(own), 0o755); err != nil {
 		t.Fatal(err)
 	}

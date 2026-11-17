@@ -118,6 +118,10 @@ func TestInstallArgv(t *testing.T) {
 	}
 }
 
+// useRealUnitDir is Linux's and macOS's (service_units_test.go): Windows has
+// no unit files, only the Task Scheduler and the SCM behind runCmd.
+func useRealUnitDir(*testing.T) {}
+
 // recordAsk swaps askTaskToStop: the ask is recorded among the commands, in
 // order, and answers whether serve stopped.
 func recordAsk(t *testing.T, rec *cmdRecorder, stopped bool) {
