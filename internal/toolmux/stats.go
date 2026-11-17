@@ -32,6 +32,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tenant/internal/fsperm"
 )
 
 const toolStatsSchemaVersion = 1
@@ -259,12 +261,9 @@ func (s *Stats) flush() {
 	}
 	s.flushMu.Lock()
 	defer s.flushMu.Unlock()
-	// Write-temp-then-rename so a crash mid-write never truncates history.
-	tmp := s.path + ".tmp"
-	err = writeFlushed(tmp, data)
-	if err == nil {
-		err = os.Rename(tmp, s.path)
-	}
+	// A temporary file, flushed, then renamed (fsperm.Replace), so neither a
+	// crash mid-write nor a power cut truncates history.
+	err = fsperm.ReplaceWithMode(s.path, data, 0o644)
 	// The next tick retries, so a streak of failures is logged once.
 	if err != nil && !s.failing {
 		StatsNotSaved.Log(context.Background(), "path", s.path, "err", err)
@@ -298,23 +297,4 @@ func (s *Stats) StartPersist(every time.Duration) func() {
 			s.flush()
 		})
 	}
-}
-
-// writeFlushed writes data to path and flushes it to the disk.
-func writeFlushed(path string, data []byte) error {
-	// On the disk before the rename: without the flush a power cut can
-	// leave the new name on a file of zero bytes (fsperm.Replace says more;
-	// this package may not import it).
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-	if err != nil {
-		return err
-	}
-	_, err = f.Write(data)
-	if err == nil {
-		err = f.Sync()
-	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	return err
 }

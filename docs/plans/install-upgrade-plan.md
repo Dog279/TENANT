@@ -235,7 +235,7 @@ tidier end to the turn in flight.
 | SQLite stores (episodic, semantic, usage, runtrace, log book) | WAL, `synchronous(NORMAL)`, busy timeout | Committed transactions survive a process kill; an OS shutdown flushes the page cache, so NORMAL is enough for D8 (power loss is out of scope) |
 | T5 archive (JSONL) | fsync per event by default (`archive.go:119`) | Safe |
 | Working memory (T1) | In memory, mirrored to T5 on every append | Safe; rebuilt from T5 |
-| The user profile, a research run's `run.json`, the Claude Code ledger, tool statistics, the route decision log, a log-book spool file, a Discord attachment, a privacy rewrite | temp + flush + rename since 2026-11-17 (`internal/fsperm/replace.go`; the two packages that may not import it flush in place) | Safe. Before that they were renamed without a flush, like `config.json` |
+| The user profile, a research run's `run.json`, the Claude Code ledger, tool statistics, the route decision log, a log-book spool file, a Discord attachment, a privacy rewrite | temp + flush + rename since 2026-11-17 (`internal/fsperm/replace.go`) | Safe. Before that they were renamed without a flush, like `config.json` |
 | `config.json`, settings | temp + flush + rename (`internal/fsperm/replace.go`, through `config.AtomicWrite`) | Safe. The flush was added on 2026-11-17: without it a power cut on Windows Server 2025 left `config.json` as zero bytes, and serve would not start. Power loss stays out of scope for D8, but a config that stops the next start is worth the flush |
 | Backups | temp `.partial` + rename (`internal/backup/create.go:159`) | Safe |
 | Boot record / crash files | written at start, marked at clean stop | Safe by design: an unclean stop is detected, not hidden |
