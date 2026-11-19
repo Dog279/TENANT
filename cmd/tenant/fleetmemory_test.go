@@ -323,6 +323,12 @@ func newMemLab(t *testing.T) *memLab {
 		t.Fatal(err)
 	}
 	l.connect()
+	// The inventory confirmation asked for (TEN-532) is written before the
+	// test counts generations.
+	eventually(t, "the inventory taken at confirmation is recorded", func() bool {
+		_, err := os.Lstat(filepath.Join(fleetShadowDir(l.data), l.ch.id, inventoryMark))
+		return errors.Is(err, fs.ErrNotExist)
+	})
 	return l
 }
 

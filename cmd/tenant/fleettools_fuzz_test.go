@@ -164,6 +164,14 @@ func FuzzFleetArgs(f *testing.F) {
 				t.Fatalf("a result was asked for under the id %q", a.ID)
 			}
 			return
+		case tool == "fleet_note": // nothing goes to the machine: one plain line, bounded
+			if a.Fact == "" || len(a.Fact) > fleetNoteMax || !utf8.ValidString(a.Fact) || strings.ContainsAny(a.Fact, "\n\r\t") || strings.ContainsFunc(a.Fact, control.HiddenRune) {
+				t.Fatalf("fleet_note accepted %q", a.Fact)
+			}
+			if remote, _, _ := fleetForward(tool, a); remote != "" {
+				t.Fatalf("fleet_note would send to %q", remote)
+			}
+			return
 		}
 		remote, sent, read := fleetForward(tool, a)
 		var obj map[string]json.RawMessage
