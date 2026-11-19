@@ -81,10 +81,11 @@ Releases page.
     access is denied), attaching a debugger, and reading, suspending or redirecting any of its
     threads are refused, and so is rewriting the access list that says so. A program running as
     you can still end Tenant, and can end, wait for and resume each of its threads: ending
-    threads stops work and reads nothing. Task Manager still lists Tenant and ends it, and so do
-    `taskkill /F`, PowerShell's `Stop-Process -Force` and Node's `process.kill`, which need the
-    right to query the process's information; Python's `os.kill` asks for every right and is
-    refused. A program running as you could always read Tenant's exit code, times, priority,
+    threads stops work and reads nothing. Task Manager still lists Tenant (its End task
+    was not tested), and `taskkill /F`, PowerShell's `Stop-Process -Force` and Node's
+    `process.kill` end it, which need the right to query the process's information; plain
+    `Stop-Process` and Python's `os.kill` ask for more and are refused. A program running as
+    you could always read Tenant's exit code, times, priority,
     counters, module paths and where its memory lies and how it is protected, and that right
     adds which of its pages are resident and shared (the working set), its handles by number,
     kind and rights, its mitigation policy, and a walk of its threads that gives no more than

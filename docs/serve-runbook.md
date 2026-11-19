@@ -291,8 +291,8 @@ Not stopped on Windows, and open in this release:
   and resume each of its threads. Ending threads stops work and reads nothing.
 - **What the owner's rights show.** On the process the owner keeps `0x101401`: end it, wait for
   it, its basic details, and its information (`PROCESS_QUERY_INFORMATION`), which `taskkill /F`,
-  `Stop-Process -Force` and Node's `process.kill` need to end it (Python's `os.kill` asks for
-  every right and is still refused). Any program of the user could always read the exit code,
+  `Stop-Process -Force` and Node's `process.kill` need to end it (plain `Stop-Process` and
+  Python's `os.kill` ask for more and are still refused). Any program of the user could always read the exit code,
   the times, the priority, the counters, the paths of the modules and where the process's memory
   lies and how it is protected; that right adds which of its pages are resident and shared (the
   working set), its handles by number, kind and rights, its mitigation policy, and a walk of its
