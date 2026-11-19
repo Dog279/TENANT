@@ -216,6 +216,7 @@ The identity files live under `cmd/tenant/builtinsouls/agents/`, with a sixth,
 | `skills <list\|show\|trust\|import\|export\|seed\|auto>` | the skill library and Agent Skills packages |
 | `mcp connect <url>` / `mcp-memory` | connect a remote MCP server; serve Tenant's memory over MCP |
 | `peer <invite\|join\|list\|share\|…>` | federate two Tenants with mutual consent |
+| `fleet <init\|enroll\|confirm\|list\|permissions\|…>` / `child <install\|status\|pause\|resume\|…>` | own your other machines from this one: a child serves its tools to the master's agent, and approvals stay on the master |
 | `permissions <effective\|preset>` / `security audit` / `sandbox <probe\|selftest\|run\|redteam>` | the safety posture |
 | `logs <query\|show\|trace\|stats\|export\|verify\|config\|alerts\|…>` / `log <source> "<msg>"` / `attach` | the log book |
 | `backup <create\|verify\|restore>` / `privacy <status\|retention\|prune\|forget\|export>` / `runs export` | your data |
