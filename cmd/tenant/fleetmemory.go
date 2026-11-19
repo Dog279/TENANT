@@ -99,12 +99,20 @@ type memoryState struct {
 // fleetMemory is the master's memory of its machines, open in the process
 // that holds the fleet.
 type fleetMemory struct {
-	dataDir string
-	mgr     *fleet.Manager
-	key     *shadow.Key
-	shadows *shadow.Store
-	log     *slog.Logger
-	tell    func(string)
+	dataDir  string
+	mgr      *fleet.Manager
+	store    *fleet.Store
+	key      *shadow.Key
+	recovery string // the recovery key's public half
+	shadows  *shadow.Store
+	log      *slog.Logger
+	tell     func(string)
+
+	// The forgets every machine's memory has had or is owed
+	// (fleetforget.go). Held across the local work of applying one, never
+	// across a call on the link.
+	fgMu    sync.Mutex
+	forgets []*fleetForget
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -151,11 +159,12 @@ func openFleetMemory(cfgDir, dataDir string, store *fleet.Store, mgr *fleet.Mana
 		return nil, "the machines' memory cannot be opened: " + err.Error()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	m := &fleetMemory{dataDir: dataDir, mgr: mgr, key: key, shadows: shadows, log: log, tell: tell, ctx: ctx, cancel: cancel,
+	m := &fleetMemory{dataDir: dataDir, mgr: mgr, store: store, key: key, recovery: recipient, shadows: shadows, log: log, tell: tell, ctx: ctx, cancel: cancel,
 		states: map[string]memoryState{}, syncing: map[string]bool{}, again: map[string]bool{}, childGen: map[string]uint64{}, reembed: map[string]bool{}}
 	if locked, why := key.Locked(); !locked {
 		log.Warn("fleet: the fleet key is held in memory that is not locked against the swap file", "why", why)
 	}
+	m.loadForgets()
 	m.sweep()
 	m.wg.Add(1)
 	go m.run()
@@ -307,6 +316,7 @@ func (m *fleetMemory) sync(id string) {
 		case shadow.Nothing:
 			m.inStep(id, st)
 			m.reembedIfOwed(ctx, id)
+			m.purgeIfOwed(ctx, id) // after a forget: the machine holds the generation that has it
 			return
 		case shadow.Lost:
 			m.set(id, memoryUnknown, "the master's memory of this machine is damaged and no copy of it is left on either side; nothing was changed")
@@ -482,6 +492,8 @@ func (m *fleetMemory) take(ctx context.Context, id string, d shadow.Decision) ta
 		m.tell(fmt.Sprintf("fleet: machine %s held generation %d with other content than this master's: the machine's copy stands, and this master's was kept aside for thirty days in %s", id, c.Gen, got.Aside))
 		m.log.Warn("fleet: a machine's memory and the master's diverged; the machine's stands", "machine", id, "generation", c.Gen, "aside", got.Aside)
 	}
+	// A copy as old as a forget, or older, may hold what it removed.
+	m.reapplyForgets(ctx, id, got.Gen)
 	if got.Reembed {
 		m.mu.Lock()
 		m.reembed[id] = true
@@ -587,23 +599,32 @@ func (m *fleetMemory) state(id string) (string, string) {
 	return st.State, st.Detail
 }
 
-// sweep deletes the memory of machines another process revoked with delete
-// (removeFleetMemory left the mark). A shadow in use is left for the next
-// sweep.
+// sweep carries out what other processes left for the process that holds
+// the fleet, at every tick of the hub: the memory of machines revoked with
+// delete (removeFleetMemory left the mark), the inventory of machines just
+// confirmed (markInventory), and forgets (recordFleetForget). A shadow in
+// use is left for the next sweep.
 func (m *fleetMemory) sweep() {
+	ctx, cancel := context.WithTimeout(m.ctx, time.Minute)
+	defer cancel()
 	entries, _ := os.ReadDir(fleetShadowDir(m.dataDir))
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
-		if _, err := os.Lstat(filepath.Join(fleetShadowDir(m.dataDir), e.Name(), memoryRemoveMark)); err != nil {
+		if _, err := os.Lstat(filepath.Join(fleetShadowDir(m.dataDir), e.Name(), memoryRemoveMark)); err == nil {
+			if err := m.shadows.Remove(e.Name()); err == nil {
+				m.forget(e.Name())
+				m.log.Info("fleet: a revoked machine's memory was deleted", "machine", e.Name())
+			}
 			continue
 		}
-		if err := m.shadows.Remove(e.Name()); err == nil {
-			m.forget(e.Name())
-			m.log.Info("fleet: a revoked machine's memory was deleted", "machine", e.Name())
+		if _, err := os.Lstat(filepath.Join(fleetShadowDir(m.dataDir), e.Name(), inventoryMark)); err == nil {
+			m.takeInventory(ctx, e.Name())
 		}
 	}
+	m.takeForgetRequests()
+	m.applyForgets(ctx)
 }
 
 // forget drops what is known of a machine whose memory is gone.
@@ -631,18 +652,9 @@ var errNoFleetMemory = errors.New("fleet: the machines' memory is not open in th
 // which rebuilds it from the machine's copy or marks it as needing the
 // recovery key; the error says which.
 func fleetShadow(ctx context.Context, id string) (*shadow.Pair, error) {
-	h := theFleet.Load()
-	if h == nil {
-		return nil, errNoFleetMemory
-	}
-	h.mu.Lock()
-	mem, problem := h.mem, h.memProblem
-	h.mu.Unlock()
-	if mem == nil {
-		if problem != "" {
-			return nil, fmt.Errorf("%w: %s", errNoFleetMemory, problem)
-		}
-		return nil, errNoFleetMemory
+	mem, err := fleetMem()
+	if err != nil {
+		return nil, err
 	}
 	p, err := mem.shadows.Acquire(ctx, id)
 	if errors.Is(err, shadow.ErrDamaged) || errors.Is(err, shadow.ErrForeignKey) {

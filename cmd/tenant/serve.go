@@ -540,6 +540,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		Skills:                 skillRetriever{st: skillStore, agentID: c.agent, tools: mainTools},
 		SystemPrompt:           mainPrompt,
 		RenderAgents:           func() string { return renderAgentsForOrchestrator(rt.AgentProfiles()) + fleetRoster() },
+		OnEpisode:              fleetOnEpisode, // each machine a turn worked on gets its part of it (TEN-532)
 		Compactor:              compressor,
 		UserProfile:            prof,
 		Stopping:               serveStopping.Load,

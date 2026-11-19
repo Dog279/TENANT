@@ -269,15 +269,20 @@ func (o fleetOps) confirmMachine(ref, code string, set map[string]string) (fleet
 		}
 		return refuse(err)
 	}
-	// TEN-532: the first inventory (parsed facts about the machine) is taken
-	// here. Until then the record keeps what the machine reports in its hello,
-	// which the link stores when the machine first connects.
+	// The first inventory (TEN-532): facts about the machine, each built by
+	// the master from one field the machine reported, checked
+	// (fleetInventoryFacts). The process that holds the fleet writes them
+	// into the machine's memory, at its next tick; this may be another one.
+	inventory := ""
+	if err := markInventory(o.dataDir, got.ID); err != nil {
+		inventory = "; its inventory was not recorded: " + err.Error()
+	}
 	detail, _ := json.Marshal(struct {
 		Reported fleet.Reported    `json:"reported_by_the_machine"`
 		Set      map[string]string `json:"set_by_the_operator,omitempty"`
 		Kept     bool              `json:"scheme_kept_with_the_id,omitempty"`
 	}{got.Reported, set, p.Kept})
-	o.audit(got, "confirmed", string(detail))
+	o.audit(got, "confirmed", string(detail)+inventory)
 	return got, p, nil
 }
 

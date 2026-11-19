@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"tenant/internal/fleet"
 	"tenant/internal/logs"
 	"tenant/internal/logs/catalog"
 	"tenant/internal/logs/event"
@@ -483,7 +484,23 @@ func cmdPrivacyForget(ctx context.Context, args []string, in io.Reader, out io.W
 	}
 	nothing := (plan == nil || plan.Empty()) && connectorsEmpty(connPlan)
 	if nothing {
-		fmt.Fprintln(out, "Nothing matches; nothing to forget.")
+		// A machine's memory can hold what the master's own does not (what a
+		// machine returned is in its memory and not in the master's
+		// episodes); it is searched by the process that holds the fleet.
+		fleetSel, err := fleetForgetSelector(d, sel)
+		if _, kerr := os.Lstat(fleet.KeyPath(c.cfgDir)); err != nil || kerr != nil || fleetSel.Empty() {
+			fmt.Fprintln(out, "Nothing matches; nothing to forget.")
+			return nil
+		}
+		fmt.Fprintln(out, "Nothing matches in this master's own memory. The fleet's machines' memory may hold it, and is searched where it is kept.")
+		if err := confirm(in, out, *yes, "Forget it from the machines' memory? This cannot be undone."); err != nil {
+			return err
+		}
+		said, err := recordFleetForget(c.cfgDir, c.dataDir, fleetSel)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "  fleet: %s\n", said)
 		return nil
 	}
 	fmt.Fprintln(out, "This will permanently remove:")
@@ -502,12 +519,24 @@ func cmdPrivacyForget(ctx context.Context, args []string, in io.Reader, out io.W
 		return err
 	}
 	if plan != nil {
+		// What the fleet's machines' memory has of it (TEN-532), found while
+		// the master's episodes that name it are still there.
+		fleetSel, ferr := fleetForgetSelector(d, sel)
 		res, err := plan.Apply(ctx)
 		auditDeletion(ctx, plan.Reason, res, err, actorOperator, surfaceCLI)
 		if err != nil {
 			return err
 		}
 		printResult(out, res)
+		if ferr == nil {
+			var said string
+			if said, ferr = recordFleetForget(c.cfgDir, c.dataDir, fleetSel); said != "" {
+				fmt.Fprintf(out, "  fleet: %s\n", said)
+			}
+		}
+		if ferr != nil {
+			fmt.Fprintf(out, "  warning: the forget did not reach the fleet's machines' memory: %v\n", ferr)
+		}
 	}
 	for _, cp := range connPlan {
 		if err := cp.apply(c.cfgDir); err != nil {
