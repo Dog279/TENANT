@@ -45,7 +45,11 @@ import (
 // changes and it is what a scheme is kept under. Name is a label: it can
 // change, and the machine may have chosen it, so a card and a record show it
 // escaped (safe).
-type Machine struct{ ID, Name string }
+type Machine struct {
+	ID, Name string
+	// why is the origin's reason for asking (Origin.Why), said on the card.
+	why string
+}
 
 // A machine id is short and plain, so it can be a key of the settings file
 // and stand on a card unquoted.
@@ -93,8 +97,15 @@ func (m Machine) safe() Machine {
 }
 
 // label starts the text of a safe machine's request: the id the master gave
-// it, then its name in quotes it cannot close.
-func (m Machine) label() string { return "[host " + m.ID + ` "` + m.Name + `"] ` }
+// it, then its name in quotes it cannot close, then why the origin asks when
+// it gave a reason.
+func (m Machine) label() string {
+	l := "[host " + m.ID + ` "` + m.Name + `"] `
+	if m.why != "" {
+		l += "[asked because " + m.why + "] "
+	}
+	return l
+}
 
 // Scheme is one machine's approval scheme as the settings file keeps it,
 // under the same two keys as the master's own: category modes, and tool
@@ -407,6 +418,11 @@ type Origin struct {
 	// relay's buttons, a text) or the host's own surfaces. nil is an origin
 	// with nobody to ask, where ask is deny.
 	Asker *Broker
+	// Why, when set, is the origin's reason for an ask its Verdict returns,
+	// in the master's own words on one short line. The card says it: a
+	// machine whose scheme allows the action would otherwise ask with no
+	// reason in sight.
+	Why string
 }
 
 // LocalOrigin is a turn from this computer's own surfaces (the terminal, the
@@ -823,6 +839,9 @@ func (d Decider) refuse(ctx context.Context, action, detail, via string, why err
 // lock of its own (the origin's lock is in its Verdict).
 func (d Decider) view(b *Broker, mustAsk bool) *Broker {
 	m := d.m.safe()
+	if mustAsk {
+		m.why = plain(d.o.Why, 160)
+	}
 	b.mu.Lock()
 	v := &Broker{
 		mu: b.mu, modes: b.modes, session: b.session, known: b.known, persist: b.persist,

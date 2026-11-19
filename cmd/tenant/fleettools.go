@@ -716,8 +716,9 @@ func fleetReach(ctx context.Context, host string) (*fleetTarget, string) {
 // every call to another machine that is not a plain read, so text from the
 // first cannot act on the second unseen. Its denials stand, and where nobody
 // is there to ask, ask is deny.
-func fleetAskFirst(o approval.Origin) approval.Origin {
+func fleetAskFirst(o approval.Origin, others []string) approval.Origin {
 	own := o.Verdict
+	o.Why = "this turn has read from " + strings.Join(others[:min(len(others), 5)], ", ")
 	o.Verdict = func(action, detail string) approval.Mode {
 		if own != nil && own(action, detail) == approval.ModeDeny {
 			return approval.ModeDeny
@@ -742,7 +743,7 @@ func (t *fleetTarget) run(ctx context.Context, tool string, args json.RawMessage
 		o := t.origin
 		if others := t.turn.others(t.m.ID); !read && len(others) > 0 {
 			fleetToolLog.InfoContext(cctx, "fleet: the call asks, because this turn has read from another machine", "host", t.m.ID, "name", t.m.Name, "tool", tool, "read_from", strings.Join(others, ","))
-			o = fleetAskFirst(o)
+			o = fleetAskFirst(o, others)
 		}
 		return t.deps.schemes.For(o, t.machine()).Confirm(cctx, action, detail)
 	}})
@@ -786,7 +787,7 @@ func (t *fleetTarget) askBefore(ctx context.Context, a fleetArgs) string {
 	}
 	o := t.origin
 	if len(others) > 0 {
-		o = fleetAskFirst(o)
+		o = fleetAskFirst(o, others)
 	}
 	approval.RequireExplicit(fleetCallAction)
 	detail := fmt.Sprintf("call %s %s (%s)", a.Tool, fleetCut(string(a.Arguments), 1024), why)

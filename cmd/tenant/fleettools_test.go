@@ -309,8 +309,8 @@ func TestFleetTools_ATurnThatReadOneHostAsksBeforeActingOnAnother(t *testing.T) 
 		if n != i+1 {
 			t.Fatalf("%s %v after a read on alpha: %d prompts so far, want %d. It answered: %s", c.tool, c.args, n, i+1, out)
 		}
-		if card.Host != b.id || !strings.HasPrefix(card.Detail, `[host `+b.id+` "beta"] `) {
-			t.Fatalf("the card does not name the machine: %+v", card)
+		if card.Host != b.id || !strings.HasPrefix(card.Detail, `[host `+b.id+` "beta"] [asked because this turn has read from alpha] `) {
+			t.Fatalf("the card does not name the machine and say why it asks: %+v", card)
 		}
 		if now, _ := kb.seen(); now == sent {
 			t.Fatalf("%s was approved and never reached the machine: %s", c.tool, out)
