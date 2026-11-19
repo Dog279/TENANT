@@ -259,6 +259,7 @@ func fileToolGuards(cfgDir, dataDir string, pf *pluginFlags, lc *launchConfig) (
 		settings := settingsPath(cfgDir, "*")
 		peerCert, _ := peering.CertPaths(cfgDir)
 		add(&protect, settings, settings+".*.tmp", soul.SoulDir(cfgDir), peerCert, chainAnchorPath(cfgDir))
+		add(&protect, fleetLockPaths(cfgDir)...) // the fleet's lock files: one that is replaced excludes nobody (TEN-531)
 		// Plugin settings that decide what the agent may do (the GitHub merge
 		// rules, TEN-432) are trust roots like the approval settings: the agent
 		// must not loosen a gate it passes through.

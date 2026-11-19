@@ -610,7 +610,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 			for _, j := range c.lc.Cron.Jobs {
 				cronDefs = append(cronDefs, cron.JobDef{
 					ID: j.ID, Name: j.Name, Spec: j.Spec, Prompt: j.Prompt,
-					Enabled: j.Enabled, Kind: j.Kind, Exec: j.Exec, TZ: j.TZ,
+					Enabled: j.Enabled, Kind: j.Kind, Exec: j.Exec, TZ: j.TZ, Fleet: j.Fleet,
 				})
 			}
 		}
@@ -622,7 +622,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 			for i, d := range defs {
 				jobs[i] = cronJobConfig{
 					ID: d.ID, Name: d.Name, Spec: d.Spec, Prompt: d.Prompt,
-					Enabled: d.Enabled, Kind: d.Kind, Exec: d.Exec, TZ: d.TZ,
+					Enabled: d.Enabled, Kind: d.Kind, Exec: d.Exec, TZ: d.TZ, Fleet: d.Fleet,
 				}
 			}
 			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Cron.Jobs = jobs })
@@ -826,6 +826,11 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 			pushSys("peer: federation listener on " + bound)
 		}
 	}
+
+	// The fleet (TEN-531): once `tenant fleet init` has made this Tenant a
+	// master, serve holds the fleet's links, so its machines stay connected. It
+	// takes the fleet with no restart when init runs later (fleethub.go).
+	life.AddFunc(lifecycle.Intake, "fleet listener", startFleetHub(ctx, c, "serve", broker, pushSys, log.With("source", "fleet")))
 
 	reconnectMon := &reconnectMonitor{cfgDir: c.cfgDir, feed: sysCh, ctx: ctx, log: log.With("source", "model")}
 	if degraded.Degraded() && degraded.class == degradeReachability {
