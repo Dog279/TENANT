@@ -57,6 +57,19 @@ func settled() int {
 	return last
 }
 
+// goroutines waits until this process has exactly want goroutines, and
+// returns how many it has: want, unless the wait ran out. A count that has
+// merely stopped changing for a moment proves nothing on a busy machine,
+// where a handler that is about to finish can sit still for longer than
+// that; the count the design names is either reached or it is not.
+func goroutines(want int) int {
+	n := runtime.NumGoroutine()
+	for deadline := time.Now().Add(waitLong); n != want && time.Now().Before(deadline); n = runtime.NumGoroutine() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	return n
+}
+
 // heapNow is the live heap and the goroutine stacks, in bytes.
 func heapNow() int {
 	var m runtime.MemStats
@@ -85,7 +98,10 @@ func TestLinkScaleSmoke(t *testing.T) {
 		k.await(LinkConnected)
 		r.awaitOnline(t, k.mach.ID, true)
 	}
-	idle := settled()
+	// Every link is up; what is left over is each link's handler finishing
+	// its hello and its address list. When the count is down to three a link,
+	// those are done and the links are idle.
+	idle := goroutines(before + 3*scaleChildren)
 	heapIdle := heapNow()
 	count := stacks("fleet.(*guard).Recv", "fleet.noticing.Recv", "fleet.(*Client).Run")
 	t.Logf("%d children idle: %d goroutines more than before (%.2f per link): %d master read loops, %d child read loops, %d child Run callers",
@@ -95,18 +111,34 @@ func TestLinkScaleSmoke(t *testing.T) {
 		t.Errorf("an idle link is meant to be 3 goroutines: the master's read loop, the child's, and the caller of Run")
 	}
 
-	// Idle traffic: per interval the child pings and the master answers.
+	// Idle traffic. All an idle link carries is the transport's own ping and
+	// the pong that answers it, each an empty control frame in a TLS record:
+	// 28 bytes from the child, whose frames are masked, and 24 from the
+	// master. The link adds nothing of its own. That holds however busy the
+	// machine is, and is what is asserted: every byte is such a record, every
+	// ping has its pong, and no end sends more than one of each per interval.
+	// Who pings is the transport's rule and depends on timing: the child,
+	// unless its ping is a quarter of an interval late, and then the master
+	// too. On a quiet machine that is one ping and one pong per interval,
+	// 104 bytes a minute at the default interval; what it was here is logged.
 	const intervals = 6
 	sentMaster, sentKids := r.masterSent.Load(), r.kidsSent.Load()
 	time.Sleep(intervals * interval)
-	perMaster := float64(r.masterSent.Load()-sentMaster) / intervals / scaleChildren
-	perKid := float64(r.kidsSent.Load()-sentKids) / intervals / scaleChildren
+	byMaster, byKids := r.masterSent.Load()-sentMaster, r.kidsSent.Load()-sentKids
+	perMaster, perKid := float64(byMaster)/intervals/scaleChildren, float64(byKids)/intervals/scaleChildren
 	t.Logf("idle traffic per link and ping interval, as TLS records on the wire: child %.1f bytes, master %.1f bytes; at the default interval of %v that is %.0f bytes a minute",
 		perKid, perMaster, transport.DefaultWSPingInterval, (perKid+perMaster)*float64(time.Minute/transport.DefaultWSPingInterval))
-	// A ping is 6 bytes and a pong 2, each in a TLS record of 22 bytes more.
-	// The window is not aligned to the interval, so allow one more of each.
-	if perKid > 28*(intervals+1)/intervals || perMaster > 24*(intervals+1)/intervals || perKid == 0 || perMaster == 0 {
-		t.Errorf("an idle link is meant to carry one 28-byte ping and one 24-byte pong per interval")
+	if byKids == 0 || byMaster == 0 || byKids%28 != 0 || byMaster%24 != 0 {
+		t.Errorf("an idle link carried something other than pings and pongs: %d bytes from the children, %d from the master", byKids, byMaster)
+	}
+	fromKids, fromMaster := byKids/28, byMaster/24
+	// A ping sent just inside the window has its pong just outside it, at
+	// either edge: one frame a link.
+	if d := fromKids - fromMaster; d > scaleChildren || d < -scaleChildren {
+		t.Errorf("%d frames from the children and %d from the master: a ping went unanswered", fromKids, fromMaster)
+	}
+	if most := int64(2 * (intervals + 1) * scaleChildren); fromKids > most || fromMaster > most {
+		t.Errorf("%d frames from the children and %d from the master in %d intervals: more than a ping and a pong per end and interval", fromKids, fromMaster, intervals)
 	}
 
 	// One call to each, all at once.
@@ -120,7 +152,7 @@ func TestLinkScaleSmoke(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	if after := settled(); after != idle {
+	if after := goroutines(idle); after != idle {
 		t.Errorf("%d goroutines when idle, %d after a call to each", idle, after)
 	}
 }
@@ -157,6 +189,7 @@ func TestLinkScaleTwoProcesses(t *testing.T) {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = 5 * time.Second
+	noWindow(cmd)
 	stdin := must(cmd.StdinPipe())(t)
 	stdout := must(cmd.StdoutPipe())(t)
 	if err := cmd.Start(); err != nil {
@@ -198,7 +231,7 @@ func TestLinkScaleTwoProcesses(t *testing.T) {
 	for _, id := range ids {
 		r.awaitOnline(t, id, true)
 	}
-	idle := settled()
+	idle := goroutines(before + scaleChildren)
 	heapIdle := heapNow()
 	count := stacks("fleet.(*guard).Recv")
 	masterBytes := (heapIdle - heapBefore) / scaleChildren
@@ -286,7 +319,7 @@ func childrenProcess() error {
 			return fmt.Errorf("%d of %d children connected: %s", connected, n, strings.Join(why, "; "))
 		}
 	}
-	idle := settled()
+	idle := goroutines(before + 2*n) // two a link, once each has answered its master's hello
 	out, _ := json.Marshal(map[string]int{"Goroutines": idle - before, "Bytes": heapNow() - heapBefore})
 	fmt.Println(string(out))
 	select {}

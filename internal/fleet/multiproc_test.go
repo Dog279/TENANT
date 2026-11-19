@@ -128,6 +128,7 @@ func TestProcessesNeverLoseEachOthersChanges(t *testing.T) {
 			helperCount+"="+strconv.Itoa(n), helperOwns+"="+owned[w].ID, helperPin+"="+m.id.Fingerprint)
 		cmd.Stderr = &h.stderr
 		cmd.WaitDelay = 5 * time.Second
+		noWindow(cmd)
 		stdin, err := cmd.StdinPipe()
 		if err != nil {
 			t.Fatal(err)
