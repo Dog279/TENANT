@@ -57,6 +57,7 @@ var rules = []rule{
 	{Pkg: "internal/research", May: []string{"internal/fsperm"}},
 	{Pkg: "internal/backup", May: []string{"internal/datalock", "internal/fsperm", "internal/secrets", "internal/version"}},
 	{Pkg: "internal/peering", May: []string{"internal/httplimits", "internal/secrets"}},
+	{Pkg: "internal/fleet", May: []string{"internal/secrets", "internal/datalock"}, Notes: "a fleet's identity, enrollment and fleet.json; knows no link, no tool and no command"},
 	{Pkg: "internal/mcp", May: []string{"internal/mcp/transport"}, Notes: "wire protocol only, no LLM knowledge"},
 	{Pkg: "internal/model", May: []string{"internal/model/profiles", "internal/runtrace"}, Notes: "no memory, agent or plugins"},
 	{Pkg: "internal/model/**", May: []string{"internal/model/**", "internal/runtrace", "internal/fsperm"}},

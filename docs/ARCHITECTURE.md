@@ -27,11 +27,11 @@ block for drift.
 <!-- docfacts:generated:start; date=2026-11-19; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
-| Go packages | 102 |
-| Go files | 1,362 |
-| Test files | 654 |
-| Production Go LOC | 180,903 |
-| Test Go LOC | 132,364 |
+| Go packages | 103 |
+| Go files | 1,377 |
+| Test files | 664 |
+| Production Go LOC | 183,007 |
+| Test Go LOC | 135,533 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -159,6 +159,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/research` | `internal/fsperm` |  |
 | `internal/backup` | `internal/datalock`, `internal/fsperm`, `internal/secrets`, `internal/version` |  |
 | `internal/peering` | `internal/httplimits`, `internal/secrets` |  |
+| `internal/fleet` | `internal/secrets`, `internal/datalock` | a fleet's identity, enrollment and fleet.json; knows no link, no tool and no command |
 | `internal/mcp` | `internal/mcp/transport` | wire protocol only, no LLM knowledge |
 | `internal/model` | `internal/model/profiles`, `internal/runtrace` | no memory, agent or plugins |
 | `internal/model/**` | `internal/model/**`, `internal/runtrace`, `internal/fsperm` |  |
