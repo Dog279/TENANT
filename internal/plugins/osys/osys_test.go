@@ -819,6 +819,23 @@ func TestExecGate_DetailHoldsTheWholeCommand(t *testing.T) {
 	}
 }
 
+// TEN-534: the working directory is not in the text the broker judges, so a
+// read-only command could be sent to run on a network share (`Get-ChildItem`
+// with workdir \\host\share), where even a look opens a session with that host
+// and offers it the user's credentials. Such a workdir is refused before
+// anything is asked or run; the model can `cd` there in the command, which
+// then goes through approval.
+func TestExec_NetworkWorkdirIsRefused(t *testing.T) {
+	for _, dir := range []string{`\\attacker.example\share`, `//attacker.example/share/repo`, `\\?\UNC\attacker.example\share`} {
+		asked := 0
+		d, rr := newDisp(t, Policy{AllowExec: true, Confirm: func(context.Context, string, string) bool { asked++; return true }}, "ok")
+		out, isErr, _ := d.Dispatch(context.Background(), call("os_exec", map[string]any{"command": "ls", "workdir": dir}))
+		if !isErr || !strings.Contains(out, "network path") || asked != 0 || len(rr.calls) != 0 {
+			t.Errorf("workdir %q: isErr=%v asked=%d ran=%d %q; want a refusal before anything is asked or run", dir, isErr, asked, len(rr.calls), out)
+		}
+	}
+}
+
 // TEN-491: a command that only looks runs without a prompt; anything that
 // writes, acts, redirects or escalates does not, in any segment. TEN-534: nor
 // does a read-only word behind an assignment or a path (readonly_test.go).

