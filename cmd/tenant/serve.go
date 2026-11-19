@@ -262,6 +262,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	// Execution-sandbox profiles and exceptions (execprofiles.go): same file,
 	// re-read on edit; an approved exception is saved through stg.
 	loadExecSettings(c, stg, &stgMu, pushSys)
+	loadFleetSettings(stg, &stgMu, c.cfgDir, c.agent, pushSys) // each fleet machine's approval scheme: same file
 	go watchSettings(ctx, c.cfgDir, c.agent, broker, defaultToolRules, &stgMu, stg, pushSys)
 
 	// Web is per-agent (own browser each), kept out of the shared mux.
