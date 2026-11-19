@@ -12,7 +12,7 @@
 {{- range .Items}}
 <div class="q-item" id="q-{{.ID}}">
   <b>{{.Title}}</b>
-  <div class="dim">{{visibleText .Action}}{{if .From}} · from {{.From}}{{end}} · {{.Waited}}</div>
+  <div class="dim">{{visibleText .Action}}{{if .Machine}} · on the machine {{.Machine}}, not this computer{{end}}{{if .From}} · from {{.From}}{{end}} · {{.Waited}}</div>
   <pre class="q-detail">{{visibleText .Detail}}</pre>
   {{- if gt .Lines 8}}
   <p class="q-long">This request is {{.Lines}} lines long. Read all of it before you allow it.</p>
