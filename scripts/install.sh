@@ -1,8 +1,10 @@
 #!/bin/sh
 # install.sh — download the Tenant release for this OS and CPU, verify its
 # SHA-256 against the release's checksums.txt, and install the binary to a
-# user-writable directory (no sudo). The release workflow stamps the repository
-# name in; the tracked copy carries the __REPO__ placeholder.
+# user-writable directory (no sudo). On macOS the binary is signed on this
+# machine with the hardened runtime before it is moved into place. The release
+# workflow stamps the repository name in; the tracked copy carries the
+# __REPO__ placeholder.
 #
 #   curl -fsSL https://github.com/OWNER/REPO/releases/latest/download/install.sh | sh
 #
@@ -17,6 +19,26 @@ REPO="${TENANT_REPO:-__REPO__}"
 DIR="${TENANT_INSTALL_DIR:-$HOME/.local/bin}"
 
 die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
+
+# macOS: the installed binary carries the hardened-runtime flag, which makes
+# the system refuse a debugger outright (process protection). The copy that
+# is about to be installed is signed here, ad hoc and with no entitlements,
+# and the flag is checked on it, before it is moved into place: no unsigned
+# binary is ever the one that runs. If any of it fails nothing is moved, and
+# a Tenant installed before stays as it was. codesign is part of macOS; it is
+# named by its full path so that another codesign on PATH is not what signs.
+CODESIGN=/usr/bin/codesign
+
+harden() { # $1: the copy that is about to be moved into place
+  [ "$OS" = darwin ] || return 0
+  [ -x "$CODESIGN" ] || die "$CODESIGN is missing, so the binary cannot be signed with the hardened runtime; nothing was installed or changed"
+  "$CODESIGN" --force --sign - --options runtime "$1" ||
+    die "codesign could not sign the binary with the hardened runtime; nothing was installed or changed"
+  SIGNATURE=$("$CODESIGN" -dv "$1" 2>&1) ||
+    die "codesign could not read the signature it just made; nothing was installed or changed"
+  printf '%s\n' "$SIGNATURE" | grep -q '^CodeDirectory .*flags=0x[0-9a-fA-F]*(.*runtime.*)' ||
+    die "the hardened-runtime flag is not on the signed binary; nothing was installed or changed"
+}
 
 case "$(uname -s)" in
   Darwin) OS=darwin ;;
@@ -70,9 +92,11 @@ tar -xzf "$TMP/$ARCHIVE" -C "$TMP" tenant || die "could not extract tenant from 
 mkdir -p "$DIR" || die "could not create $DIR"
 cp "$TMP/tenant" "$DIR/.tenant.$$" || die "could not write to $DIR"
 chmod 0755 "$DIR/.tenant.$$"
-mv -f "$DIR/.tenant.$$" "$DIR/tenant"
+harden "$DIR/.tenant.$$"
+mv -f "$DIR/.tenant.$$" "$DIR/tenant" || die "could not move the binary into place in $DIR"
 
 echo "Installed $DIR/tenant"
+if [ "$OS" = darwin ]; then echo "Signed on this machine with the hardened runtime (ad hoc, no entitlements)"; fi
 "$DIR/tenant" version
 case ":$PATH:" in
   *":$DIR:"*) ;;

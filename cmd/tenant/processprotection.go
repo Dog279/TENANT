@@ -40,6 +40,14 @@ type processProtectionAudit struct {
 	// file). A control that is off and not here stops serve and the TUI
 	// until someone says yes at a terminal (protectiongate.go).
 	Acknowledged []config.ProtectionAck `json:"acknowledged,omitempty"`
+	// Signature is this binary's code signature, on macOS: the
+	// hardened-runtime flag is what makes the system refuse a debugger
+	// outright, and the install script, `tenant service install` and `tenant
+	// update` put it on the binary they install (codesign.go).
+	Signature *codeSignature `json:"signature,omitempty"`
+	// SourceBuild: not a release build, so nothing installed it and nothing
+	// was expected to sign it.
+	SourceBuild bool `json:"source_build,omitempty"`
 }
 
 // auditProcessProtection fills the section for this process, and for the
@@ -55,8 +63,25 @@ func auditProcessProtection(c *commonFlags) processProtectionAudit {
 			}
 		}
 	}
+	if signsBinaries {
+		a.SourceBuild = devBuild()
+		sig := codeSignature{Kind: "its signature could not be read: this binary's path is unknown"}
+		if exe, err := os.Executable(); err == nil {
+			if exe, err = resolveExe(exe); err == nil {
+				sig = readSignature(context.Background(), exe)
+			}
+		}
+		a.Signature = &sig
+	}
 	return a
 }
+
+// unhardened: an installed macOS binary without the hardened-runtime flag.
+func (a processProtectionAudit) unhardened() bool {
+	return a.Signature != nil && !a.Signature.Runtime && !a.SourceBuild
+}
+
+const signFix = "`tenant service install` signs this binary; the install script and `tenant update` sign what they install"
 
 // acknowledgedAt is when the operator acknowledged c being off, "" if never.
 func (a processProtectionAudit) acknowledgedAt(c procprotect.Control) string {
@@ -141,6 +166,17 @@ func processProtectionCheck(a processProtectionAudit, goos string) checkResult {
 	if unacknowledged {
 		fixes = append(fixes, "to run without it, `tenant service start` (or `tenant serve`) at a terminal asks, and records your yes")
 	}
+	switch s := a.Signature; {
+	case s == nil:
+	case s.Runtime:
+		lines = append(lines, "on:  the hardened runtime on this binary, which makes macOS refuse a debugger outright ("+s.Kind+")")
+	case a.SourceBuild:
+		lines = append(lines, "a source build without the hardened runtime ("+s.Kind+"): attach denied, not verified. `tenant service install` signs it")
+	default:
+		r.Status = statusWarn
+		lines = append(lines, "OFF: the hardened runtime on this binary ("+s.Kind+"): a debugger is kept out by PT_DENY_ATTACH alone (attach denied, not verified)")
+		fixes = append(fixes, signFix)
+	}
 	lines = append(lines, a.System...)
 	if a.StillReadable != "" {
 		lines = append(lines, "still readable: "+a.StillReadable)
@@ -183,6 +219,13 @@ func printProcessProtection(a processProtectionAudit) {
 			fmt.Printf("      %s\n", a.ackNote(c))
 		}
 	}
+	if s := a.Signature; s != nil {
+		state := "on "
+		if !s.Runtime {
+			state = "OFF"
+		}
+		fmt.Printf("  %s %-24s the hardened runtime on this binary (%s)\n", state, "darwin.hardened-runtime", s.Kind)
+	}
 	for _, ln := range a.System {
 		fmt.Println("  " + ln)
 	}
@@ -200,6 +243,11 @@ func processProtectionFindings(a processProtectionAudit, add func(id, area strin
 		add("process."+c.ID, "process_protection", auditWarning,
 			"process protection is off: "+c.Name+": "+c.Reason+". "+c.Leaves+". "+a.ackNote(c),
 			"read the reason, which is the system's own; `tenant doctor` shows every control")
+	}
+	if a.unhardened() {
+		add("process.darwin.hardened-runtime", "process_protection", auditWarning,
+			"the installed binary does not carry the hardened-runtime flag ("+a.Signature.Kind+"), so macOS does not refuse a debugger outright: PT_DENY_ATTACH at start is what keeps one out (attach denied, not verified)",
+			signFix)
 	}
 	if len(a.SecretEnv) > 0 {
 		add("process.secret-env", "process_protection", auditWarning,

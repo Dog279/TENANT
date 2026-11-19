@@ -239,6 +239,14 @@ func runUpdate(ctx context.Context, u *updateEnv, o updateOpts) error {
 	if err := selfupdate.ExtractBinary(archive, staged, member); err != nil {
 		return err
 	}
+	// macOS: the staged binary is the copy that gets the hardened-runtime
+	// flag (codesign.go), before it runs for the first time and before it is
+	// moved into place. If it cannot be signed, nothing has changed.
+	if signsBinaries {
+		if err := signHardened(ctx, staged); err != nil {
+			return fmt.Errorf("not updated; %s keeps running: the new binary could not be signed with the hardened runtime: %w", version.Version, err)
+		}
+	}
 	smoke, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	smokeOut, err := procprotect.CombinedOutput(exec.CommandContext(smoke, staged, "version", "--protection"))

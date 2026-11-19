@@ -211,6 +211,14 @@ func actsOnSystem(ctx context.Context) bool {
 // installService installs and starts the unit and says where it went; setup
 // calls it after a successful interactive run.
 func installService(ctx context.Context, spec serviceSpec) error {
+	// macOS: the binary the service runs gets the hardened-runtime flag
+	// first (codesign.go). A failure is said, and the binary stays as it
+	// was: what it can apply at its start decides whether it runs.
+	if signsBinaries {
+		if err := installHardened(ctx, spec.Exe); err != nil {
+			fmt.Println(unsignedNote(spec.Exe, err)) // stdout, as this command's other notes
+		}
+	}
 	if err := spec.install(ctx); err != nil {
 		return err
 	}
