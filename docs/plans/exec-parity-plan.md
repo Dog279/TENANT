@@ -116,9 +116,11 @@ write covers most prompts. Add it when a real installer needs a TTY.
   sh and as PowerShell 5.1 each hand them to the program; every argument is
   split alike by sh, by PowerShell and by a program that parses the command
   line PowerShell builds for it (no quoted start with text after it, no `@` or
-  `--%`, and no quote inside a quoted argument of anything but a cmdlet); no
-  argument is a network path, no `<` opens bash's `/dev/tcp` or a name with a
-  variable, and what one command prints is no other's path (`$( )` only
+  `--%`, no doubled quote inside a quoted part, and no quote inside a quoted
+  argument of anything but a cmdlet); an option is ASCII; no argument holds a
+  variable except for `echo` and `Write-Output`; no argument is a network path,
+  `/net/HOST` or `WSMan:`, no `<` opens bash's `/dev/tcp`, a name with a
+  variable or a `~` other than the home, and what one command prints is no other's path (`$( )` only
   after `echo` and `Write-Output`, no pipe into the cmdlets that read a piped
   string as a path, no `-OutVariable`, `-p` or kin); and a line the two shells
   would read differently is not read-only. git's format and sort fields are

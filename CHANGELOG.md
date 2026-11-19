@@ -40,11 +40,17 @@ Releases page.
     `-OutVariable` and its kin. So do the spellings that hide one from a plain reading on
     Windows: a quoted start with text after it (`cat 'x'//host/share/f` is `x` and
     `//host/share/f` to PowerShell), a quote inside a quoted argument of a program
-    (`head '/"/host/share/f'`), and `@FILE`, a file of arguments to Git for Windows' Unix tools.
-    `git remote show NAME` (it connects; `-n` does not), `Get-Process -ComputerName`, bash's
-    `/dev/tcp/…` also behind quotes, a backslash or a variable (`/dev/t'c'p/…`), and `os_exec`
-    with a network share as its working directory (refused: `cd` there inside the command) are
-    covered too.
+    (`head '/"/host/share/f'`), a doubled quote inside a quoted part (`q"a"" //host/share/f"" b"`),
+    `@FILE`, a file of arguments to Git for Windows' Unix tools, an empty variable that joins the
+    text around it (`Get-Content \$null\host\share\f` reads `\\host\share\f`), a digit before a
+    path glued to an option (`grep -1f//host/share/f`), the file after `grep -f` or
+    `rg --ignore-file`, and a parameter name with a character PowerShell ignores in it
+    (`-Out<U+0640>Variable`). `git remote show NAME` (it connects; `-n` does not),
+    `Get-Process -ComputerName`, PowerShell's `WSMan:` drive, `/net/HOST` (an automount on macOS),
+    bash's `/dev/tcp/…` also behind quotes, a backslash, a variable or a `~+` that the working
+    directory spells (`/dev/t'c'p/…`, `~+/tcp/…` with workdir `/dev`), and `os_exec` with a
+    network share or `/net/HOST` as its working directory (refused: `cd` there inside the command)
+    are covered too.
 
   The check reads a line as sh and as PowerShell at once, and whatever it cannot tell asks. The
   plain forms run unasked as before: `env`, `env VAR=value`, `printenv`, `date`, `date +FORMAT`,
@@ -52,12 +58,15 @@ Releases page.
   `ls -la | grep x`, `echo $(whoami)`. Some harmless forms ask now: a read-only word given by its
   path (`/usr/bin/grep`), after `VAR=value` or in capitals (`LS`; PowerShell's own names such as
   `Get-ChildItem` are taken in any case); `date -d`; `$(…)` after any word but `echo`
-  (`wc -l $(git ls-files)`); `find`, `sort`, `git` and the other words above with a variable or an
+  (`wc -l $(git ls-files)`); a variable among the arguments of any word but `echo` and
+  `Write-Output` (`cat $HOME/.profile`, `-Stream :$DATA`; single-quoted `'$x'` is text and stays);
+  `find`, `sort`, `git` and the other words above with an
   unquoted glob among their arguments (`find . -name *.go`: quote the pattern); a quote inside a
   quoted argument of any word but a PowerShell cmdlet (`grep "it's" f`); a quoted start with text
-  after it (`cat 'a'b`); an argument that begins with `@`; a variable in what `<` reads;
-  `git branch --sort=contents:signature`; a subshell `(ls)`, backticks, `${HOME}` and anything
-  else in braces, `::` anywhere, and characters outside ASCII that are not letters. A command rule
+  after it (`cat 'a'b`); an argument that begins with `@`; `~user` in what `<` reads;
+  `git branch --sort=contents:signature`; an option with a character outside ASCII; a subshell
+  `(ls)`, backticks, `${HOME}` and anything else in braces, `::` anywhere, and characters outside
+  ASCII that are not letters. A command rule
   (`/permissions add os_exec(date -d *) allow`) lets a form you use run unasked again.
 - **Fixed: a power cut could leave more files than `config.json` unreadable.** The fix that
   flushes a saved file to the disk before it replaces the old one now covers every file Tenant
