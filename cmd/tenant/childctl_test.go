@@ -1405,6 +1405,34 @@ func TestChildAsRealProcesses(t *testing.T) {
 		t.Errorf("status: exit %d\n%s", exit, out)
 	}
 
+	// A write asks and lands; then the operator edits child.json on the
+	// machine, and the running process holds to it without a restart: a path
+	// closed to the file tools, by any way to it, and a ceiling.
+	vault := filepath.Join(realTemp(t), "vault")
+	secret := filepath.Join(vault, "key.pem")
+	m.ok(mach.ID, "os_write_file", map[string]any{"path": secret, "content": "the key"})
+	if got := string(mustRead(t, secret)); got != "the key" || !strings.HasPrefix(m.lastAsked(), "os_write|") {
+		t.Errorf("write: file %q, asked %q", got, m.lastAsked())
+	}
+	if err := fleet.UpdateChild(fleet.ChildPath(dir), func(c *fleet.Child) error {
+		c.SecretPaths, c.Ceiling = []string{vault}, fleet.CeilingReadOnly
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m.refused(mach.ID, "os_read_file", map[string]any{"path": secret}, "holds secrets")
+	if door := filepath.Join(realTemp(t), "door"); os.Symlink(vault, door) == nil {
+		m.refused(mach.ID, "os_read_file", map[string]any{"path": filepath.Join(door, "key.pem")}, "holds secrets")
+	}
+	before := m.askedCount()
+	m.refused(mach.ID, "os_exec", map[string]any{"command": say("under-a-ceiling")}, "os_exec (ceiling read-only)")
+	if m.askedCount() != before {
+		t.Error("under read-only the master was asked")
+	}
+	if err := fleet.UpdateChild(fleet.ChildPath(dir), func(c *fleet.Child) error { c.Ceiling = fleet.CeilingFull; return nil }); err != nil {
+		t.Fatal(err)
+	}
+
 	// Pause and resume, typed on the machine.
 	beatFile := filepath.Join(realTemp(t), "beat.txt")
 	m.ok(mach.ID, "os_exec", map[string]any{"command": beat(beatFile), "background": true})
