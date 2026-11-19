@@ -1295,10 +1295,19 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 					br.Labels = appendLabel(br.Labels, label)
 				}
 				br.Images = a.saveToolImages(ctx, br)
-			} else if len(br.rawImages) > 0 {
-				// A failed or unregistered call has no result labels to give
-				// its images, so they aren't attached; say so (TEN-493).
-				ImageDropped.Log(a.ev(ctx), "agent", a.cfg.AgentID, "tool", br.Call.Name, "err", "the tool call failed")
+			} else {
+				// A failed call's text can be somebody else's too (a fleet
+				// machine's error is that machine's words): what the tool
+				// reported is tracked and labelled all the same (TEN-531).
+				a.infoFlow.adopt(br.reported.results)
+				for _, label := range br.reported.Labels() {
+					br.Labels = appendLabel(br.Labels, label)
+				}
+				if len(br.rawImages) > 0 {
+					// A failed or unregistered call has no result labels to give
+					// its images, so they aren't attached; say so (TEN-493).
+					ImageDropped.Log(a.ev(ctx), "agent", a.cfg.AgentID, "tool", br.Call.Name, "err", "the tool call failed")
+				}
 			}
 			result.ToolTrace = append(result.ToolTrace, br)
 			toolOutcome := "success"

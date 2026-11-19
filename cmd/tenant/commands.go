@@ -2159,7 +2159,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	mux.EnableStats(tstats)
 	mainLocal.EnableStats(tstats)
 	life.AddFunc(lifecycle.Release, "tool stats", tstats.StartPersist(time.Minute))
-	mainTools := composite{shared: mux, local: mainLocal, budget: rt.budget, agentID: c.agent}
+	mainTools := composite{shared: mux, local: mainLocal, budget: rt.budget, agentID: c.agent, refresh: fleetToolSync(mainLocal, mux)}
 
 	// Live bus view → feed (lossless cursor over the retained log).
 	go func() {
@@ -2319,7 +2319,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		PerTurnToolRanking: c.lc.PerTurnToolRanking,
 		Skills:             skillRetriever{st: skillStore, agentID: c.agent, tools: mainTools},
 		SystemPrompt:       mainPrompt,
-		RenderAgents:       func() string { return renderAgentsForOrchestrator(rt.AgentProfiles()) },
+		RenderAgents:       func() string { return renderAgentsForOrchestrator(rt.AgentProfiles()) + fleetRoster() },
 		// Context compaction: when the budget fills, summarize old turns
 		// (via the summarizer role) instead of hard-truncating them.
 		Compactor: compressor,
