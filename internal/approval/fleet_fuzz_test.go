@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -150,6 +152,7 @@ func FuzzFleetDecision(f *testing.F) {
 			// What must hold, read off the state before the call.
 			a, _ := fleet.Scheme("aaaa")
 			child, _ := fleet.Child("aaaa")
+			mayReach := o.Open && (o.Machines == nil || slices.Contains(o.Machines, "aaaa")) // worked out here, not asked of the code under test
 			reachErr := fleet.For(o, Machine{ID: "aaaa"}).Reach()
 			origin := ModeAllow
 			if o.Verdict != nil {
@@ -171,12 +174,13 @@ func FuzzFleetDecision(f *testing.F) {
 			// Everything a machine's card must never change.
 			others := func() map[string]string {
 				return map[string]string{
-					"machine bbbb":       schemeJSON(mustScheme(t, fleet, "bbbb")),
-					"the master's rules": schemeJSON(Scheme{ToolRules: master.Snapshot()}),
-					"the master's modes": schemeJSON(Scheme{Permissions: host.Modes()}),
-					"the origin's rules": schemeJSON(Scheme{ToolRules: asker.rules.Snapshot()}),
-					"the origin's modes": schemeJSON(Scheme{Permissions: asker.Modes()}),
-					"the fleet's rules":  schemeJSON(Scheme{ToolRules: fleet.Rules().Snapshot()}),
+					"machine bbbb":        schemeJSON(mustScheme(t, fleet, "bbbb")),
+					"the master's rules":  schemeJSON(Scheme{ToolRules: master.Snapshot()}),
+					"the master's modes":  schemeJSON(Scheme{Permissions: host.Modes()}),
+					"the origin's rules":  schemeJSON(Scheme{ToolRules: asker.rules.Snapshot()}),
+					"the origin's modes":  schemeJSON(Scheme{Permissions: asker.Modes()}),
+					"the fleet's rules":   schemeJSON(Scheme{ToolRules: fleet.Rules().Snapshot()}),
+					"the process's rules": schemeJSON(Scheme{ToolRules: DefaultRules.Snapshot()}),
 				}
 			}
 			before := others()
@@ -193,11 +197,13 @@ func FuzzFleetDecision(f *testing.F) {
 			switch {
 			case prompts > 1:
 				say("more than one prompt for one request")
-			case reachErr != nil && (ok || prompts != 0):
-				say("an origin that may not reach the machine got through: " + reachErr.Error())
+			case mayReach != (reachErr == nil):
+				say(fmt.Sprintf("Reach says %v for an origin that may reach the machine: %v", reachErr, mayReach))
+			case !mayReach && (ok || prompts != 0):
+				say("an origin that may not reach the machine got through")
 			case origin == ModeDeny && (ok || prompts != 0):
 				say("the origin refuses, and deny must win unasked")
-			case reachErr == nil && targetDenies && (ok || prompts != 0):
+			case mayReach && targetDenies && (ok || prompts != 0):
 				say("the machine's scheme denies, and deny must win unasked")
 			case origin == ModeAsk && ok && prompts == 0:
 				say("the origin asks, and the action went through unasked")

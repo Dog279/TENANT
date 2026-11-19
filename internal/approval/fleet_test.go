@@ -98,6 +98,7 @@ func schemeJSON(s Scheme) string {
 func TestFleet_AlwaysStaysOnItsMachine(t *testing.T) {
 	r := newFleetRig(t, "aaaa", "bbbb")
 	bBefore := schemeJSON(r.scheme("bbbb"))
+	processWide := DefaultRules.Snapshot() // the rule set every other broker of this process shares
 
 	// A command: its family is saved as a command rule for aaaa.
 	r.answer = control.ApproveAlways
@@ -130,6 +131,9 @@ func TestFleet_AlwaysStaysOnItsMachine(t *testing.T) {
 	}
 	if rules := r.master.Snapshot(); len(rules) != 0 {
 		t.Fatalf("the master gained rules: %v", rules)
+	}
+	if now := DefaultRules.Snapshot(); !maps.Equal(now, processWide) {
+		t.Fatalf("the process-wide rules moved: %v, were %v", now, processWide)
 	}
 	for cat, mode := range r.host.Modes() {
 		if mode != "ask" {
@@ -1163,22 +1167,27 @@ func TestFleet_ReloadAppliesEditsOnly(t *testing.T) {
 // and a save writes it back as it was rather than erasing it.
 func TestFleet_MalformedEntriesFailClosed(t *testing.T) {
 	bad := map[string]string{
-		"not an object":         `"allow"`,
-		"an array":              `["exec"]`,
-		"null":                  `null`,
-		"modes not an object":   `{"permissions":"allow"}`,
-		"a mode not a string":   `{"permissions":{"exec":true}}`,
-		"a misspelt mode":       `{"permissions":{"exec":"dney"}}`,
-		"an unknown category":   `{"permissions":{"exce":"deny"}}`,
-		"a misspelt key":        `{"permission":{"exec":"deny"}}`,
-		"a misspelt rules key":  `{"tool_rule":{"os_exec(rm *)":"deny"}}`,
-		"a rule's mode":         `{"tool_rules":{"os_exec(rm *)":"dney"}}`,
-		"a rule's pattern":      `{"tool_rules":{"two words":"deny"}}`,
-		"a rule for everything": `{"tool_rules":{"*":"allow"}}`,
-		"a rule not a string":   `{"tool_rules":{"os_exec":1}}`,
-		"rules not an object":   `{"tool_rules":["os_exec"]}`,
-		"two values":            `{} {}`,
-		"not JSON":              `{"permissions":`,
+		"not an object":          `"allow"`,
+		"an array":               `["exec"]`,
+		"null":                   `null`,
+		"modes not an object":    `{"permissions":"allow"}`,
+		"a mode not a string":    `{"permissions":{"exec":true}}`,
+		"a misspelt mode":        `{"permissions":{"exec":"dney"}}`,
+		"an unknown category":    `{"permissions":{"exce":"deny"}}`,
+		"a misspelt key":         `{"permission":{"exec":"deny"}}`,
+		"a misspelt rules key":   `{"tool_rule":{"os_exec(rm *)":"deny"}}`,
+		"a rule's mode":          `{"tool_rules":{"os_exec(rm *)":"dney"}}`,
+		"a rule's pattern":       `{"tool_rules":{"two words":"deny"}}`,
+		"a rule for everything":  `{"tool_rules":{"*":"allow"}}`,
+		"a rule not a string":    `{"tool_rules":{"os_exec":1}}`,
+		"rules not an object":    `{"tool_rules":["os_exec"]}`,
+		"a key twice":            `{"permissions":{"exec":"deny"},"permissions":{"exec":"allow"}}`,
+		"twice, in another case": `{"permissions":{"exec":"deny"},"PERMISSIONS":{"exec":"allow"}}`,
+		"a category twice":       `{"permissions":{"exec":"deny","exec":"allow"}}`,
+		"a rule twice":           `{"tool_rules":{"os_exec(rm *)":"deny","os_exec(rm *)":"allow"}}`,
+		"a rule twice, spaced":   `{"tool_rules":{" x_post":"deny","x_post":"allow"}}`,
+		"two values":             `{} {}`,
+		"not JSON":               `{"permissions":`,
 	}
 	for what, raw := range bad {
 		t.Run(what, func(t *testing.T) {
@@ -1246,6 +1255,7 @@ func TestFleet_MalformedEntriesFailClosed(t *testing.T) {
 		"everything":       `{"*":"allow"}`,
 		"not JSON at all":  `{`,
 		"a number, a rule": `7`,
+		"a rule twice":     `{"x_post":"deny","x_post":"allow"}`,
 	} {
 		t.Run("fleet rules: "+what, func(t *testing.T) {
 			r := newFleetRig(t)
@@ -1279,6 +1289,12 @@ func TestFleet_MalformedEntriesFailClosed(t *testing.T) {
 				t.Errorf("after an edit: Inherit %v, saved %s", err, saved)
 			}
 		})
+	}
+
+	// Two patterns that differ only in case are two rules, as everywhere else.
+	r = newFleetRig(t)
+	if n, problems := r.fleet.Load(raws("aaaa", `{"tool_rules":{"Delete_*":"deny","delete_*":"allow"}}`), json.RawMessage(`{"X_post":"deny","x_post":"ask"}`)); n != 2 || len(problems) != 0 {
+		t.Fatalf("patterns that differ in case: %d change(s), problems %v", n, problems)
 	}
 
 	// Put is as strict as the file.
