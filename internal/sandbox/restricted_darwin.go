@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"tenant/internal/procprotect"
 )
 
 // This file is the macOS half of the "restricted" backend (SEC-010 / TEN-346):
@@ -152,7 +154,7 @@ func (seatbelt) Run(ctx context.Context, cmd Command, pol Policy) (Result, error
 	// the whole stream in memory.
 	out := &headTailBuffer{max: pol.Limits.MaxOutputBytes}
 	c.Stdout, c.Stderr = out, out
-	err = c.Run()
+	err = procprotect.Run(c)
 	res := Result{Output: out.String(), PID: pidOf(c)}
 	if c.Process != nil && reapGroup(c.Process.Pid) {
 		res.Violations = append(res.Violations, Violation{Kind: "limit",

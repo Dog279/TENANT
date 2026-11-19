@@ -31,6 +31,7 @@ import (
 	"tenant/internal/lifecycle"
 	"tenant/internal/logs/catalog"
 	"tenant/internal/privacy"
+	"tenant/internal/procprotect"
 	"tenant/internal/selfupdate"
 	"tenant/internal/version"
 )
@@ -240,7 +241,7 @@ func runUpdate(ctx context.Context, u *updateEnv, o updateOpts) error {
 	}
 	smoke, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	if out, err := exec.CommandContext(smoke, staged, "version").CombinedOutput(); err != nil || !strings.Contains(string(out), newV) {
+	if out, err := procprotect.CombinedOutput(exec.CommandContext(smoke, staged, "version")); err != nil || !strings.Contains(string(out), newV) {
 		return fmt.Errorf("the new binary failed its smoke test (%s version: %v): %s", member, err, strings.TrimSpace(string(out)))
 	}
 	// 6. Confirm. Without a terminal there is nobody to ask: --yes.

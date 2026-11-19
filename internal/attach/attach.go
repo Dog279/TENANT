@@ -29,6 +29,7 @@ import (
 
 	"tenant/internal/fsperm"
 	"tenant/internal/model"
+	"tenant/internal/procprotect"
 )
 
 // Limits. The long edge and area match what Anthropic resizes to (so an image
@@ -64,7 +65,7 @@ var (
 	goos   = runtime.GOOS
 	now    = time.Now
 	runCmd = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return exec.CommandContext(ctx, name, args...).CombinedOutput()
+		return procprotect.CombinedOutput(exec.CommandContext(ctx, name, args...))
 	}
 )
 

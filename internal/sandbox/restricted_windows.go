@@ -13,6 +13,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"tenant/internal/procprotect"
 )
 
 // Windows has no restricted backend: the confining sandbox on every OS is the
@@ -90,7 +92,7 @@ func (b *windowsRestricted) Run(ctx context.Context, cmd Command, pol Policy) (R
 
 	c.SysProcAttr = &syscall.SysProcAttr{CreationFlags: uint32(windows.CREATE_SUSPENDED)}
 
-	if err := c.Start(); err != nil {
+	if err := procprotect.Start(c); err != nil {
 		return Result{}, fmt.Errorf("sandbox: start child: %w", err)
 	}
 

@@ -36,6 +36,7 @@ import (
 
 	"tenant/internal/fsperm"
 	"tenant/internal/logs/capture"
+	"tenant/internal/procprotect"
 
 	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/emulation"
@@ -492,6 +493,12 @@ func NewSession(cfg Config) (*Session, error) {
 	life, stop := context.WithCancel(context.Background())
 	chrome := capture.New(life, "browser", "child", "chrome")
 	opts = append(opts, chromedp.CombinedOutput(chrome))
+	if runtime.GOOS == "windows" {
+		// Chrome starts as an ordinary process of the user (TEN-535).
+		// Windows only: chromedp's own default for the command, which this
+		// replaces, does something on Linux alone.
+		opts = append(opts, chromedp.ModifyCmdFunc(procprotect.Child))
+	}
 	// UA is set via CDP after launch (applyStealth) so the UA string and
 	// the sec-ch-ua client hints are derived from the SAME real version —
 	// no static-UA-vs-client-hint mismatch.
@@ -511,10 +518,14 @@ func NewSession(cfg Config) (*Session, error) {
 	// not on the first tool call mid-conversation. The stealth script is
 	// installed to run on EVERY new document (before the page's own JS),
 	// so navigator.webdriver et al. are patched before detectors read them.
-	if err := chromedp.Run(tabCtx,
-		chromedp.ActionFunc(applyStealth),
-		chromedp.ActionFunc(blockResources),
-	); err != nil {
+	// chromedp starts Chrome, and makes the pipe to it, inside this call.
+	procprotect.Ordinary(func() {
+		err = chromedp.Run(tabCtx,
+			chromedp.ActionFunc(applyStealth),
+			chromedp.ActionFunc(blockResources),
+		)
+	})
+	if err != nil {
 		cancelT()
 		cancelA()
 		_ = proxy.Close()

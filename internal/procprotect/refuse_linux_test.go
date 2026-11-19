@@ -232,6 +232,7 @@ func TestNoDumpAfterCrash(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer stdin.Close()
+		t.Cleanup(func() { _ = c.Process.Kill() }) // on every path, the crash that did not happen included
 		buf := make([]byte, 1)
 		if _, err := stdout.Read(buf); err != nil { // it is ready: Protect has run
 			t.Fatal(err)

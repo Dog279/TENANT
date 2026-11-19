@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"tenant/internal/procprotect"
 )
 
 // Process is a long-lived command started under a Policy with open pipes:
@@ -55,7 +57,13 @@ func Start(ctx context.Context, b Backend, argv []string, pol Policy) (*Process,
 // assignment) and waits for the exit in the background. stderr, when not
 // nil, also gets what the process writes to stderr (Policy.Stderr). release
 // runs once the process has exited, or at once when it fails to start.
-func startProcess(c *exec.Cmd, stderr io.Writer, afterStart func(pid int) error, release func()) (*Process, error) {
+func startProcess(c *exec.Cmd, stderr io.Writer, afterStart func(pid int) error, release func()) (p *Process, err error) {
+	procprotect.Child(c)
+	procprotect.Ordinary(func() { p, err = startProcessHere(c, stderr, afterStart, release) }) // its pipes are made here
+	return p, err
+}
+
+func startProcessHere(c *exec.Cmd, stderr io.Writer, afterStart func(pid int) error, release func()) (*Process, error) {
 	cleanup := func() {
 		if release != nil {
 			release()

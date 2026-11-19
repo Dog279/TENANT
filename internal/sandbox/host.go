@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"tenant/internal/procprotect"
 )
 
 // hostBackend runs a command directly on the host with NO filesystem or network
@@ -73,7 +75,7 @@ func (hostBackend) Run(ctx context.Context, cmd Command, pol Policy) (Result, er
 	// gave, without ever holding the whole stream.
 	out := &headTailBuffer{max: pol.Limits.MaxOutputBytes}
 	c.Stdout, c.Stderr = out, out
-	err := c.Run()
+	err := procprotect.Run(c)
 	res := Result{Output: out.String(), PID: pidOf(c)}
 	if errors.Is(err, exec.ErrWaitDelay) {
 		// The command finished; something it started in the background still

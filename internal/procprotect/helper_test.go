@@ -2,6 +2,7 @@ package procprotect
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -171,7 +173,9 @@ func startVictim(t *testing.T, kind string, env ...string) victimInfo {
 func attack(t *testing.T, v victimInfo) map[string]outcome {
 	t.Helper()
 	target, _ := json.Marshal(v)
-	c := exec.Command(os.Args[0])
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute) // an attacker that hangs is killed
+	defer cancel()
+	c := exec.CommandContext(ctx, os.Args[0])
 	c.Env = append(os.Environ(), envHelper+"=attack", envTarget+"="+string(target))
 	c.Stderr = os.Stderr
 	b, err := Output(c)

@@ -23,6 +23,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"tenant/internal/procprotect"
 )
 
 // serviceSpec is everything a unit needs. Paths are absolute: a supervisor
@@ -38,7 +40,7 @@ type serviceSpec struct {
 // The only way out to launchctl, systemctl, loginctl, schtasks and sc; tests
 // swap in a recorder, the way holdDataDir and promptPassphrase are swapped.
 var runCmd = func(ctx context.Context, name string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	out, err := procprotect.CombinedOutput(exec.CommandContext(ctx, name, args...))
 	return string(out), err
 }
 
