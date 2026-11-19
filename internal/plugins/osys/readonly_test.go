@@ -258,6 +258,38 @@ var readOnlyBypasses = []struct{ name, cmd string }{
 	{"/net/HOST from a relative path", "cat ../../../../net/attacker.example/x"},
 	// PowerShell's WSMan: drive connects to WinRM.
 	{"WSMan:", `Get-ChildItem WSMan:\localhost`},
+
+	// Round four (redteam-534-round4.md). macOS mounts /net/HOST when a
+	// program looks a path up there; the check looked only at a word's start.
+	{"a climb from home to /net", "cat ~/../../net/attacker.example/x"},
+	{"a climb from home to /net for ls", "ls ~/../../net/attacker.example/x"},
+	{"/net glued to grep -f", "grep -f/net/attacker.example/p x"},
+	{"/net glued to grep -f after a digit", "grep -1f/net/attacker.example/p x"},
+	{"/net glued to du -X", "du -X/net/attacker.example/p"},
+	{"/net by a glob of ?", "cat /n?t/attacker.example/x"},
+	{"/net by a bracket glob", "ls /[n]et/attacker.example/x"},
+	{"/net by a glob of *", "ls /ne*/attacker.example/x"},
+	{"/NET, which the default macOS file system takes for /net", "cat /NET/attacker.example/x"},
+	{"/Net", "cat /Net/attacker.example/x"},
+	// A path printed by one word and read as a path by the next: the option
+	// reads the paths its standard input lists, which the line does not show.
+	{"file -f - reads paths from a pipe", "echo _net_attacker.example_x | tr _ / | file -f -"},
+	{"sort --files0-from=-", "echo _net_attacker.example_x | tr _ / | sort --files0-from=-"},
+	{"du --files0-from=-", "echo _net_attacker.example_x | tr _ / | du --files0-from=-"},
+	{"wc --files0-from=-", "echo _net_attacker.example_x | tr _ / | wc --files0-from=-"},
+	{"git log prints the path file -f reads", "git log -1 --format=%x2fnet%x2fattacker.example%x2fx | file -f -"},
+	{"echo prints the path file -f reads", "echo /ne$1t/attacker.example/x | file -f -"},
+	// The same with Git for Windows' Unix tools on PATH: //attacker/share/x.
+	{"file -f - reads a share from a pipe", "echo __attacker_share_x | tr _ / | file -f -"},
+	// Once an option gave the pattern, every operand is a file.
+	{"grep -e gave the pattern", "grep -epat //attacker"},
+	{"grep --regexp gave the pattern", "grep --regexp=pat //attacker"},
+	{"grep -f gave the pattern", "grep -f/dev/null //attacker"},
+	{"rg -e gave the pattern", "rg -epat //attacker"},
+	{"rg -f gave the pattern", "rg -f/dev/null //attacker"},
+	// A relative climb that cleans to ../../net from any start.
+	{"./ before a climb to net", "cat ./../../../net/attacker.example/x"},
+	{"a name before a climb to net", "cat Library/../../../net/attacker.example/x"},
 }
 
 // Forms ReadOnly refuses though no harm was shown for them: their effect
@@ -483,6 +515,35 @@ var readOnlyRefused = []struct{ name, cmd string }{
 	{"/net alone after .., any word", "ls ../net/x"},
 	{"WSMan: in capitals after -Path:", `Get-Item -Path:WSMAN:\localhost`},
 	{"a non-ASCII letter in an option", "ls -lé"},
+
+	// Round five: the siblings of round four's findings.
+	{"/net crossed on the way elsewhere", "cat /net/attacker.example/../../etc/hosts"},
+	{"/net itself", "ls /net"},
+	{"a glob that matches net at the root", "ls /*/attacker.example"},
+	{"a negated bracket for net", "cat /[!x]et/attacker.example/x"},
+	{"a bracket class for net", "cat /[[:lower:]]et/attacker.example/x"},
+	{"a glob that matches .. before net", "cat .?/.?/net/attacker.example/x"},
+	{"brace expansion for net", "cat /{net,x}/attacker.example/x"},
+	{"a backslash inside net", `cat /n\et/attacker.example/x`},
+	{"~user and a climb", "cat ~root/../net/attacker.example/x"},
+	{"a climb from home after =", "grep --file=~/../../net/attacker.example/p x"},
+	{"/net after a comma", "Get-Content a.txt,/net/attacker.example/x"},
+	{"/net after -Path:", "Get-Content -Path:/net/attacker.example/x"},
+	{"/net in what < opens", "cat < /net/attacker.example/x"},
+	{"/net glued to <", "cat </net/attacker.example/x"},
+	{"a share glued to <", "cat <//attacker/share/x"},
+	{"a climb from home in what < opens", "cat < ~/../../net/attacker.example/x"},
+	{"grep -e after the operands (GNU permutes)", "grep //attacker -e pat"},
+	{"grep -ie gave the pattern", "grep -ie pat //attacker"},
+	{"a host as the second -e", "grep -e pat -e //attacker"},
+	{"wc --files0-from abbreviated", "wc --f=list"},
+	{"du --files0-from abbreviated", "du --files0=list"},
+	{"sort --files0-from abbreviated", "sort --fil=list"},
+	{"file --files-from", "file --files-from list"},
+	{"file -f in a cluster", "file -bf list"},
+	{"find -files0-from", "find -files0-from list -name x"},
+	{"tree --fromfile", "tree --fromfile list"},
+	{"git log --stdin", "git log --stdin"},
 }
 
 // The plain forms must go on running without a prompt.
@@ -547,6 +608,13 @@ var readOnlyPlain = []string{
 	"echo $HOME", "echo $env:PATH", "echo \\$null\\h\\s", "grep 'x$' f", "cat < ~/notes.txt", "cat ~/x",
 	"grep -i //go:build f", "rg -e //x f", "git log --grep=http://example.com/x -1", "ls net/x", "ls -1 src",
 	"Get-ChildItem Env:", "Get-Content Variable:PSHOME",
+	// Round five: a directory named net anywhere but where /net is, a home
+	// with no climb, globs that cannot reach the root, the options that keep a
+	// path on the line.
+	"cat internal/net/dial.go", "ls vendor/golang.org/x/net/http2", "grep -rn Dial ./net/", "ls ~/Library",
+	"cat ~/.gitconfig", "ls -d ~/.*", "ls */*", "cat /etc/hosts", "ls /usr/local/net", "wc -l *.go", "du -sh *",
+	"sort names.txt", "file README.md", "grep -f pats.txt x", "grep -e pat f g", "du -X skip.txt .",
+	"git log --stat -1",
 }
 
 func TestReadOnlyBypasses(t *testing.T) {
@@ -596,6 +664,7 @@ var (
 	// A network path glued to an option, after letters and digits (-1f//h/s).
 	roGluedNetworkPath = regexp.MustCompile(`^-[A-Za-z0-9-]*[:=]?[\\/]{2,}[^\\/\s]+[\\/]`)
 	roHostAlone        = regexp.MustCompile(`^[\\/]{2,}[^\\/\s]+$`)
+	roOptionName       = regexp.MustCompile(`^-[A-Za-z0-9-]*:?`)
 	roStrictWords      = map[string]bool{"env": true, "date": true, "hostname": true, "find": true, "sort": true, "uniq": true, "tree": true, "file": true, "rg": true, "git": true, "brew": true}
 	roCmdlets          = map[string]bool{"get-childitem": true, "gci": true, "dir": true, "ls": true, "get-item": true, "get-content": true, "cat": true, "type": true, "get-location": true, "pwd": true, "get-process": true, "ps": true, "get-date": true, "select-string": true, "write-output": true, "echo": true, "sort": true}
 	roGitVerbs         = map[string]bool{"status": true, "log": true, "diff": true, "show": true, "rev-parse": true, "ls-files": true, "blame": true, "describe": true, "branch": true, "remote": true}
@@ -728,15 +797,47 @@ func readOnlyViolation(c string) string {
 			if i > 0 && roHostAlone.MatchString(a) && roTakesFile(given[i-1]) {
 				return "a file option names a host: " + given[i-1] + " " + a
 			}
+			// A pattern glued to -e, -f or --regexp=: every operand is a file.
+			if roHostAlone.MatchString(a) && (word == "grep" || word == "rg") && (i == 0 || !strings.HasPrefix(given[i-1], "-")) && slices.ContainsFunc(given, func(g string) bool {
+				return len(g) > 2 && (strings.HasPrefix(g, "-e") || strings.HasPrefix(g, "-f") || strings.HasPrefix(g, "--regexp="))
+			}) {
+				return "the pattern came from an option, so a host is a file: " + a
+			}
 			if strings.Contains(strings.ToLower(a), "wsman:") {
 				return "WSMan: connects to WinRM: " + a
 			}
 			if strings.HasPrefix(a, "-") && strings.IndexFunc(a, func(r rune) bool { return r > unicode.MaxASCII }) >= 0 {
 				return "PowerShell ignores some characters in a parameter name: " + a
 			}
-			if c := path.Clean(a); (strings.HasPrefix(a, "/") || strings.HasPrefix(a, "..")) &&
-				(strings.HasPrefix(c, "/net/") || strings.HasPrefix(strings.TrimLeft(c, "./"), "net/")) {
-				return "an automount picks the host: " + a
+			// Where a path can begin: the start, after = or a comma, after an
+			// option's letters and digits. Any case; a ~ that climbs; a first
+			// component (after the root, or after a climb) that is or globs net.
+			starts := []string{a}
+			if m := roOptionName.FindString(a); m != "" {
+				starts = append(starts, a[len(m):])
+			}
+			for j := range a {
+				if a[j] == '=' || a[j] == ',' {
+					starts = append(starts, a[j+1:])
+				}
+			}
+			for _, s := range starts {
+				s = strings.ToLower(s)
+				if strings.HasPrefix(s, "~") && slices.Contains(strings.Split(s, "/"), "..") {
+					return "a climb from a home: " + a
+				}
+				c := path.Clean(s)
+				if !strings.HasPrefix(c, "/") && !strings.HasPrefix(c, "../") {
+					continue
+				}
+				rest := strings.TrimPrefix(c, "/")
+				for strings.HasPrefix(rest, "../") {
+					rest = rest[3:]
+				}
+				first, _, _ := strings.Cut(rest, "/")
+				if ok, _ := path.Match(first, "net"); ok {
+					return "an automount picks the host: " + a
+				}
 			}
 			if p, _, _ := strings.Cut(strings.ToLower(a), ":"); (word == "ps" || word == "get-process") && (p == "-cn" || (len(p) > 1 && strings.HasPrefix("-computername", p))) {
 				return "Get-Process asks another machine: " + a
