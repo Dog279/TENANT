@@ -58,6 +58,9 @@ const (
 	AuditCall = "call"
 	// AuditDone: how the call ended.
 	AuditDone = "done"
+	// AuditRehome: someone on this machine gave it another master
+	// (tenant child rehome). No call goes with it.
+	AuditRehome = "rehome"
 )
 
 // How a call ended, in its AuditDone record.
@@ -98,6 +101,11 @@ type AuditRecord struct {
 	Note         string     `json:"note,omitempty"` // why a call was refused
 	ResultSHA256 string     `json:"result_sha256,omitempty"`
 	ResultBytes  int        `json:"result_bytes,omitempty"`
+	// AuditRehome: the account that did it, and the certificate fingerprints
+	// of the master it left and of the one it trusts now.
+	By   string `json:"by,omitempty"`
+	From string `json:"from,omitempty"`
+	To   string `json:"to,omitempty"`
 	// Prev is the hash of the line before this one.
 	Prev string `json:"prev"`
 }
@@ -113,7 +121,7 @@ func parseAuditRecord(line []byte) (AuditRecord, error) {
 		return AuditRecord{}, err
 	}
 	if _, err := parseFingerprint(r.Prev); err != nil || r.Seq == 0 || r.Time.IsZero() ||
-		(r.Event != AuditCall && r.Event != AuditDone) {
+		(r.Event != AuditCall && r.Event != AuditDone && r.Event != AuditRehome) {
 		return AuditRecord{}, errors.New("not an audit record")
 	}
 	return r, nil
@@ -431,6 +439,15 @@ func (l *AuditLog) append(rec AuditRecord) (string, error) {
 		l.oslog(auditOSLine(rec, hash))
 	}
 	return hash, nil
+}
+
+// Rehome writes the record of this machine being given another master: by
+// is the account that ran the command, from and to the certificate
+// fingerprints of the old master and the new one. It is on the disk, and in
+// the system log, when it returns.
+func (l *AuditLog) Rehome(by, from, to string) error {
+	_, err := l.append(AuditRecord{Event: AuditRehome, By: by, From: from, To: to})
+	return err
 }
 
 // rotate closes the full file under the number of its last record and

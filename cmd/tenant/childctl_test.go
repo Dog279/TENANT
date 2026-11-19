@@ -411,7 +411,7 @@ func TestChildInstallRefusals(t *testing.T) {
 		"a sandbox this build has not": {[]string{"install", "--dir", filepath.Join(t.TempDir(), "c"), "--sandbox", "chroot"}, `--sandbox "chroot"`},
 		"an argument to another verb":  {[]string{"pause", "now"}, "unexpected argument"},
 		"no verb":                      {nil, "usage: tenant child"},
-		"an unknown verb":              {[]string{"rehome"}, "unknown child command"},
+		"an unknown verb":              {[]string{"reinstall"}, "unknown child command"},
 	} {
 		fakeElevated(t, false)
 		err := cmdChild(context.Background(), tc.args)
