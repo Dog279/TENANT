@@ -80,6 +80,8 @@ Browsers don't keep a sign-in apart by port: every other web service on this com
 - **On a network address** (for example `--dashboard-addr 0.0.0.0:9770`): Tenant refuses to start unless the dashboard has a key and a certificate (`dashboard.tls_cert` and `dashboard.tls_key`).
 - **Never** forward the port to the internet.
 
+One thing works only on the computer running Tenant, in a browser signed in at http://127.0.0.1:9770 (or localhost): **confirming a fleet machine** on the **Fleet** page, the step that lets your agent work on another computer. By your Tailscale name, behind a proxy, from another computer or with the key in a script, the page shows the machine and where to confirm it, and the six digits are refused ("Nothing changed: a machine is confirmed in a browser on the computer running Tenant…"). The terminal on that computer can confirm it too. A browser on another computer that reaches the port through an SSH tunnel counts as being there, as a terminal over that SSH would.
+
 If a page shows one of these instead of the dashboard:
 
 | It says | It means | What to do |
@@ -108,6 +110,7 @@ Each request says what your agent wants to do, in which area, which of its tools
 - **Deny:** refused. Your agent is told no and carries on without it.
 - **Allow for the rest of this session** (only on some requests, behind a second step): the same kind of action goes ahead without asking until Tenant restarts, or until you press **Ask me again** on its row under "What your agent may do on its own". It isn't offered where the grant would be hidden or would let your agent get around your settings: commands that don't run in the sandbox, leaving the sandbox, requests from iMessage, and requests a tool rule made ask.
 - A request from **another computer that wants to pair** asks a second time: allow it only if the person pairing told you the same PIN that the request shows.
+- A request for something on **a fleet machine** starts with "On the machine" and its name, and its second line gives the machine's id and "not this computer". Its text starts with the same two. It never offers **Allow for the rest of this session**: that grant is this computer's, and a machine's own settings are on its **Fleet** page.
 
 There is no "always" button here. To stop being asked about a whole area, change its setting (section 5): that is a deliberate step with a warning.
 
@@ -171,6 +174,7 @@ The menu groups the pages. On a phone, **Menu** at the top opens it; **Log out**
 | **Helpers** | Specialists your agent hands work to, each with its own model and instructions. A helper on a hosted model says "Sends its work to <provider>". | **Remove**, **Reset** and **Clear instructions**. |
 | **Remote services** | Outside services your agent can use. Connecting one that needs a sign-in opens a sign-in page on the computer running Tenant (section 7). An address that can't work is refused on the page; a connection that fails later is in **Logs** (`log:mcp*`). | **Disconnect**, and **Don't ask** (its tools go ahead without asking, even in an area set to Deny). **Ask first** and **Block** are one tap. |
 | **Scheduled jobs** | Jobs your agent runs on a timetable. | **Delete** a job, and turning on **Scheduled jobs may make changes**. |
+| **Fleet** | The other computers your agent can work on (its fleet): which are online, what each reports about itself, its memory, and what your agent may do on each. A machine's own page confirms it (on the computer running Tenant only, section 3), renames or revokes it, changes its settings and rules, and compares them with a fresh copy of this Tenant's. | **Revoke**, **Allow** for an area, a rule that lets a tool or a command go ahead (**Don't ask**), removing a rule that made one ask or blocked it, **Copy again** and **Apply fleet rules**. Confirming has no second step: typing the machine's six digits is the step. |
 | **Approvals & safety** | What's waiting for your OK (section 4), and what your agent may do on its own (section 5). | **Allow** for an area, **Allow for the rest of this session**, and a pairing request's **Allow once**. |
 | **Access** | Who may message your agent on iMessage and Discord, and what those conversations may make it do. | **Add someone**, **Remove everyone**, removing the last person, turning on answering (**Turn on**, **Start**), changing the Discord account that approves requests, letting Discord run commands, and **Allow** for an area. |
 | **Model** | Which model answers, and models to add: one on a server on your network (see below), or a cloud model. | **Use this model** and **Remove**. |
