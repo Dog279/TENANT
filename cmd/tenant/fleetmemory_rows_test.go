@@ -300,3 +300,31 @@ func TestFleetMemoryAMachineCannotUseUpTheNumbers(t *testing.T) {
 		t.Fatalf("the master's shadow: %q", got)
 	}
 }
+
+// A machine whose child does not know the memory methods (an older Tenant)
+// keeps its link and its calls; its memory is "not known", saying why, and
+// nothing is sent to it. Offline, a machine behind the master says so.
+func TestFleetMemoryAnOlderChild(t *testing.T) {
+	l := newMemLab(t)
+	l.note("one")
+	l.mint()
+	l.compare(memoryInStep, "generation 1")
+	l.disconnect()
+	l.note("two")
+	l.mint()
+	l.mem().kick(l.ch.id) // the machine is offline
+	l.await(memoryBehind, "offline")
+	l.copies = nil // the same machine, now running a child that keeps no copies
+	l.connect()
+	l.await(memoryUnknown, "keeps no copy of its memory")
+	if state, detail := (fleetMemoryStates{}).State(l.ch.id); state != memoryUnknown || !strings.Contains(detail, "update it") {
+		t.Fatalf("what the dashboard is told: %q %q", state, detail)
+	}
+	if !online(fleetManager(), l.ch.id) {
+		t.Fatal("the link to the older child ended")
+	}
+	if res, err := fleetManager().Call(context.Background(), l.ch.id, fleet.Call{Tool: "os_exec",
+		Confirm: func(context.Context, string, string) bool { return true }}); err != nil || res.Text != "Linux" {
+		t.Fatalf("a call to the older child: %+v %v", res, err)
+	}
+}
