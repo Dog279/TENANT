@@ -100,6 +100,24 @@ Releases page.
     ones, also once a machine that was offline is back, and applies it again to a memory rebuilt
     from a copy made before it. Copies a machine keeps under an earlier fleet key are not deleted;
     you are told. Retention pruning does not reach the machines' memory.
+- **A fleet survives losing its master** (TEN-533). `tenant child rehome`, run on a machine with
+  its child stopped, gives it another master: a master restored from a plain backup or rebuilt
+  from nothing. It takes a code from the new master's `tenant fleet enroll` as `child install`
+  does (standard input or `$TENANT_ENROLL_CODE`, never an argument) and keeps the machine's key,
+  ceiling, tools, sandbox, pause, audit log and memory copies; only which master it trusts
+  changes, in one step, and a rehome that fails leaves it its old master's. The new master holds
+  it as pending until you type its six digits; the old master's certificate is refused from then
+  on. Nothing on the link can start one. The audit log records who did it and both masters'
+  fingerprints.
+  - `tenant fleet recover <name> [--was ID]` brings the recovery identity (at the terminal, or on
+    standard input) to the running master, which reads the machine's memory from its copy made
+    under the old fleet key, makes it the machine's memory and sends it back under the new key.
+    Until then a re-homed machine's memory says **needs recovery key** and none of it is read.
+  - The dashboard's Fleet page shows each machine's memory (in step, behind, needs recovery key,
+    or unknown with the reason). Doctor's line for each machine says its memory and, when it
+    needs the recovery key, the command; a recovery key that was never proven names
+    `tenant fleet init`, which now asks at a terminal for the identity you kept and records the
+    proof.
 - **Fixed: on Windows, a Tenant with no console window opened one for every command it ran.** A
   Tenant started by the service manager has no console to share, so each command got a new
   console window. Such a Tenant now starts its commands with a console that has no window; one

@@ -1421,6 +1421,19 @@ session cookie and never the API key); `TestOnlyTheOperatorConfirmsAMachine`
 holds the dashboard to that one handler. `GET /api/fleet` is the page as JSON
 and changes nothing.
 
+**Losing the master** (TEN-533). `tenant child rehome` (`childRehome`,
+`cmd/tenant/childctl.go`) is `fleet.Enroll` again with the machine's existing
+identity, then one `fleet.UpdateChild` that swaps id, name, addresses and the
+master's fingerprint; it holds the child's audit log while it works (so no
+child process runs meanwhile) and appends an `AuditRehome` record.
+`TestChildRehomeIsStartedOnlyOnTheMachine` pins its one caller, the writers of
+`child.json` and the link's method set. The copies on the machine stay sealed
+to the old fleet; `tenant fleet recover` posts the recovery identity as the
+body of `POST /fleet/recover` to the holder, whose `fleetMemory.recoverWith`
+reads the newest copy under another key with `shadow.Store.AdoptAs` (which
+accepts a copy naming the machine's old id only under a recovery identity)
+and pushes the result as a generation under the new key.
+
 ### 5.13 `cmd/tenant` — CLI (main.go + wiring.go + commands.go)
 
 A real subcommand CLI (stdlib `flag`, no cobra). Runs fully offline on

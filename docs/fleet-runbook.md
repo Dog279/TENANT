@@ -5,10 +5,10 @@ run as `tenant child` on a machine you own: no model, no agent, no dashboard. It
 master, holds one link open, and serves that machine's tools to the master's agent. Every
 approval is decided on the master.
 
-This is the first of three parts (design: `docs/plans/gap6-fleet-plan.md`). It has the link,
-enrollment, the `fleet_*` tools, per-machine approval schemes, the child's ceiling, pause and
-audit log. It does not have a machine's memory (TEN-532), `tenant fleet update`, `tenant child
-rehome`, the dashboard's Fleet page or doctor checks (TEN-533).
+Design: `docs/plans/gap6-fleet-plan.md`. The link, enrollment, the `fleet_*` tools,
+per-machine approval schemes and the child's ceiling, pause and audit log came first (TEN-531);
+a machine's memory second (TEN-532); updates over the link, the dashboard's Fleet page, doctor's
+checks and re-homing a machine after the master is lost last (TEN-533).
 
 Peering (`tenant peer`) stays what it is: two Tenants with two operators. A machine is a peer
 or a child, never both.
@@ -206,6 +206,55 @@ the old binary back itself. A trial that exits or does not reach the master with
 deleted, and the machine reconnects on the old version. `tenant child status` shows the last
 update, and an update in the middle.
 
+## 5b. Losing the master (TEN-533)
+
+A master restored from an **encrypted** `tenant backup` has its certificate, `fleet.json` and
+the fleet key back: its machines reconnect by themselves. A master restored from a **plain**
+backup (`tenant backup` warns when it makes one on a fleet master), or rebuilt from nothing, is a
+stranger to its machines: `tenant child status` on each says "the master rejected this
+machine", or "offline". Each machine is re-homed, on the machine:
+
+```
+# on the new master
+tenant fleet init                        # at a terminal: a new fleet key and recovery identity
+tenant fleet enroll web1                 # prints a one-time code
+
+# on the machine: stop its child first (its service, or the `tenant child run` holding it)
+TENANT_ENROLL_CODE='<code>' tenant child rehome        # or: printf '%s\n' '<code>' | tenant child rehome
+#   add --system (from an elevated shell) for the machine's own child
+# start its child again; then, on the new master:
+tenant fleet confirm web1                # the six digits rehome printed
+```
+
+`rehome` is enrollment with the key the machine already has. It changes only which master the
+machine trusts (the id, name, addresses and certificate fingerprint in `child.json`, replaced
+in one step); its key, ceiling, tool list, sandbox, secret list, pause, audit log and memory
+copies stay. It refuses, before the code is read and with nothing changed, while a child
+process runs on the directory, on the machine's own child from a terminal that is not elevated,
+and for an account that may not write the child's files; a code that does not enroll leaves the
+machine its old master's. The new master holds the machine as pending until you type its
+digits, as for any new machine. From then on the old master's certificate is refused, whatever
+address it answers at. The audit log gets a `rehome` record: the account, and the old and new
+masters' fingerprints. Nothing on the link, no tool and no master-side command makes a machine
+rehome.
+
+The machine's memory copies were sealed to the old fleet's key and recovery key, so the new
+master shows the machine's memory as **needs recovery key** and reads none of it. Bring the old
+fleet's recovery identity (the one the old master's `fleet init` showed you):
+
+```
+tenant fleet recover web1 --was m0123456789abcdef    # the id rehome printed as "it was …"
+```
+
+It reads the identity at the terminal without showing it, or from standard input; never from an
+argument. The running Tenant that holds the fleet (through its dashboard, as `fleet update`;
+`--hub ADDR` when it is not where `config.json` says) fetches the machine's newest copy under
+the old key, reads it with the identity, makes it the machine's memory and sends it back as a
+generation under the new key. The old copies stay on the machine. `--was` is needed because the
+new master gave the machine a new id and the copies name the old one; without the right id, or
+with another fleet's identity, nothing is read. The same command reads a machine's memory after
+the master's fleet key file was replaced (then without `--was`).
+
 ## 6. When a link drops
 
 Nothing is pushed to you. A link that goes silent is given up on after two missed pings (30
@@ -231,7 +280,9 @@ online as soon as a link is made; there is no command to bring it back.
 | `fleet: OUTCOME UNKNOWN … call <id>` | the link dropped mid-call. The call was not sent again. When the machine is back: `fleet_process {"host":…,"action":"result","id":"<id>"}`. The machine keeps the last 32 results (2 MiB at most) for ten minutes; a pause or a restart of its child drops them. The id of a call is also in the machine's audit log. |
 | `tenant serve (process N) holds the fleet, on …` | this process does not hold the links; work from that one. |
 | `child status`: "the master rejected this machine" | its certificate is not pinned on the master (revoked, or the master was rebuilt), or the master cannot read `fleet.json` just now. The child keeps trying, slowly. |
-| `child status`: "it is revoked" | the master revoked it. The child has stopped (exit 0) and will not connect with this key again: uninstall and enroll anew. |
+| `child status`: "it is revoked" | the master revoked it. The child has stopped (exit 0) and will not connect with this key again: uninstall and enroll anew, or `tenant child rehome` with a code from the master it should trust now. |
+| memory "needs recovery key" (`fleet show`, `/fleet`, the Fleet page, doctor) | the machine's copies, or this master's own snapshot, were made under another fleet key. Nothing is overwritten. `tenant fleet recover <name>` with that fleet's recovery identity (section 5b). |
+| doctor: "the recovery key was never proven" | `tenant fleet init` at a terminal asks for the recovery identity you kept and records the proof once a test decryption opens with it. |
 | every call to one machine refused: "has no approval scheme", or "its approval scheme can't be read" | its entry in the settings file (`fleet_schemes`) is missing or did not load. `tenant fleet permissions <name> --from master` writes it again. |
 
 The master was killed or restarted: its machines reconnect by themselves (the wait doubles
