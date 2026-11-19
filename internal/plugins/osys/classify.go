@@ -124,6 +124,20 @@ var readOnlyWords = map[string]func(args []string) bool{
 	"brew": brewLooks,
 }
 
+// pathLists are the options that make a word open the paths a file or its
+// standard input lists: `echo /net/HOST | file -f -` reaches a path that is
+// not in the line. A letter of short in a cluster, or one of long, refuses the
+// word (readOnlyReach), whether its other arguments are globs or not. find's
+// rule already refuses -files0-from (not in findLooks). grep -f and du -X read
+// patterns, not paths: their file is in the line and checked as a path.
+var pathLists = map[string]struct {
+	short string
+	long  []string
+}{
+	"file": {"f", []string{"files-from"}}, "wc": {"", []string{"files0-from"}}, "du": {"", []string{"files0-from"}},
+	"sort": {"", []string{"files0-from"}}, "tree": {"", []string{"fromfile"}}, "git": {"", []string{"stdin"}},
+}
+
 var (
 	envAssignment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 	gitRemoteName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -357,10 +371,11 @@ var readOnlySeps = regexp.MustCompile(`&&|\|\||\$\(|[;&|\n()]`)
 //   - a word with a rule (readOnlyWords) is given only arguments whose value
 //     is the text itself, and the rule passes on them as each shell hands
 //     them to the program;
-//   - no argument is a network path or /net/HOST (readOnlyReach,
-//     networkPath), nor PowerShell's WSMan: drive; no `<` opens bash's
-//     /dev/tcp or /dev/udp, a name with a variable in it or a ~ other than the
-//     home (readOnlyRedirect); and what one command prints is no other command's argument or path: a
+//   - no argument is a network path or passes through /net (readOnlyReach,
+//     networkPath), nor PowerShell's WSMan: drive, nor an option that reads a
+//     list of paths (pathLists); no `<` opens bash's /dev/tcp or /dev/udp, a
+//     network path, a name with a variable in it or a ~ other than the home
+//     (readOnlyRedirect); and what one command prints is no other command's argument or path: a
 //     bracket is an argument of echo and Write-Output only (`echo $(whoami)`),
 //     no cmdlet sets a variable (psVariable), and the cmdlets that read a
 //     piped string as a path take no pipe;
@@ -398,12 +413,16 @@ var readOnlySeps = regexp.MustCompile(`&&|\|\||\$\(|[;&|\n()]`)
 //   - Where a local path leads: a device, a pipe, a mounted or mapped network
 //     folder (/afs/CELL, an NFS or SMB mount, a folder redirected to a share),
 //     a symbolic link. A host with no share (//name) stays the pattern of
-//     grep, egrep, fgrep and rg when it is their first operand.
+//     grep, egrep, fgrep and rg when it is their first operand and no option
+//     gave the pattern, or the value of -e.
 //   - The working directory, which is not in the line. os_exec refuses a
-//     network path or /net/HOST as the workdir (networkPath); `<` refuses
-//     ~+ and ~-, which spell it. What stays: a relative path is read from
-//     there (../../net/HOST is refused, but a path that reaches an automount
-//     only from where the workdir is is not); git finds the repository there
+//     network path, /net and anything under it, in any case, as the workdir
+//     (networkPath); `<` refuses ~+ and ~-, which spell it. A relative path
+//     is refused when it climbs above where it starts and then names net
+//     (../../net/HOST, a/../../net/HOST), wherever that start is. What stays:
+//     a relative path that names net without climbing is read from the
+//     workdir, so with workdir / (or any folder that holds a net mount or a
+//     link to one) `cat net/HOST/x` reaches it; git finds the repository there
 //     or above it and runs what its config names; a `.` or empty entry on
 //     PATH makes sh find a program there (PowerShell never looks in the
 //     current directory for a command); rg reads .ignore and .rgignore there.
@@ -569,7 +588,7 @@ func readOnlyRedirect(text string) bool {
 		// ~+N, ~-N (the directory stack) and ~user there: with workdir /dev,
 		// `cat < ~+/tcp/h/80` connects. Only ~ and ~/… are the home.
 		tilde := strings.HasPrefix(f, "~") && f != "~" && !strings.HasPrefix(f, "~/")
-		if tilde || strings.Contains(f, "$") || strings.Contains(f, "/dev/tcp/") || strings.Contains(f, "/dev/udp/") {
+		if tilde || networkPath(f) || strings.Contains(f, "$") || strings.Contains(f, "/dev/tcp/") || strings.Contains(f, "/dev/udp/") {
 			return true
 		}
 	}
@@ -651,31 +670,103 @@ func readOnlyCommand(text string, piped bool) (ok, prints bool) {
 	return fixed && rule(sh) && rule(ps), false
 }
 
-// uncHost finds a network path in an argument, where a path can begin: at its
-// start, after an option's name and the letters and digits glued to it
-// (-Path:\\h, -O//h, -1f//h, getopt's value after a cluster), after "=" and
-// after a comma. The path is two or more separators (or the \??\ of the NT
-// namespace) and a host; the group is the separator after the host.
-// C:\\Users\\me, http://h/x and src//pkg are not such paths.
-var uncHost = regexp.MustCompile(`(?:^|[,=]|^-[A-Za-z0-9-]*:?)(?:[\\/]{2,}|[\\/]\?\?[\\/])[^\\/\s]+([\\/])?`)
-
-// networkPath reports a path that opens a connection to a host it names: a
-// network share (uncHost), or a path that cleans to /net/HOST, the automount
-// of macOS (auto_master's -hosts map) and of Linux autofs set up the same way.
-// A relative path that climbs there (../../net/h) counts too; one that gets
-// there only from where the working directory is does not, and is a declared
-// limit. It also vets os_exec's working directory.
-func networkPath(a string) bool {
-	return uncHost.MatchString(a) || netMount(a)
+// pathsIn returns the paths an argument can hold, each running to its end:
+// the argument, what follows each "=" and each comma, and what follows an
+// option's name and the letters and digits glued to it (-Path:\\h, -O//h,
+// getopt's value after a cluster: -1f/net/h). Both network checks read these.
+func pathsIn(a string) []string {
+	ps := []string{a}
+	if strings.HasPrefix(a, "-") {
+		if i := strings.IndexFunc(a[1:], func(r rune) bool {
+			return r != '-' && (r < '0' || r > '9') && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z')
+		}); i >= 0 {
+			v := a[1+i:]
+			ps = append(ps, v, strings.TrimPrefix(v, ":"))
+		}
+	}
+	for i, ch := range a {
+		if ch == '=' || ch == ',' {
+			ps = append(ps, a[i+1:])
+		}
+	}
+	return ps
 }
 
-// netMount reports a path that cleans to /net/HOST (see networkPath).
+// uncHost is a network path at the start of one of pathsIn: two or more
+// separators (or the \??\ of the NT namespace) and a host; the group is the
+// separator after the host. C:\\Users\\me, http://h/x and src//pkg are not.
+var uncHost = regexp.MustCompile(`^(?:[\\/]{2,}|[\\/]\?\?[\\/])[^\\/\s]+([\\/])?`)
+
+// networkPath reports a path that opens a connection to a host it names: a
+// network share (uncHost) or the /net automount (netMount), anywhere pathsIn
+// finds a path. It also vets os_exec's working directory.
+func networkPath(a string) bool {
+	return slices.ContainsFunc(pathsIn(a), func(p string) bool { return uncHost.MatchString(p) || netMount(p) })
+}
+
+// netMount reports a path whose lookup passes through /net, where macOS
+// (auto_master's -hosts map) and Linux autofs set up the same way mount the
+// host named by the next component. The path is walked as the system walks
+// it, component by component, so /net/HOST/../.. counts: the lookup of HOST
+// mounts it. It counts when net (in any case: macOS ignores case) comes right
+// under the root, or right under a climb above the start (../../net, after
+// cleaning); and any .. after a ~ (~/../../net), because the home's depth is
+// not in the line. A glob is any name it can match (/n?t, /[n]et, /*, and .?
+// for ..). A path from a working directory that holds a net is the declared
+// limit (see ReadOnly).
 func netMount(a string) bool {
-	if !strings.HasPrefix(a, "/") && !strings.HasPrefix(a, "..") {
-		return false
+	p := strings.ToLower(a)
+	comps := strings.Split(p, "/")
+	abs := comps[0] == ""
+	if strings.HasPrefix(p, "~") { // ~, ~user, ~+: a directory of unknown depth
+		if slices.Contains(comps, "..") {
+			return true
+		}
+		comps = comps[1:]
 	}
-	c := path.Clean(a)
-	return strings.HasPrefix(c, "/net/") || strings.HasPrefix(strings.TrimLeft(c, "./"), "net/")
+	// may reports whether component c can name name. A bracket expression is
+	// taken to match anything: sh has classes and [!x] that path.Match lacks.
+	// sh matches a leading dot only with a literal one.
+	may := func(c, name string) bool {
+		if c == name {
+			return true
+		}
+		if !strings.ContainsAny(c, "*?[") || (name[0] == '.' && c[0] != '.') {
+			return false
+		}
+		ok, err := path.Match(c, name)
+		return ok || err != nil || strings.Contains(c, "[")
+	}
+	// Each state: the height above the root (abs) or the start, and the lowest
+	// height reached. net counts at the lowest height when that is the root or
+	// above the start. A glob may be several things: every reading is kept.
+	type at struct{ h, low int }
+	states := map[at]bool{{}: true}
+	for _, c := range comps {
+		next := map[at]bool{}
+		for s := range states {
+			if c == "" || may(c, ".") {
+				next[s] = true
+			}
+			if may(c, "..") {
+				up := s.h
+				if !abs || up > 0 {
+					up--
+				}
+				next[at{up, min(s.low, up)}] = true
+			}
+			if c != "" && c != "." && c != ".." {
+				if s.h == s.low && (abs || s.low < 0) && may(c, "net") {
+					return true
+				}
+				next[at{s.h + 1, s.low}] = true
+			}
+		}
+		if states = next; len(states) > 1024 {
+			return true // a word of nothing but ambiguous globs: not worth reading
+		}
+	}
+	return false
 }
 
 // readOnlyReach reports an argument that takes the command to another
@@ -684,25 +775,46 @@ func netMount(a string) bool {
 // mounts from that host, PowerShell's WSMan: drive talks to WinRM, and
 // Get-Process -ComputerName asks another machine. The host alone (\\host,
 // //host) is refused too, except as the first operand of the words that
-// search for a pattern (//go:build), where only a host with a share is; after
-// an option that takes a file (grep -f, --file; rg --ignore-file), the
-// operand is that file.
+// search for a pattern (//go:build), where only a host with a share is. An
+// option that gives the pattern (-e, --regexp, -f, --file, glued or not, in
+// any place: GNU grep permutes) makes every operand a file; only the value of
+// a -e or --regexp before any operand is then exempt. After an option that
+// takes a file (grep -f, --file; rg --ignore-file), the operand is that file.
+// And an option
+// that makes the word open the paths a file or its standard input lists
+// (pathLists) reaches whatever they hold, which is not in the line.
 func readOnlyReach(word string, args []string) bool {
-	pattern := word == "grep" || word == "egrep" || word == "fgrep" || word == "rg" // the next operand is the pattern
-	file := false                                                                   // the option before takes a file
+	if l, ok := pathLists[word]; ok && !without(l.short, l.long...)(args) {
+		return true
+	}
+	grep := word == "grep" || word == "egrep" || word == "fgrep" || word == "rg"
+	byOption := grep && slices.ContainsFunc(args, func(a string) bool {
+		long, isLong := strings.CutPrefix(a, "--")
+		long, _, _ = strings.Cut(long, "=")
+		return (!isLong && len(a) > 1 && a[0] == '-' && strings.ContainsAny(a, "ef")) ||
+			(isLong && long != "" && (strings.HasPrefix("regexp", long) || strings.HasPrefix("file", long)))
+	})
+	pattern := grep && !byOption // the next operand is the pattern
+	file := false                // the option before takes a file
+	seen := false                // an operand has passed: no later one is exempt
 	for _, a := range args {
 		operand := !strings.HasPrefix(a, "-")
-		_, value, _ := strings.Cut(a, "=")
-		if strings.Contains(strings.ToLower(a), "wsman:") || netMount(a) || netMount(value) {
+		if strings.Contains(strings.ToLower(a), "wsman:") {
 			return true
 		}
-		for _, m := range uncHost.FindAllStringSubmatchIndex(a, -1) {
-			if m[2] >= 0 || !pattern || !operand || file {
+		for _, p := range pathsIn(a) {
+			if m := uncHost.FindStringSubmatchIndex(p); netMount(p) || (m != nil && (m[2] >= 0 || !pattern || !operand || file)) {
 				return true
 			}
 		}
-		pattern = pattern && !operand
 		long, isLong := strings.CutPrefix(a, "--")
+		seen = seen || operand
+		if byOption { // the first -e PATTERN or --regexp PATTERN
+			pattern = !seen && ((!isLong && !operand && strings.HasSuffix(a, "e") && !strings.Contains(a, "f")) ||
+				(isLong && long != "" && strings.HasPrefix("regexp", long)))
+		} else {
+			pattern = pattern && !operand
+		}
 		file = pattern && ((!isLong && !operand && strings.HasSuffix(a, "f")) ||
 			(isLong && long != "" && (strings.HasPrefix("file", long) || strings.HasPrefix("ignore-file", long) ||
 				strings.HasPrefix("exclude-from", long))))

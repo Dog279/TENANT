@@ -383,7 +383,8 @@ func (d *Dispatcher) exec(ctx context.Context, args json.RawMessage) (string, bo
 		// The working directory is not in the command the approval judges
 		// (TEN-534), and on a network share even a command that only looks
 		// opens a session with that host and offers it the user's credentials:
-		// \\host, //host, \\?\UNC\, \??\UNC\, or /net/HOST (an automount).
+		// \\host, //host, \\?\UNC\, \??\UNC\, or /net (an automount: from
+		// /net itself, a relative path names the host).
 		if (len(dir) > 1 && strings.ContainsRune(`\/`, rune(dir[0])) && strings.ContainsRune(`\/`, rune(dir[1]))) || networkPath(dir) {
 			return `workdir must not be a network path (\\host\share): cd there inside the command instead, so that it is approved with the command`, true, nil
 		}
