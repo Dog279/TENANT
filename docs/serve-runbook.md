@@ -272,15 +272,60 @@ protection"; `tenant security audit` raises a finding when one is off.
 | | Refused to the user's other programs | Still readable |
 |---|---|---|
 | Linux | a debugger (`ptrace`), `/proc/<pid>/mem`, `/proc/<pid>/environ`, `process_vm_readv`, `pidfd_getfd`, `perf_event_open`; no crash dump, to a file or to a crash collector | the command line, `/proc/<pid>/status` |
-| Windows | reading memory, a dump (Task Manager, procdump), a debugger, opening or redirecting a thread, rewriting the access lists, changing the process's token | the command line, the program's path, the account |
+| Windows | reading memory, a dump (Task Manager, procdump), a debugger, reading, suspending or redirecting a thread, rewriting the access lists, changing the process's token, the full-access handle the console host would hold, code loaded through a window (serve owns none) | the command line, the program's path, the account |
 | macOS | a later debugger attach (reported as "attach denied, not verified"), core files; with the hardened runtime on the installed binary, a debugger outright (see below) | the command line, and the environment Tenant started with |
 
 It is one layer. The files on disk are as readable as before, an administrator or root is not
-stopped, and neither is a program that started Tenant itself. The Linux and Windows rows were
-run on real machines (WSL2 kernel 6.18, Windows 11); the macOS row has not been run on a Mac.
+stopped, and neither is a program that started Tenant itself, or one that gets in during the
+instant between Tenant's start and these controls. The Linux and Windows rows were run on real
+machines (WSL2 kernel 6.18, Windows 11); the macOS row has not been run on a Mac.
+
+Not stopped on Windows, and open in this release:
+
+- **Ending threads.** A program running as the same user can end Tenant, and can end, wait for
+  and resume each of its threads. Ending threads stops work and reads nothing.
+- **The starter's handle.** Whoever started Tenant holds a handle to it from before the
+  controls, with full access, for as long as it keeps it. A program of the same user can copy
+  that handle out of the starter. A shell that waits for `tenant serve` is such a starter.
+- **The first instant.** A program that is already running can open Tenant between its start
+  and the controls, and keeps what it opened.
 
 What an operator meets:
 
+- **Doctor reports the Tenant that is running.** With a serve (or a TUI with the dashboard) up,
+  `tenant doctor` asks it over `/api/status` and reports that process, named in the first line
+  ("The Tenant running at … (process N, version V), asked just now"). What can be read again is
+  read at that moment: both controls on Linux, the core limit on macOS, and on Windows the
+  process's access list, the one new threads get, and the error-reporting exclusion. A control
+  that was undone while Tenant ran shows as `OFF: … it was in force when Tenant started and is
+  not any more: …`, and a restart applies it again. What cannot be read again says "as it was
+  when Tenant started": the access lists of the threads that exist and the console host's
+  handle on Windows, the attach denial on macOS. With nothing running the first line says "No
+  running Tenant answered … This is what a start would get". `tenant security audit` reports
+  its own process, as before.
+- **Windows: two more `tenant.exe` processes.** serve starts a small helper, `tenant
+  __session-watch`, which owns the window Windows sends a logoff or a shutdown to and hides the
+  console for `--hidden`. It has none of serve's environment and reads no config. It ends with
+  serve; if it is ended alone, serve logs it and runs on, but a logoff, a shutdown and `tenant
+  service stop` then end serve without a clean stop, as they did before 0.2.0-rc.3 (the next
+  start logs "The previous run ended unexpectedly"). Restart Tenant to get the helper back. For an instant at
+  start a second helper, `tenant __console-anchor`, holds the console open while Tenant leaves
+  it and joins it again; that is how the console host comes to hold a handle with the owner's
+  three rights and no more. A Tenant with no console (the `--system` service) has nothing to
+  leave, and doctor says so.
+- **Windows: no window opens.** A command Tenant starts runs on Tenant's own console, which the
+  logon task hides. A Tenant that has no console (the `--system` service, one another program
+  started detached, or one that left its console and could not join it again) starts every
+  command, and its helper, with `CREATE_NO_WINDOW`: Windows would otherwise give each a new
+  console with a window on the desktop. The one place this is decided is `procprotect.Child`.
+  With `--hidden` the console window now goes when the helper is up, a moment later than it
+  did when serve hid it itself.
+- **Windows: folders that pass no permissions on.** In a folder with no inheritable
+  permissions (after `icacls /inheritance:r`, for one) a new file takes the default of the
+  thread that makes it. Tenant makes its data, config and log directories pass their own
+  permissions on to what is made in them, the first time it uses them: the entries are the
+  ones the directory had, marked to be inherited, so nobody gains or loses access. Files a
+  command or a tool writes elsewhere are made with your ordinary permissions.
 - **Stopping a stuck Tenant still works.** `kill`, `systemctl stop`, Task Manager's "End task"
   and `tenant service stop` are not affected.
 - **Dumps and debuggers are refused, to you too.** `gdb -p`, `dlv attach`, `strace -p`,
@@ -355,10 +400,11 @@ that the log can be opened, and `TENANT_LIVE_SYSTEM_LOG=1 go test ./cmd/tenant -
 TestSystemLogLive` writes one line under a test name (`TenantTest` on Windows, `tenant-test`
 elsewhere) to read back by hand.
 
-Known gap: on Windows the reason of `windows.thread-dacl` names the threads it failed for by
-thread id, which differs at every start, so an acknowledgement of that one control never matches
-again (`TestFailureReasonsAreTheSameAtEveryStart` in `internal/procprotect` fails until the
-reason is made stable).
+A control's reason is the same at every start for the same cause, because the acknowledgement
+is matched on it. What differs from start to start (which threads, for one) is in the control's
+`detail`, which doctor prints in brackets after the reason and nothing matches on
+(`TestFailureReasonsAreTheSameAtEveryStart` in `internal/procprotect` holds every control's
+source to it).
 
 ### macOS: the hardened runtime
 

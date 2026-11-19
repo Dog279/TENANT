@@ -15,11 +15,33 @@ Releases page.
     memory dump, in a file or with a crash collector. The command line and `/proc/<pid>/status`
     stay readable. Run on WSL2, kernel 6.18.
   - **Windows:** reading the memory, writing a dump (Task Manager's "Create dump file" now says
-    access is denied), attaching a debugger, and opening, suspending or redirecting any of its
-    threads are refused, and so is rewriting the access list that says so. Task Manager still
-    lists Tenant and ends it. The command line, the program's path and the account stay readable.
-    Tenant also puts its file name on your Windows Error Reporting exclusion list. Run on Windows
-    11, not elevated; an actual crash dump by Windows Error Reporting was not attempted.
+    access is denied), attaching a debugger, and reading, suspending or redirecting any of its
+    threads are refused, and so is rewriting the access list that says so. A program running as
+    you can still end Tenant, and can end, wait for and resume each of its threads: ending
+    threads stops work and reads nothing. Task Manager still lists Tenant and ends it. The
+    command line, the program's path and the account stay readable. Tenant also puts its file
+    name on your Windows Error Reporting exclusion list. Run on Windows 11, not elevated; an
+    actual crash dump by Windows Error Reporting was not attempted.
+
+    Two other ways in are closed. The console host (`conhost.exe`) opens every console program
+    with full access when the program starts, and any program running as you can copy that
+    handle; so Tenant leaves its console and joins it again once its access list is set, and the
+    handle the host then holds carries the three rights above and no more. When Tenant is alone
+    on its console, a helper (`tenant __console-anchor`) holds the console open for that
+    instant. And a window lets any program running as you load code into the process that owns
+    it; the window through which Windows tells `tenant serve` about a logoff or a shutdown is
+    now owned by a helper process (`tenant __session-watch`, started by serve with none of
+    serve's environment), so Task Manager shows a second, small `tenant.exe` under serve.
+    Neither opens a window: a command Tenant starts runs on Tenant's own console, hidden or
+    not, and a Tenant that has no console (the service, or one another program started
+    detached) starts its commands and its helper with no console window at all, where Windows
+    would otherwise open one on your desktop for each.
+
+    Two ways in are not closed in this release. Whoever started Tenant holds a handle to it
+    from before these controls, with full access, for as long as it keeps it, and a program
+    running as you can copy that handle out of the starter (a shell that waits for `tenant
+    serve` is one such starter). And a program that is already running can open Tenant in the
+    instant between its start and these controls.
   - **macOS:** Tenant denies a later debugger attach and turns core files off. This was compiled
     and not yet run on a Mac, and what the call stops on its own is not measured, so doctor
     reports it as "attach denied, not verified". The stronger control is the hardened-runtime
@@ -36,11 +58,22 @@ Releases page.
     page.
 
   This is one layer. It protects the running process, not the files on disk, which a program
-  running as you can still read; and it does not stop an administrator or root, or a program that
-  starts Tenant itself. `tenant doctor` has a new "process protection" check that shows each
-  control as on or off, what the system says about itself (`kernel.yama.ptrace_scope`, whether
-  the process is elevated, System Integrity Protection and FileVault), and what stays readable;
-  `tenant security audit` raises a finding when a control is off.
+  running as you can still read; and it does not stop an administrator or root, a program that
+  starts Tenant itself, or one that gets in during the instant between Tenant's start and these
+  controls. `tenant doctor` has a new "process protection" check that shows each control as on
+  or off, what the system says about itself (`kernel.yama.ptrace_scope`, whether the process is
+  elevated, System Integrity Protection and FileVault), what stays readable, and what a program
+  running as you can still do; `tenant security audit` raises a finding when a control is off.
+
+  When a Tenant is running, doctor reports that process and not its own: it asks it over the
+  dashboard's `/api/status`, and the first line names the process. The answer is read at that
+  moment where the system lets a process read its own state again, because some controls can be
+  undone from outside while Tenant runs: the Windows Error Reporting exclusion is a registry
+  value of yours, and on Linux `prlimit` raises the core limit of a process of the same user.
+  Such a control shows as OFF, with what was found, and a restart applies it again. What cannot
+  be read again is marked "as it was when Tenant started": the access lists of the threads that
+  exist and the console host's handle on Windows, the attach denial on macOS. With no Tenant
+  running, doctor says that what it shows is what a start would get.
 
   There is no switch to turn it off: a program running as you could restart Tenant with it set.
   To attach a debugger, build with `-tags debugattach`; `tenant version`, doctor and the audit
@@ -71,7 +104,14 @@ Releases page.
   the process creates inherits, so a command must be started through `internal/procprotect`
   (`Start`, `Run`, `Output`, `CombinedOutput`, or `Child` with the call inside `Ordinary`). A
   command started any other way fails with "pipe: Access is denied" for a user who is not an
-  administrator. A test in `internal/archtest` holds the source to it. The acceptance tests of
+  administrator. A test in `internal/archtest` holds the source to it. The same default would
+  land on a file or a folder made where nothing is inherited from the folder above (one set up
+  with `icacls /inheritance:r`, say), and its owner could then not open it. So a command and a
+  tool call run inside `procprotect.Ordinary`, `internal/fsperm` makes its files and folders
+  inside it, and a directory given to `fsperm.MkdirAll`, which is one of Tenant's own, is made
+  to pass its permissions on to what is made in it. What is left: a file made with the plain
+  `os` calls on another goroutine, in a folder that is not Tenant's and passes nothing on.
+  Make such a file through `fsperm`, or inside `Ordinary`. The acceptance tests of
   the acknowledgement run a `tenant` built with `-tags procprotecttest`, in which the environment
   can say that a control cannot be applied; `tenant version` announces such a build, and no
   release is built with the tag.
