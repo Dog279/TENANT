@@ -3,7 +3,9 @@
 package main
 
 import (
+	"errors"
 	"os/exec"
+	"strconv"
 	"time"
 	"unsafe"
 
@@ -15,6 +17,24 @@ import (
 func e2eQuiet(cmd *exec.Cmd) {
 	hideWindow(cmd)
 	cmd.SysProcAttr.CreationFlags |= windows.BELOW_NORMAL_PRIORITY_CLASS
+}
+
+// e2eProtected is nil when another program of this user is refused this
+// process's memory, as TEN-535's access list refuses it.
+func e2eProtected(pid string) error {
+	n, err := strconv.ParseUint(pid, 10, 32)
+	if err != nil {
+		return err
+	}
+	h, err := windows.OpenProcess(windows.PROCESS_VM_READ, false, uint32(n))
+	if err == nil {
+		windows.CloseHandle(h)
+		return errors.New("it can be opened to read its memory")
+	}
+	if !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		return err
+	}
+	return nil
 }
 
 var procGetProcessMemoryInfo = windows.NewLazySystemDLL("psapi.dll").NewProc("GetProcessMemoryInfo")

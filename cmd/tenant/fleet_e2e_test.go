@@ -44,6 +44,7 @@ import (
 	"time"
 
 	"tenant/internal/control"
+	"tenant/internal/procprotect"
 )
 
 const (
@@ -92,6 +93,11 @@ func TestFleetE2EProcess(t *testing.T) {
 		os.Exit(9)
 	}
 	time.AfterFunc(45*time.Minute, func() { os.Exit(4) }) // never outlives a test run
+	// Protected as main protects every command (TEN-535). Every control is
+	// applied: one forced off would stop serve at its acknowledgement gate.
+	// On Windows that puts this binary's file name on the user's Windows
+	// Error Reporting exclusion list.
+	protection = procprotect.Protect()
 	for k, v := range spec.Env {
 		_ = os.Setenv(k, v)
 	}
@@ -147,7 +153,8 @@ func TestFleetE2EProcess(t *testing.T) {
 		fmt.Fprintln(os.Stderr, "e2e helper: unknown command", argv[0])
 		os.Exit(9)
 	}
-	err = c.Run(context.Background(), argv[1:])
+	procprotect.Ordinary(func() { err = c.Run(context.Background(), argv[1:]) }) // as main runs a command
+	sessionEndFinished()
 	if err != nil && err.Error() != "" {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 	}
@@ -512,6 +519,11 @@ func (h *e2eHost) start(what string, spec e2eSpec) *e2eProc {
 	h.t.Cleanup(p.stop)
 	_, line := p.await(0, "E2E-PID ", "the process starts")
 	p.pid = strings.TrimPrefix(line, "E2E-PID ")
+	if !h.wsl { // the helper prints its pid once Protect has run, as main runs it first
+		if err := e2eProtected(p.pid); err != nil {
+			h.t.Errorf("%s is not a protected process (TEN-535): %v", what, err)
+		}
+	}
 	return p
 }
 
