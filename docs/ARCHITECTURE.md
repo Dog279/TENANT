@@ -158,6 +158,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/logs/capture` | `internal/logs/event`, `internal/runtrace`, `internal/lifecycle` | child-process capture; every internal package may import it; a running child is a lifecycle component |
 | `internal/research` | `internal/fsperm` |  |
 | `internal/backup` | `internal/datalock`, `internal/fsperm`, `internal/secrets`, `internal/version` |  |
+| `internal/fleet/shadow` | `internal/memory/episodic`, `internal/memory/semantic`, `internal/secrets`, `internal/fsperm`, `internal/datalock` | a fleet machine's memory: the master's shadow in RAM and its encrypted snapshots, the child's copies, and which side wins; knows no link |
 | `internal/peering` | `internal/httplimits`, `internal/secrets` |  |
 | `internal/mcp` | `internal/mcp/transport` | wire protocol only, no LLM knowledge |
 | `internal/model` | `internal/model/profiles`, `internal/runtrace` | no memory, agent or plugins |
