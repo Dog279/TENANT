@@ -200,6 +200,21 @@ func open(path string, prepare bool) (*Store, error) {
 			return nil, fmt.Errorf("semantic: enable foreign_keys: %w", err)
 		}
 	}
+	st, err := OpenDB(db)
+	if err != nil {
+		return nil, err
+	}
+	st.quiet = path == ":memory:"
+	return st, nil
+}
+
+// OpenDB returns a Store on a database the caller opened, creating or
+// migrating the schema as Open does. It is for a store that lives only in
+// memory, such as a fleet machine's shadow (TEN-532): the caller keeps db to
+// one connection and turns foreign keys on for it, as Open does for
+// ":memory:". Like a ":memory:" store it writes no fact events. db is closed
+// when OpenDB fails.
+func OpenDB(db *sql.DB) (*Store, error) {
 	if _, err := db.ExecContext(context.Background(), schemaSQL); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("semantic: init schema: %w", err)
@@ -220,7 +235,7 @@ func open(path string, prepare bool) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("semantic: init provenance schema: %w", err)
 	}
-	return &Store{db: db, quiet: path == ":memory:"}, nil
+	return &Store{db: db, quiet: true}, nil
 }
 
 func ensureFactColumn(db *sql.DB, column, definition string) error {

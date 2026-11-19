@@ -115,6 +115,14 @@ func open(path string, prepare bool) (*Store, error) {
 	if path == ":memory:" {
 		db.SetMaxOpenConns(1)
 	}
+	return OpenDB(db)
+}
+
+// OpenDB returns a Store on a database the caller opened, creating or
+// migrating the schema as Open does. It is for a store that lives only in
+// memory, such as a fleet machine's shadow (TEN-532): the caller keeps db to
+// one connection, as Open does for ":memory:". db is closed when OpenDB fails.
+func OpenDB(db *sql.DB) (*Store, error) {
 	if _, err := db.ExecContext(context.Background(), schemaSQL); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("episodic: init schema: %w", err)
