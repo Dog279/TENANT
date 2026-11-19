@@ -203,8 +203,8 @@ func (s *Store) Close() error {
 //
 // A shadow whose snapshot cannot be trusted is not loaded: the error wraps
 // ErrDamaged, or ErrForeignKey when it was made under another fleet key (the
-// machine needs the recovery key). State then says the shadow is not there,
-// and Decide says what to rebuild it from.
+// machine needs the recovery key). State then says so, and Decide says what
+// to rebuild it from, or that the recovery identity is needed.
 func (s *Store) Acquire(ctx context.Context, host string) (*Pair, error) {
 	sh, err := s.hold(host)
 	if err != nil {
@@ -680,26 +680,39 @@ func (s *Store) State(host string) (Master, error) {
 	if c, _, err := s.newest(host); err == nil {
 		m.Gen, m.Hash = c.Gen, c.Hash
 	}
+	if sh.episodic != nil {
+		m.ShadowOK = true
+		return m, nil
+	}
 	s.mu.Lock()
 	damaged := s.damaged[host]
 	s.mu.Unlock()
-	if damaged || sh.episodic != nil {
-		m.ShadowOK = !damaged
-		return m, nil
-	}
-	f, err := os.Open(filepath.Join(s.hostDir(host), shadowFile))
-	switch {
-	case err == nil:
+	// The first line of each file says which key made it.
+	keyOf := func(name string) (keyID string, err error) {
+		f, err := os.Open(filepath.Join(s.hostDir(host), name))
+		if err != nil {
+			return "", err
+		}
+		defer f.Close()
 		head := make([]byte, maxHeaderLine+1)
 		n, _ := io.ReadFull(f, head)
-		_ = f.Close()
-		keyID, _, err := Peek(head[:n])
-		m.ShadowOK = err == nil && keyID == s.key.id
+		keyID, _, err = Peek(head[:n])
+		return keyID, err
+	}
+	keyID, err := keyOf(shadowFile)
+	switch {
+	case err == nil:
+		m.ShadowOK = keyID == s.key.id && !damaged
+		m.ShadowForeign = keyID != s.key.id
 	case errors.Is(err, fs.ErrNotExist):
 		// No snapshot is in order for a machine that never had a memory.
-		m.ShadowOK = !s.remains(host)
+		m.ShadowOK = !damaged && !s.remains(host)
+	case errors.Is(err, ErrDamaged):
 	default:
 		return Master{}, fmt.Errorf("shadow: %s: %w", host, err)
+	}
+	if keyID, err := keyOf(childFile); err == nil && keyID != s.key.id {
+		m.ShadowForeign = true
 	}
 	return m, nil
 }

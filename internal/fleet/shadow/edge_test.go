@@ -280,3 +280,90 @@ func TestStore_ABusyShadowIsLookedAtLater(t *testing.T) {
 		t.Fatalf("a busy database was reported: %v", errs)
 	}
 }
+
+// A master holding another fleet key than the one its files were written
+// under: it reads nothing, guesses at nothing and replaces nothing. With the
+// recovery identity the memory comes back whole, vectors and all, and the old
+// key's files are set aside, not written over.
+func TestStore_FilesUnderAnotherFleetKey(t *testing.T) {
+	ctx := context.Background()
+	f := newFleet(t, quick)
+	f.note(hostA, "web1 runs nginx")
+	made := f.mint(hostA)
+	must(t, f.Store.Close())
+	oldShadow, oldChild := readFile(t, f.path(hostA, shadowFile)), readFile(t, f.path(hostA, childFile))
+
+	// The key file was lost and a new key made; the recovery identity is the
+	// same one the operator kept.
+	newKey := testKey(t)
+	s, err := OpenStore(f.dir, newKey, f.recipient, quick)
+	must(t, err)
+	defer func() { _ = s.Close() }()
+	if _, err := s.Acquire(ctx, hostA); !errors.Is(err, ErrForeignKey) {
+		t.Fatalf("Acquire under another key: %v, want ErrForeignKey", err)
+	}
+	st, err := s.State(hostA)
+	if err != nil || st.ShadowOK || !st.ShadowForeign || st.Gen != 0 || st.Hash != "" {
+		t.Fatalf("State under another key: %+v, %v", st, err)
+	}
+	// Not "lost", and not "rebuild from a copy", even with a child that has
+	// nothing or has copies this key reads: the memory is there, unread.
+	for _, child := range [][]Copy{nil, {cp(st.KeyID, 9, hashY, true)}} {
+		if d := Decide(st, child); d != (Decision{Action: NeedsRecoveryKey}) {
+			t.Fatalf("Decide under another key: %+v", d)
+		}
+	}
+	if _, _, err := s.Newest(hostA); !errors.Is(err, ErrNoCopy) {
+		t.Fatalf("Newest under another key: %v, want ErrNoCopy", err)
+	}
+	if _, _, err := s.Mint(ctx, hostA); err != nil {
+		t.Fatalf("Mint of a shadow that is not loaded: %v", err)
+	}
+	if !bytes.Equal(readFile(t, f.path(hostA, shadowFile)), oldShadow) || !bytes.Equal(readFile(t, f.path(hostA, childFile)), oldChild) {
+		t.Fatal("the other key's files were changed")
+	}
+
+	// The operator brings the recovery identity, and the master's own
+	// snapshot is read with it.
+	recovery, err := ParseRecovery(f.recovery)
+	must(t, err)
+	defer recovery.Close()
+	keyID, gen, err := Peek(oldShadow)
+	must(t, err)
+	got, err := s.Adopt(ctx, hostA, Copy{KeyID: keyID, Gen: gen, Hash: Hash(oldShadow)}, oldShadow, recovery)
+	must(t, err)
+	if got.Reembed || got.Gen != made.Gen+1 || got.Aside == "" {
+		t.Fatalf("Adopt of the master's own snapshot: %+v", got)
+	}
+	p, err := s.Acquire(ctx, hostA)
+	must(t, err)
+	var facts, withVectors int
+	must(t, p.Semantic.DB().QueryRow(`SELECT count(*), sum(length(embedding) > 0) FROM facts`).Scan(&facts, &withVectors))
+	p.Release()
+	if facts != 1 || withVectors != 1 {
+		t.Fatalf("the recovered shadow has %d facts, %d with vectors", facts, withVectors)
+	}
+	// Both of the old key's files are in the aside directory, byte for byte.
+	aside := files(t, f.path(hostA, asideDir))
+	if len(aside) != 2 {
+		t.Fatalf("set aside: %v", aside)
+	}
+	var kept [][]byte
+	for _, name := range aside {
+		kept = append(kept, readFile(t, filepath.Join(f.path(hostA, asideDir), name)))
+	}
+	if !(bytes.Equal(kept[0], oldShadow) && bytes.Equal(kept[1], oldChild)) && !(bytes.Equal(kept[0], oldChild) && bytes.Equal(kept[1], oldShadow)) {
+		t.Fatal("what was set aside is not the old key's two files")
+	}
+	// And the memory goes on under the new key.
+	c, _, err := s.Newest(hostA)
+	if err != nil || c.Gen != made.Gen+1 || c.KeyID == made.KeyID {
+		t.Fatalf("the newest generation after the recovery: %+v, %v", c, err)
+	}
+	must(t, s.Close())
+	s, err = OpenStore(f.dir, newKey, f.recipient, quick)
+	must(t, err)
+	if st, err := s.State(hostA); err != nil || st != (Master{KeyID: c.KeyID, Gen: c.Gen, Hash: c.Hash, ShadowOK: true}) {
+		t.Fatalf("State after the recovery: %+v, %v", st, err)
+	}
+}

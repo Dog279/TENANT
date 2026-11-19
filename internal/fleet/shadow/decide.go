@@ -17,8 +17,12 @@ type Master struct {
 	Gen  uint64
 	Hash string
 	// ShadowOK is false when the master's own snapshot of the shadow is
-	// damaged or gone.
+	// damaged or gone, or cannot be read with this key.
 	ShadowOK bool
+	// ShadowForeign says the master's own snapshot, or the generation file
+	// beside it, was made under another fleet key: this master's key file
+	// was replaced. Reading them takes the recovery identity.
+	ShadowForeign bool
 }
 
 // Action is what to do about a machine's memory when its child reconnects.
@@ -35,9 +39,10 @@ const (
 	// Rebuild: the master's shadow is damaged or gone. Rebuild it from the
 	// copy named, and re-embed.
 	Rebuild
-	// NeedsRecoveryKey: the child's memory is under another fleet key. The
-	// machine is marked, and nothing is sent, pulled or overwritten until
-	// the operator brings the recovery identity.
+	// NeedsRecoveryKey: the child's memory, or the master's own snapshot of
+	// it, is under another fleet key. The machine is marked, and nothing is
+	// sent, pulled or overwritten until the operator brings the recovery
+	// identity.
 	NeedsRecoveryKey
 	// Lost: the master's shadow is damaged or gone and no copy of it is left
 	// on either side. Nothing is done; the operator decides whether the
@@ -96,6 +101,11 @@ func Decide(m Master, child []Copy) Decision {
 		}
 	}
 	switch {
+	case m.ShadowForeign:
+		// Whatever the child has, the master holds a memory of this machine
+		// it cannot read. Rebuilding from a copy, or calling it lost, would
+		// be acting as if that memory were not there.
+		return Decision{Action: NeedsRecoveryKey}
 	case newest == nil && !m.ShadowOK && m.Gen > 0:
 		return Decision{Action: Rebuild, Own: true}
 	case newest == nil && m.ShadowOK && m.Gen > 0:

@@ -78,6 +78,14 @@ func TestDecide(t *testing.T) {
 		{"two other keys at the same generation", master(3, hashX),
 			[]Copy{cp(keyB, 9, hashY, true), cp(strings.Repeat("c3", keyIDBytes), 9, hashY, true)},
 			Decision{Action: NeedsRecoveryKey}},
+		// The master's own snapshot is under another key (its key file was
+		// replaced). It holds a memory it cannot read: no copy is put in its
+		// place and it is not called lost, whatever the child has.
+		{"the master's own snapshot is under another key", Master{KeyID: keyA, ShadowForeign: true}, nil,
+			Decision{Action: NeedsRecoveryKey}},
+		{"the master's own snapshot is under another key, the child has copies under this one",
+			Master{KeyID: keyA, Gen: 3, Hash: hashX, ShadowForeign: true}, []Copy{cp(keyA, 9, hashY, true)},
+			Decision{Action: NeedsRecoveryKey}},
 		// After a recovery the master's generations are the newest, and the
 		// old key's copies, which the child still keeps, no longer decide.
 		{"old-key copies under newer ones of ours", master(10, hashX),
@@ -143,6 +151,13 @@ func TestDecide(t *testing.T) {
 // checkDecision holds Decide to what must be true of any answer.
 func checkDecision(t *testing.T, m Master, child []Copy, d Decision) {
 	t.Helper()
+	if m.ShadowForeign {
+		// The master's own files are under another key: that alone decides.
+		if d != (Decision{Action: NeedsRecoveryKey}) {
+			t.Fatalf("the master's snapshot is under another key, and the answer is %+v", d)
+		}
+		return
+	}
 	var newest uint64
 	foreignOnTop, listed := false, false
 	for _, c := range child {
@@ -221,9 +236,9 @@ func TestDecide_HoldsForEveryCombination(t *testing.T) {
 		}
 	}
 	n := 0
-	for _, shadowOK := range []bool{true, false} {
+	for _, state := range []struct{ ok, foreign bool }{{true, false}, {false, false}, {false, true}, {true, true}} {
 		for _, gen := range []uint64{0, 1, 2, 3} {
-			m := Master{KeyID: keyA, Gen: gen, Hash: hashX, ShadowOK: shadowOK}
+			m := Master{KeyID: keyA, Gen: gen, Hash: hashX, ShadowOK: state.ok, ShadowForeign: state.foreign}
 			checkDecision(t, m, nil, Decide(m, nil))
 			for i, a := range states {
 				checkDecision(t, m, []Copy{a}, Decide(m, []Copy{a}))
@@ -323,6 +338,7 @@ func FuzzParseCopies(f *testing.F) {
 		// master in any state.
 		for _, m := range []Master{
 			{KeyID: keyA, ShadowOK: true}, {KeyID: keyA}, {KeyID: keyA, Gen: 1, Hash: hashX, ShadowOK: true}, {KeyID: keyA, Gen: 1 << 40, Hash: hashY},
+			{KeyID: keyA, Gen: 2, Hash: hashX, ShadowForeign: true},
 		} {
 			checkDecision(t, m, copies, Decide(m, copies))
 		}
@@ -361,6 +377,7 @@ func FuzzDecide(f *testing.F) {
 		}
 		m := Master{KeyID: keyA, ShadowOK: next()%2 == 1, Gen: gen()}
 		m.Hash = hashes[int(next())%2]
+		m.ShadowForeign = next()%8 == 7
 		var child []Copy
 		for len(raw) > 0 && len(child) < 12 {
 			child = append(child, Copy{
