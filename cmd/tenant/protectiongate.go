@@ -66,6 +66,13 @@ var systemLog = writeSystemLog
 // procprotecttest (protecttest.go); "" in every other build.
 var testBuildNote string
 
+// sessionHelperEnv is added to the environment of the helper process serve
+// starts on Windows (sessionend_windows.go), which otherwise gets nothing of
+// serve's. Nil in every build but one made with -tags procprotecttest, where
+// the helper has to be told what its serve was told: it is the same program,
+// and applies the controls to itself.
+var sessionHelperEnv []string
+
 // protectionLinePrefix starts the line `tenant version --protection` adds:
 // the process's procprotect.Report as JSON.
 const protectionLinePrefix = "protection: "

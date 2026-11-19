@@ -36,6 +36,9 @@ func main() {
 	if runWindowsService() { // started by the service control manager (svc_windows.go, TEN-498)
 		return
 	}
+	if was, code := runSessionWatcher(); was { // the helper that owns serve's window (sessionend_windows.go)
+		os.Exit(code)
+	}
 	if len(os.Args) < 2 {
 		writeBeginnerHelp(os.Stderr)
 		os.Exit(2)

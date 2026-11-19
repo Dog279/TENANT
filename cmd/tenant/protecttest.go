@@ -9,7 +9,8 @@ package main
 // plan forbids. `tenant version` says what it is.
 //
 //	TENANT_TEST_FORCE_FAIL  control=reason[;control=reason]: Protect leaves
-//	                        each one out and reports it as not in force
+//	                        each one out and reports it as not in force; the
+//	                        helper serve starts on Windows is told the same
 //	TENANT_TEST_VERSION     the version this process says it is
 //	TENANT_TEST_SYSTEM_LOG  a file that stands in for the system's log
 //	TENANT_TEST_TERMINAL    1: stdin and stderr count as a terminal
@@ -26,6 +27,9 @@ import (
 
 func init() { // before main, so before Protect
 	testBuildNote = "TEST BUILD (-tags procprotecttest): the environment can switch a process protection off. Never install it."
+	if v := os.Getenv("TENANT_TEST_FORCE_FAIL"); v != "" {
+		sessionHelperEnv = []string{"TENANT_TEST_FORCE_FAIL=" + v}
+	}
 	for _, kv := range strings.Split(os.Getenv("TENANT_TEST_FORCE_FAIL"), ";") {
 		if id, reason, ok := strings.Cut(kv, "="); ok {
 			procprotect.ForceFail(id, reason)

@@ -78,17 +78,16 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		return err
 	}
 	serveStopBudget = *stopBudget
-	if *hidden {
-		hideConsoleWindow()
-	}
-	// Windows tells a program in a user's session about a logoff or a
-	// shutdown through a window (sessionend_windows.go), and `tenant service
-	// stop` asks the same window. main says when serve
-	// has returned (sessionEndFinished), after every deferred close here:
-	// Windows may end the process once it hears that.
 	if err := c.resolveDirs(); err != nil {
 		return err
 	}
+	// Windows tells a program in a user's session about a logoff or a
+	// shutdown through a window, and `tenant service stop` asks the same
+	// window. A helper process owns it, and hides the console for --hidden
+	// (sessionend_windows.go). main says when serve has returned
+	// (sessionEndFinished), after every deferred close here: Windows may end
+	// the process once it hears that.
+	sessionEnding, sessionErr := watchSessionEnd(c.dataDir, *hidden)
 	// A process protection that could not be applied is acknowledged before
 	// anything else is loaded: the config, a secret, a store (TEN-535).
 	if err := startGate(ctx, c, "serve", !*hidden); err != nil {
@@ -97,7 +96,6 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	if err := c.resolveConfig(); err != nil {
 		return err
 	}
-	sessionEnding, sessionErr := watchSessionEnd(c.dataDir)
 	applyPluginConfig(c, pf)
 	expandPluginPaths(pf)
 	// Semantic memory is a core pillar (TEN-254): a 24/7 hub running amnesiac is
