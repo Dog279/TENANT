@@ -779,3 +779,53 @@ func TestRemove(t *testing.T) {
 	}
 	must(t, f.Remove("m00000000000000cc")) // a machine that has nothing
 }
+
+// A machine re-homed to a master rebuilt from nothing has another id there
+// (tenant child rehome): its copies, made under the old master, name the id
+// it had. The recovery identity reads them as that machine's, and nothing
+// else does: not the new master's own key, and not a recovery identity told
+// the wrong old id.
+func TestAdoptAs_ACopyMadeUnderTheMachinesOldID(t *testing.T) {
+	ctx := context.Background()
+	old := newFleet(t, quick)
+	w := newWire(t, old, hostA)
+	old.note(hostA, "web1 runs nginx")
+	c := old.mint(hostA)
+	w.reconnect()
+	must(t, old.Store.Close())
+	blob, err := w.child.Get(c)
+	must(t, err)
+
+	fresh := newFleet(t, quick)
+	must(t, fresh.Store.Close())
+	fresh.recovery, fresh.recipient = old.recovery, old.recipient
+	fresh.open()
+	recovery, err := ParseRecovery(old.recovery)
+	must(t, err)
+	defer recovery.Close()
+
+	if _, err := fresh.AdoptAs(ctx, hostB, hostA, c, blob, nil); !errors.Is(err, ErrDamaged) {
+		t.Fatalf("another machine's copy without the recovery identity: %v, want ErrDamaged", err)
+	}
+	if _, err := fresh.Adopt(ctx, hostB, c, blob, recovery); !errors.Is(err, ErrDamaged) {
+		t.Fatalf("a copy that names another machine, as this one's: %v, want ErrDamaged", err)
+	}
+	if _, err := fresh.AdoptAs(ctx, hostB, "m00000000000000cc", c, blob, recovery); !errors.Is(err, ErrDamaged) {
+		t.Fatalf("the wrong old id: %v, want ErrDamaged", err)
+	}
+	got, err := fresh.AdoptAs(ctx, hostB, hostA, c, blob, recovery)
+	must(t, err)
+	if facts := fresh.facts(hostB); facts != "web1 runs nginx" || got.Gen != c.Gen+1 {
+		t.Fatalf("adopted as the new id: %+v, facts %q", got, facts)
+	}
+	// What it is now is a generation of the new machine's own, under the
+	// new key: it opens as hostB's, and as nothing else's.
+	c2, blob2, err := fresh.Newest(hostB)
+	must(t, err)
+	if _, err := fresh.Adopt(ctx, hostB, c2, blob2, nil); err != nil {
+		t.Fatalf("the new generation does not open as the new id's: %v", err)
+	}
+	if facts := fresh.facts(hostA); facts != "" {
+		t.Fatalf("the old id has a memory on the new master: %q", facts)
+	}
+}

@@ -750,6 +750,18 @@ type Adopted struct {
 // straight away: until the child holds a copy under this key that is newer
 // than its old ones, Decide goes on answering NeedsRecoveryKey.
 func (s *Store) Adopt(ctx context.Context, host string, c Copy, blob []byte, with *Key) (Adopted, error) {
+	return s.AdoptAs(ctx, host, host, c, blob, with)
+}
+
+// AdoptAs is Adopt for a copy made while the machine was was: the id it had
+// under the master that made the copy, which a master rebuilt from nothing
+// gave another (tenant child rehome). Only a recovery identity reads a copy
+// that names another machine: under this master's own key a copy that names
+// another machine is damaged, as Adopt says.
+func (s *Store) AdoptAs(ctx context.Context, host, was string, c Copy, blob []byte, with *Key) (Adopted, error) {
+	if was != host && (with == nil || !with.recovery) {
+		return Adopted{}, fmt.Errorf("%w: only the recovery identity reads a copy made as another machine", ErrDamaged)
+	}
 	if len(blob) > MaxSnapshotBytes || Hash(blob) != c.Hash {
 		return Adopted{}, fmt.Errorf("%w: the bytes do not match the stated hash", ErrDamaged)
 	}
@@ -765,7 +777,7 @@ func (s *Store) Adopt(ctx context.Context, host string, c Copy, blob []byte, wit
 	if with != nil {
 		k = with
 	}
-	snap, err := openSnapshot(ctx, bytes.NewReader(blob), k, host)
+	snap, err := openSnapshot(ctx, bytes.NewReader(blob), k, was)
 	if err != nil {
 		return Adopted{}, fmt.Errorf("shadow: %s: %w", host, err)
 	}
