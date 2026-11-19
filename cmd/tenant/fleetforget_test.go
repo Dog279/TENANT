@@ -6,11 +6,13 @@ package main
 // a process of its own.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -352,5 +354,44 @@ func TestFleetDistillationKeepsToEachMachine(t *testing.T) {
 	}
 	if head, _, _ := strings.Cut(recalled, "\n[fleet web1 "); strings.Contains(head, "distilled from") {
 		t.Fatalf("a distilled fact was given back as the master's:\n%s", recalled)
+	}
+}
+
+// `tenant privacy forget --episode <id>` reaches a machine's extract of that
+// turn by the run the master's episode was recorded in, and nothing else.
+func TestAForgetOfAnEpisodeReachesTheMachinesExtractOfIt(t *testing.T) {
+	l := newMemLab(t)
+	ctx := context.Background()
+	gone, kept := mark("forget-me"), mark("keep-me")
+	master, err := episodic.Open(filepath.Join(l.data, "episodes.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]int64{}
+	for _, text := range []string{gone, kept} {
+		run := "run-of-" + text
+		id, err := master.Insert(ctx, &episodic.Episode{AgentID: "main", SessionID: "s1", SourceRunID: run, Prompt: "look at the disks",
+			Response: "done", Tags: []string{fleetHostTag + l.ch.id}, EmbedderID: "e", Embedding: []float32{1, 0.5, 0.25}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[text] = id
+		ep := episodic.Episode{AgentID: "main", SessionID: "s1", SourceRunID: run, Prompt: "look at the disks",
+			Response: "fleet_read {}\n" + text + " is in the output", Tags: []string{fleetExtractTag}, EmbedderID: "e", Embedding: []float32{1, 0.5, 0.25}}
+		if err := fleetWriteEpisode(ctx, l.ch.id, &ep); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = master.Close()
+	var out bytes.Buffer
+	if err := cmdPrivacyForget(ctx, []string{"--episode", strconv.FormatInt(ids[gone], 10), "--yes", "--config", l.cfg, "--data", l.data}, strings.NewReader(""), &out); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "fleet: The same is forgotten from every fleet machine's memory") {
+		t.Fatalf("tenant privacy forget:\n%s", out.String())
+	}
+	l.mem().sweep()
+	if text := memoryText(t, l.ch.id); strings.Contains(text, gone) || !strings.Contains(text, kept) {
+		t.Fatalf("after forgetting the master's episode %d:\n%s", ids[gone], text)
 	}
 }
