@@ -468,7 +468,7 @@ func TestEnrollRequestRefusals(t *testing.T) {
 		reason Reason
 	}{
 		{"a body over the limit", "POST", valid + `,"user":"` + strings.Repeat("a", maxEnrollBody) + `"}`, http.StatusRequestEntityTooLarge, RefusedTooLarge},
-		{"a megabyte", "POST", strings.Repeat(" ", 1<<20), http.StatusRequestEntityTooLarge, RefusedTooLarge},
+		{"sixteen times the limit", "POST", strings.Repeat(" ", 16*maxEnrollBody), http.StatusRequestEntityTooLarge, RefusedTooLarge},
 		{"not JSON", "POST", "enroll me", http.StatusBadRequest, RefusedBadRequest},
 		{"an empty body", "POST", "", http.StatusBadRequest, RefusedBadRequest},
 		{"two values", "POST", valid + `}` + valid + `}`, http.StatusBadRequest, RefusedBadRequest},
