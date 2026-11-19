@@ -128,6 +128,6 @@ func FuzzChildMemoryRequest(f *testing.F) {
 // all it ever checks.
 func fuzzCopy() (shadow.Copy, []byte) {
 	key := "0123456789abcdef0123456789abcdef"
-	blob := []byte("tenant-fleet-snapshot/1 " + key + " " + strconv.Itoa(1) + "\nsealed bytes")
+	blob := []byte("tenant-fleet-snapshot/2 " + key + " " + strconv.Itoa(1) + "\nsealed bytes")
 	return shadow.Copy{KeyID: key, Gen: 1, Hash: shadow.Hash(blob)}, blob
 }
