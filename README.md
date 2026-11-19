@@ -68,7 +68,9 @@ tenant setup
 The script verifies the release's SHA-256 and installs for the current user, no
 sudo or Go toolchain needed; the archives are also on the
 [Releases page](https://github.com/Dog279/TENANT/releases/latest) with checksums,
-a cosign signature and SBOMs. `TENANT_VERSION` pins a version and
+a cosign signature and SBOMs, and, once the project key is set up, a
+project-key signature (`checksums.txt.sig`) that `tenant update` checks with
+nothing installed. `TENANT_VERSION` pins a version and
 `TENANT_INSTALL_DIR` picks the directory. Or build from source with Go 1.26:
 `go build ./cmd/tenant`.
 

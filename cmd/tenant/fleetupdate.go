@@ -254,15 +254,15 @@ func (u *fleetUpdates) run(mgr *fleet.Manager, st fleet.MachineStatus, o fleetUp
 	// The release's own material goes with it (decision A71): a machine on
 	// the default rule verifies the release itself, and refuses on the first
 	// piece, before the archive is sent, if it cannot.
-	checksums, bundle, err := releaseMaterial(filepath.Dir(archive))
+	checksums, bundle, signature, err := releaseMaterial(filepath.Dir(archive))
 	if err != nil {
 		fail(fleetUpdFailed, err.Error()+". Nothing was sent")
 		return
 	}
-	sent, from, rule, err := sendUpdate(ctx, mgr, st.ID, archive, fleet.Update{Version: newV, SHA256: sum, Size: size,
-		Asset: filepath.Base(archive), Checksums: checksums, Bundle: bundle})
-	if rule != "" || err == nil {
-		u.say(s, "", ruleWords(rule))
+	sent, from, opening, err := sendUpdate(ctx, mgr, st.ID, archive, fleet.Update{Version: newV, SHA256: sum, Size: size,
+		Asset: filepath.Base(archive), Checksums: checksums, Bundle: bundle, Signature: signature})
+	if opening.Rule != "" || err == nil {
+		u.say(s, "", ruleWords(opening.Rule, opening.Verified))
 	}
 	resumed := ""
 	if from > 0 {
@@ -380,35 +380,49 @@ func (u *fleetUpdates) fetchFor(ctx context.Context, client *http.Client, repo, 
 }
 
 // releaseMaterial is the release's checksums.txt and, when the release has
-// one, its signature bundle, as fetchRelease left them in dir, within the
-// bounds a machine takes.
-func releaseMaterial(dir string) (checksums, bundle []byte, err error) {
-	read := func(name string, limit int, need bool) ([]byte, error) {
-		f, err := os.Open(filepath.Join(dir, name))
-		if errors.Is(err, fs.ErrNotExist) && !need {
-			return nil, nil
-		}
-		if err != nil {
-			return nil, err
-		}
-		defer f.Close()
-		b, err := io.ReadAll(io.LimitReader(f, int64(limit)+1))
-		if err == nil && len(b) > limit {
-			err = fmt.Errorf("the release's %s is larger than a machine takes (%d bytes at most)", name, limit)
-		}
-		return b, err
+// them, its signature bundle and its project signature (TEN-542), as
+// fetchRelease left them in dir, within the bounds a machine takes.
+func releaseMaterial(dir string) (checksums, bundle, signature []byte, err error) {
+	if checksums, err = readReleaseFile(dir, "checksums.txt", fleet.MaxReleaseChecksums, true); err != nil {
+		return nil, nil, nil, err
 	}
-	if checksums, err = read("checksums.txt", fleet.MaxReleaseChecksums, true); err != nil {
-		return nil, nil, err
+	if bundle, err = readReleaseFile(dir, "checksums.txt.sigstore.json", fleet.MaxReleaseBundle, false); err != nil {
+		return nil, nil, nil, err
 	}
-	bundle, err = read("checksums.txt.sigstore.json", fleet.MaxReleaseBundle, false)
-	return checksums, bundle, err
+	signature, err = readReleaseFile(dir, selfupdate.SignatureAsset, fleet.MaxReleaseSignature, false)
+	return checksums, bundle, signature, err
 }
 
-// ruleWords says which rule a machine applied to an update (its ack).
-func ruleWords(rule string) string {
+// readReleaseFile is one file fetchRelease left in dir, refused when it is
+// over limit bytes; a file that is not there is nil unless need.
+func readReleaseFile(dir, name string, limit int, need bool) ([]byte, error) {
+	f, err := os.Open(filepath.Join(dir, name))
+	if errors.Is(err, fs.ErrNotExist) && !need {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, int64(limit)+1))
+	if err == nil && len(b) > limit {
+		err = fmt.Errorf("the release's %s is larger than Tenant takes (%d bytes at most)", name, limit)
+	}
+	return b, err
+}
+
+// ruleWords says which rule a machine applied to an update, and on the
+// default rule which check passed (its ack to the opening piece). A word
+// the machine sends that is not one of ours is not repeated.
+func ruleWords(rule, verified string) string {
 	switch rule {
 	case string(fleet.UpdatesRelease):
+		switch verified {
+		case fleet.VerifiedProjectKey:
+			return "the machine verified the release's signature itself, with the project key its own Tenant carries, and takes the archive only if it hashes to what that release lists"
+		case fleet.VerifiedCosign:
+			return "the machine verified the release's signature itself, the release workflow's signature, against the release its own Tenant was built from, and takes the archive only if it hashes to what that release lists"
+		}
 		return "the machine verified the release's signature itself, against the release its own Tenant was built from, and takes the archive only if it hashes to what that release lists"
 	case string(fleet.UpdatesMaster):
 		return "the machine is set to trust this master's hash (`updates master` on the machine): it checks the archive against the SHA-256 sent with it, not against a signature"
@@ -421,12 +435,12 @@ func ruleWords(rule string) string {
 // the machine says it is applying, and fails when the machine stops taking
 // pieces or answers what is not about this archive: a machine may stall or
 // lie, and is never waited on for longer than a request's limit.
-func sendUpdate(ctx context.Context, mgr *fleet.Manager, id, path string, u fleet.Update) (sent, from int64, rule string, err error) {
-	sent, err = sendPieces(ctx, mgr, id, path, u, &from, &rule)
-	return sent, from, rule, err
+func sendUpdate(ctx context.Context, mgr *fleet.Manager, id, path string, u fleet.Update) (sent, from int64, opening fleet.UpdateAck, err error) {
+	sent, err = sendPieces(ctx, mgr, id, path, u, &from, &opening)
+	return sent, from, opening, err
 }
 
-func sendPieces(ctx context.Context, mgr *fleet.Manager, id, path string, u fleet.Update, from *int64, rule *string) (int64, error) {
+func sendPieces(ctx context.Context, mgr *fleet.Manager, id, path string, u fleet.Update, from *int64, opening *fleet.UpdateAck) (int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return 0, err
@@ -441,9 +455,9 @@ func sendPieces(ctx context.Context, mgr *fleet.Manager, id, path string, u flee
 	if err != nil {
 		return 0, updateRefused(err)
 	}
-	*rule = ack.Rule
+	*opening = ack
 	// The material went once; the archive's pieces carry only themselves.
-	u.Asset, u.Checksums, u.Bundle = "", nil, nil
+	u.Asset, u.Checksums, u.Bundle, u.Signature = "", nil, nil, nil
 	if ack.Received > 0 && ack.Received < u.Size && !ack.Applying {
 		*from = ack.Received
 	}

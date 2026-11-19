@@ -24,6 +24,7 @@ var anything = []string{"**"}
 // decision here.
 var rules = []rule{
 	{Pkg: "cmd/**", May: anything, Notes: "the composition root and command adapters"},
+	{Pkg: "scripts/releasekey", May: []string{"internal/selfupdate", "internal/fsperm"}, Notes: "signs releases in the exact form the binary verifies (TEN-542); both are stdlib-only leaves"},
 	{Pkg: "scripts/**", Notes: "build tools stand alone"},
 	{Pkg: "reference/**", May: []string{"reference/**"}, Notes: "examples for tool builders; never tenant/internal"},
 	{Pkg: "internal/archtest", Notes: "these tests"},

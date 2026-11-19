@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -103,6 +104,14 @@ func e2eUpdateSeams(spec e2eSpec) {
 	// (childrelease_test.go), since Sigstore cannot be reached from a test.
 	if repo := os.Getenv("TENANT_E2E_CHILD_RELEASE"); repo != "" {
 		childReleaseRepo, childCosign = func() string { return repo }, fakeCosign
+	}
+	// A child whose binary carries the project key (TEN-542), stamped as a
+	// release build stamps it, and with no cosign on its machine.
+	if keys := os.Getenv("TENANT_E2E_CHILD_KEYS"); keys != "" {
+		version.ReleaseKeys = keys
+		childCosign = func(context.Context, ...string) error {
+			return errors.New("cosign is not installed on this machine, and the release's signature is verified with it")
+		}
 	}
 	childCommand = func(ctx context.Context, exe string, args ...string) *exec.Cmd {
 		sub := e2eSpec{Argv: args, Env: spec.Env, Scratch: spec.Scratch, Shipped: spec.Shipped}
@@ -206,7 +215,7 @@ func (r *e2eReleases) serve(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		var assets []map[string]string
-		for _, name := range []string{selfupdate.AssetName(selfupdate.VersionOf(tag), runtime.GOOS, runtime.GOARCH), "checksums.txt", "checksums.txt.sigstore.json"} {
+		for _, name := range []string{selfupdate.AssetName(selfupdate.VersionOf(tag), runtime.GOOS, runtime.GOARCH), "checksums.txt", "checksums.txt.sigstore.json", selfupdate.SignatureAsset} {
 			if _, err := os.Stat(filepath.Join(r.dir, tag, name)); err != nil {
 				continue // a release with no signature bundle
 			}
@@ -245,6 +254,19 @@ func (r *e2eReleases) publish(tag, bin string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "checksums.txt"), []byte(sum+"  "+name+"\n"), 0o600); err != nil {
 		r.t.Fatal(err)
+	}
+	if strings.HasPrefix(tag, "v6.") { // signed with the project key e2eProjectKey; v6.0.1's signature has one byte changed
+		sig := projectSign(e2eProjectKey, []byte(sum+"  "+name+"\n"))
+		if tag == "v6.0.1" { // another base64 character: the text still reads, the signature is wrong
+			if sig[20] == 'A' {
+				sig[20] = 'B'
+			} else {
+				sig[20] = 'A'
+			}
+		}
+		if err := os.WriteFile(filepath.Join(dir, selfupdate.SignatureAsset), sig, 0o600); err != nil {
+			r.t.Fatal(err)
+		}
 	}
 	if strings.HasPrefix(tag, "v5.") { // the releases the default-rule machine is sent are signed, but for one
 		if tag != "v5.0.1" {
@@ -324,7 +346,7 @@ func newE2EUpdateFleet(t *testing.T) *e2eUpdateFleet {
 	f.m.serve()
 	f.m.init(f.wire.addr)
 	f.wire.to(f.m.fleet)
-	f.alpha = f.machine(t, "alpha")
+	f.alpha = f.machine(t, "alpha", false, "")
 	f.bin = f.alpha.host.bin
 	return f
 }
@@ -332,15 +354,19 @@ func newE2EUpdateFleet(t *testing.T) *e2eUpdateFleet {
 // machine enrolls, confirms and runs a machine from its own copy of this
 // binary, marked 1.0.0. It takes its master's hash (`--updates master`),
 // as a development build must; release is a machine on the default rule
-// whose binary carries the release identity test/tenant.
-func (f *e2eUpdateFleet) machine(t *testing.T, name string, release ...bool) *e2eChild {
+// whose binary carries the release identity test/tenant, and keys the
+// project key(s) it carries besides (TEN-542; "" for none).
+func (f *e2eUpdateFleet) machine(t *testing.T, name string, release bool, keys string) *e2eChild {
 	t.Helper()
 	host := *f.h
 	host.bin = e2eBuild(t, f.h.join("bin-"+name), "1.0.0", "")
 	flags := []string{"--updates", "master"}
 	env := map[string]string{"TENANT_E2E_CHILD_HEALTH": "15s"}
-	if len(release) > 0 && release[0] {
+	if release {
 		flags, env["TENANT_E2E_CHILD_RELEASE"] = nil, "test/tenant"
+	}
+	if keys != "" {
+		env["TENANT_E2E_CHILD_KEYS"] = keys
 	}
 	c := f.m.enroll(&host, name, flags...)
 	c.env = env
@@ -510,7 +536,7 @@ func TestFleetUpdateRealProcesses(t *testing.T) {
 	})
 
 	step("an offline machine is refused, and --all goes on past it", func(t *testing.T) {
-		beta := f.machine(t, "beta")
+		beta := f.machine(t, "beta", false, "")
 		beta.proc.stop()
 		for deadline := time.Now().Add(e2eWait); ; time.Sleep(100 * time.Millisecond) {
 			var v apiFleet
@@ -597,7 +623,7 @@ func TestFleetUpdateRealProcesses(t *testing.T) {
 	// itself: a signed release comes back on the new version, and one with
 	// no signature bundle is refused before the archive is on the wire.
 	step("a machine on the default rule verifies a signed release itself", func(t *testing.T) {
-		gamma := f.machine(t, "gamma", true)
+		gamma := f.machine(t, "gamma", true, "")
 		if st, _ := gamma.tenant("status"); !strings.Contains(st, "updates:  release") {
 			t.Fatalf("gamma status:\n%s", st)
 		}
@@ -618,4 +644,33 @@ func TestFleetUpdateRealProcesses(t *testing.T) {
 			t.Errorf("gamma reports %s", got)
 		}
 	})
+
+	// A machine on the default rule whose Tenant carries the project key
+	// (TEN-542), with no cosign on it: a release signed with the key comes
+	// back on the new version; one whose signature has one byte changed is
+	// refused before the archive is on the wire.
+	step("a machine that carries the project key verifies a release with it, with no cosign", func(t *testing.T) {
+		delta := f.machine(t, "delta", true, e2eProjectPub)
+		f.rel.publish("v6.0.1", e2eBuild(t, filepath.Join(builds, "6.0.1"), "6.0.1", ""))
+		out, exit := f.update("delta", "--version", "v6.0.1")
+		if exit == 0 || !strings.Contains(out, "project signature does not verify") {
+			t.Errorf("a release whose signature has a byte changed: exit %d\n%s", exit, out)
+		}
+		if parts, _ := filepath.Glob(filepath.Join(childDataDir(delta.dir), "update", "*")); len(parts) != 0 {
+			t.Errorf("the refused release left %v on the machine", parts)
+		}
+		f.rel.publish("v6.0.0", e2eBuild(t, filepath.Join(builds, "6.0.0"), "6.0.0", ""))
+		out, exit = f.update("delta", "--version", "v6.0.0")
+		if exit != 0 || !strings.Contains(out, "with the project key its own Tenant carries") || !strings.Contains(out, "back on the new version 6.0.0") {
+			t.Errorf("a release signed with the project key: exit %d\n%s", exit, out)
+		}
+		t.Logf("the update said:\n%s", out)
+		if got := f.reported(t, delta.id); got != fleetQuote("6.0.0") {
+			t.Errorf("delta reports %s", got)
+		}
+	})
 }
+
+// e2eProjectKey is the throwaway project key the v6 releases are signed
+// with, and e2eProjectPub its public text, which delta's binary carries.
+var e2eProjectKey, e2eProjectPub = projectKey(6)

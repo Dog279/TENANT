@@ -286,7 +286,8 @@ tenant update              # download, verify, back up, swap, restart the servic
 ```
 
 `update` verifies the checksum (and the cosign signature when `cosign` is
-installed), smoke-runs the new binary, writes an unencrypted backup to
+installed; a main-repository release binary also requires the release's
+project-key signature, `checksums.txt.sig`, which needs nothing installed), smoke-runs the new binary, writes an unencrypted backup to
 `<data dir>-backups/pre-update-<version>.tenant-backup`, swaps the binary keeping the
 old one as `tenant.prev`, restarts the service and confirms the new version
 answers; if it does not, the old binary goes back by itself. `--version vX.Y.Z`

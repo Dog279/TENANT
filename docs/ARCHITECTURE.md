@@ -128,6 +128,7 @@ generated from `internal/archtest/rules.go`, and
 |---|---|---|
 | every `internal/**` package | `internal/logs/event`, `internal/logs/catalog`, `internal/logs/capture` | on top of its own row: the event model, the built-in providers (the Security log's records among them) and child capture, so an event is written, and a child filed, where the action happens |
 | `cmd/**` | anything | the composition root and command adapters |
+| `scripts/releasekey` | `internal/selfupdate`, `internal/fsperm` | signs releases in the exact form the binary verifies (TEN-542); both are stdlib-only leaves |
 | `scripts/**` | nothing in the module | build tools stand alone |
 | `reference/**` | `reference/**` | examples for tool builders; never tenant/internal |
 | `internal/archtest` | nothing in the module | these tests |

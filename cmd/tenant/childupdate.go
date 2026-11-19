@@ -154,43 +154,76 @@ func childReason(err error) error {
 	return errors.New(s)
 }
 
-// verifyRelease is the default rule (decision A71), on this machine and with
-// no network: the archive named is this machine's for the version named;
-// the bundle is a signature over the checksums by the release workflow of
-// the repository this binary was built from; and the verified checksums
-// list the archive with the SHA-256 the master sent. The archive itself is
-// then checked against that hash when it is whole.
-func (u *childUpdater) verifyRelease(ctx context.Context, p fleet.Update, dir string) error {
+// verifyRelease is the default rule (decisions A71, TEN-542), on this
+// machine and with no network: the archive named is this machine's for the
+// version named; the checksums are signed, either with the project key this
+// binary carries when the master sent a project signature (and then that
+// signature alone decides), or else by the release workflow of the
+// repository this binary was built from (cosign); and the verified
+// checksums list the archive with the SHA-256 the master sent. The archive
+// itself is then checked against that hash when it is whole. It says which
+// signature verified (fleet.VerifiedProjectKey or fleet.VerifiedCosign).
+func (u *childUpdater) verifyRelease(ctx context.Context, p fleet.Update, dir string) (string, error) {
 	repo := childReleaseRepo()
+	keys, err := selfupdate.ParseKeys(version.ReleaseKeys)
+	if err != nil {
+		return "", fmt.Errorf("this build's project key does not read (%v), and this machine takes no update until it runs a build whose key does", err)
+	}
+	keyed := len(keys) > 0 && len(p.Signature) > 0
 	switch want := selfupdate.AssetName(p.Version, runtime.GOOS, runtime.GOARCH); {
-	case repo == "":
-		return errors.New(errNoReleaseIdentity)
+	case repo == "" && len(keys) == 0:
+		return "", errors.New(errNoReleaseIdentity)
 	case p.Asset == "" || len(p.Checksums) == 0:
-		return errors.New("the master sent no release checksums or signature with the update, and this machine takes only an update whose release signature it verified " +
+		return "", errors.New("the master sent no release checksums or signature with the update, and this machine takes only an update whose release signature it verified " +
 			"(update the master's Tenant, or on this machine `tenant child updates master`)")
 	case p.Asset != want:
-		return fmt.Errorf("the archive is %s, not %s, this machine's for version %s", fleetQuote(p.Asset), want, fleetQuote(p.Version))
-	case len(p.Bundle) == 0:
-		return errors.New("the release carries no signature bundle, and this machine takes only an update whose release signature it verified " +
+		return "", fmt.Errorf("the archive is %s, not %s, this machine's for version %s", fleetQuote(p.Asset), want, fleetQuote(p.Version))
+	case keyed:
+		if _, err := selfupdate.VerifyProject(p.Checksums, p.Signature, keys); err != nil {
+			return "", fmt.Errorf("the release's project signature does not verify on this machine: %v", err)
+		}
+		if err := checksumsList(p); err != nil {
+			return "", err
+		}
+		return fleet.VerifiedProjectKey, nil
+	case len(p.Bundle) == 0 && len(keys) > 0:
+		return "", errors.New("the master sent neither a project signature nor a signature bundle with the release, and this machine takes only an update whose release signature it verified " +
 			"(`tenant child updates master` on this machine trusts the master's hash instead)")
+	case len(p.Bundle) == 0:
+		return "", errors.New("the release carries no signature bundle, and this machine takes only an update whose release signature it verified " +
+			"(`tenant child updates master` on this machine trusts the master's hash instead)")
+	case repo == "":
+		return "", errors.New("the master sent no project signature with the release, and this build names no release for cosign to verify its signature bundle against")
 	}
 	tmp, err := os.MkdirTemp(dir, ".release-")
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer os.RemoveAll(tmp)
 	sums, bundle := filepath.Join(tmp, "checksums.txt"), filepath.Join(tmp, "checksums.txt.sigstore.json")
 	if err := os.WriteFile(sums, p.Checksums, 0o600); err != nil {
-		return err
+		return "", err
 	}
 	if err := os.WriteFile(bundle, p.Bundle, 0o600); err != nil {
-		return err
+		return "", err
 	}
 	vctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	if err := childCosign(vctx, selfupdate.CosignArgs(sums, bundle, repo, true)...); err != nil {
-		return fmt.Errorf("the release's signature does not verify as %s's release workflow on this machine: %v", repo, err)
+		if len(keys) > 0 {
+			return "", fmt.Errorf("the master sent no project signature with the release (its Tenant may be older, or the release carries none), so this machine verified the release workflow's signature with cosign instead, and it does not verify as %s's release workflow: %v", repo, err)
+		}
+		return "", fmt.Errorf("the release's signature does not verify as %s's release workflow on this machine: %v", repo, err)
 	}
+	if err := checksumsList(p); err != nil {
+		return "", err
+	}
+	return fleet.VerifiedCosign, nil
+}
+
+// checksumsList checks that a release's verified checksums list the archive
+// with the SHA-256 the master named.
+func checksumsList(p fleet.Update) error {
 	switch got, ok := selfupdate.ParseChecksums(bytes.NewReader(p.Checksums))[p.Asset]; {
 	case !ok:
 		return fmt.Errorf("the release's checksums list no %s", p.Asset)
@@ -245,11 +278,13 @@ func (u *childUpdater) take(ctx context.Context, p fleet.Update) (fleet.UpdateAc
 	}
 	// One transfer at a time: anything else in the folder is an older one.
 	part := filepath.Join(dir, p.SHA256+".part") // p.SHA256 is 64 lowercase hex digits (fleet.Update.validate)
+	how := ""
 	if rule == fleet.UpdatesRelease {
-		sent := p.Asset != "" || len(p.Checksums) > 0 || len(p.Bundle) > 0
+		sent := p.Asset != "" || len(p.Checksums) > 0 || len(p.Bundle) > 0 || len(p.Signature) > 0
 		if sent || u.verified != p.SHA256 {
 			u.verified = ""
-			if err := u.verifyRelease(ctx, p, dir); err != nil {
+			var err error
+			if how, err = u.verifyRelease(ctx, p, dir); err != nil {
 				_ = os.Remove(part) // nothing of an archive this machine will not take stays
 				return fleet.UpdateAck{}, fmt.Errorf("%w; nothing was changed", err)
 			}
@@ -257,7 +292,7 @@ func (u *childUpdater) take(ctx context.Context, p fleet.Update) (fleet.UpdateAc
 		}
 	}
 	ack, err := u.write(ctx, p, dir, part)
-	ack.Rule = string(rule)
+	ack.Rule, ack.Verified = string(rule), how
 	return ack, err
 }
 
