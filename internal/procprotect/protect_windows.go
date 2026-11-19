@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 // Windows. A process and each of its threads have an access list, and the
@@ -19,25 +22,37 @@ import (
 //
 //	process: end it, wait for it, read its basic details (its path and
 //	         command line), which is what Task Manager needs;
-//	thread:  end it, wait for it, resume it.
+//	thread:  end it, wait for it, resume it. A program of the same user
+//	         can therefore still end single threads of Tenant, which stops
+//	         work and reads nothing.
 //
 // The owner entry names OWNER RIGHTS. Without one, Windows lets an object's
 // owner read and rewrite its access list whatever the list says.
 //
 // Still readable: the command line, the program's path and the account.
-// Not stopped: an elevated administrator, SYSTEM, and a program that was
-// handed a handle before Protect ran (whoever started Tenant).
+// Not stopped: an elevated administrator and SYSTEM; whoever started Tenant,
+// who holds a handle from before Protect ran, and any program that copies
+// that handle out of it (a shell waiting for the command is such a holder);
+// and a program that opens the process in the moment between its start and
+// Protect. The console host's handle, which is of that kind, is replaced
+// (console_windows.go).
 const restrictedSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x101001;;;OW)"
 
 // tokenSDDL is the access list of the process's token, an object of its own
 // that anyone who may read the process's basic details can ask for. The token
 // holds the default list new threads get, so an owner who could write the
-// token could put the old default back. The owner keeps two rights, 0x000a:
-// read it (Task Manager's "User name"), and copy it, which Windows itself
-// does inside the process to answer "is this user in that group"
-// (CheckTokenMembership) and which gives another program of the same user
-// nothing it does not have.
-const tokenSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x000a;;;OW)"
+// token could put the old default back. The owner keeps three rights,
+// 0x2000a, none of which changes the token:
+//
+//	read it (TOKEN_QUERY): Task Manager's "User name";
+//	copy it (TOKEN_DUPLICATE): Windows does that inside the process to
+//	    answer "is this user in that group" (CheckTokenMembership), and the
+//	    copy gives another program of the same user nothing it does not have;
+//	read its access list (READ_CONTROL): the console host opens a client's
+//	    token with all three (TOKEN_READ) to see what kind of program it is,
+//	    and one it cannot read it treats as a sandboxed app, which may not
+//	    type into its own console or read its screen back.
+const tokenSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x2000a;;;OW)"
 
 // ownToken is this process's token, opened once, before its access list is
 // closed: the handle keeps the rights it was opened with.
@@ -46,6 +61,9 @@ var ownToken windows.Token
 const leavesThreads = "another program running as the same user can open one of Tenant's threads and redirect it (SetThreadContext, QueueUserAPC), which runs code inside Tenant and so reads its memory"
 
 func protect() []Control {
+	if len(os.Args) == 2 && os.Args[1] == anchorArg {
+		anchor() // the helper that keeps a console open: it does nothing else, and exits
+	}
 	sd, err := windows.SecurityDescriptorFromString(restrictedSDDL)
 	set := func(do func() error) func() error {
 		return func() error {
@@ -55,19 +73,32 @@ func protect() []Control {
 			return do()
 		}
 	}
-	return []Control{
-		// The threads first: a process whose own list is closed but whose
-		// threads are open is not closed.
-		apply(Control{ID: "windows.thread-dacl",
-			Name:   "opening or redirecting a thread refused (every thread's access list, and the default for new ones)",
-			Leaves: leavesThreads,
-		}, set(func() error { return restrictThreads(sd) })),
-		apply(Control{ID: "windows.process-dacl",
-			Name:   "reading memory, writing a dump and attaching a debugger refused (the process's access list)",
-			Leaves: "another program running as the same user can read Tenant's memory (ReadProcessMemory), write a dump of it (Task Manager's \"Create dump file\"), attach a debugger and start a thread in it",
-		}, set(func() error {
-			return windows.SetKernelObjectSecurity(windows.CurrentProcess(), windows.DACL_SECURITY_INFORMATION, sd)
-		})),
+	// The threads first: a process whose own list is closed but whose
+	// threads are open is not closed.
+	threads := apply(Control{ID: "windows.thread-dacl",
+		Name:   "reading or redirecting a thread refused (every thread's access list, and the default for new ones); the owner can still end, wait for and resume a thread",
+		Leaves: leavesThreads,
+	}, set(func() error { return restrictThreads(sd) }))
+	process := apply(Control{ID: "windows.process-dacl",
+		Name:   "reading memory, writing a dump and attaching a debugger refused (the process's access list)",
+		Leaves: "another program running as the same user can read Tenant's memory (ReadProcessMemory), write a dump of it (Task Manager's \"Create dump file\"), attach a debugger and start a thread in it",
+	}, set(func() error {
+		return windows.SetKernelObjectSecurity(windows.CurrentProcess(), windows.DACL_SECURITY_INFORMATION, sd)
+	}))
+	// The console host opens the process again only once its list is closed.
+	var note string
+	console := apply(Control{ID: "windows.console-host",
+		Name:   "the console host's handle to this process carries the owner's three rights and no more (the console is left and joined again once the access list is set)",
+		Leaves: "another program running as the same user can copy the full-access handle the console host (conhost.exe) holds on Tenant, and read Tenant's memory through it",
+	}, func() (err error) {
+		if !process.OK {
+			return errors.New("the process's access list is not the restricted one, so the console host would open the process with everything again")
+		}
+		note, err = rejoinConsole()
+		return err
+	})
+	console.Note = note
+	return []Control{threads, process, console,
 		apply(Control{ID: "windows.wer-exclusion",
 			Name:   "no crash dump by Windows Error Reporting (the program is on the user's exclusion list)",
 			Leaves: "Windows Error Reporting, which runs as SYSTEM, can write a dump of Tenant's memory when it crashes",
@@ -136,7 +167,7 @@ func restrictThreads(sd *windows.SECURITY_DESCRIPTOR) error {
 	}
 	defer windows.CloseHandle(snap)
 	pid := windows.GetCurrentProcessId()
-	var failed []string
+	var causes, ids []string
 	te := windows.ThreadEntry32{Size: uint32(unsafe.Sizeof(windows.ThreadEntry32{}))}
 	for err := windows.Thread32First(snap, &te); err == nil; err = windows.Thread32Next(snap, &te) {
 		if te.OwnerProcessID != pid {
@@ -155,11 +186,18 @@ func restrictThreads(sd *windows.SECURITY_DESCRIPTOR) error {
 			windows.CloseHandle(h)
 		}
 		if err != nil {
-			failed = append(failed, fmt.Sprintf("thread %d: %v", te.ThreadID, err))
+			if !slices.Contains(causes, err.Error()) {
+				causes = append(causes, err.Error())
+			}
+			ids = append(ids, strconv.FormatUint(uint64(te.ThreadID), 10))
 		}
 	}
-	if len(failed) > 0 {
-		return errors.New(strings.Join(failed, "; "))
+	if len(causes) > 0 {
+		// The cause is the reason; which threads, and how many, differ at
+		// every start and are the detail.
+		slices.Sort(causes)
+		return &failure{reason: "a thread that existed at start could not be given the access list: " + strings.Join(causes, "; "),
+			detail: "thread ids " + strings.Join(ids, ", ")}
 	}
 	return nil
 }
@@ -218,6 +256,81 @@ func excludeFromErrorReporting() error {
 	}
 	return nil
 }
+
+// werExcluded is where the user's exclusion list is kept, a value per
+// program name.
+const werExcluded = `Software\Microsoft\Windows\Windows Error Reporting\ExcludedApplications`
+
+// reread reads a control's state again, for Now: found says what is wrong
+// with it, and whole that everything the control covers was read.
+//
+//   - The process's access list, and the one new threads get, are read and
+//     held to restrictedSDDL's terms. A thread's own list is closed to this
+//     process as it is to any program of the user, so the threads that exist
+//     are as they were at start.
+//   - The exclusion from Windows Error Reporting is a value in the user's
+//     registry, which any program of the user can delete.
+//   - The handle the console host holds is the console host's, and is not
+//     looked for again.
+func reread(id string) (found string, whole bool) {
+	switch id {
+	case "windows.process-dacl":
+		sd, err := windows.GetSecurityInfo(windows.CurrentProcess(), windows.SE_KERNEL_OBJECT, windows.DACL_SECURITY_INFORMATION)
+		if err != nil {
+			return "", false
+		}
+		if dacl, _, err := sd.DACL(); err != nil || !closedToTheUser(dacl) {
+			found = "the process's access list gives the user's other programs more than the three rights"
+		}
+		return found, true
+	case "windows.thread-dacl":
+		if dacl, err := tokenDefaultDACLOf(ownToken); err == nil && !closedToTheUser(dacl) {
+			found = "the access list a new thread gets gives the user's other programs more than the three rights"
+		}
+		return found, false
+	case "windows.wer-exclusion":
+		exe, err := os.Executable()
+		if err != nil {
+			return "", false
+		}
+		k, err := registry.OpenKey(registry.CURRENT_USER, werExcluded, registry.QUERY_VALUE)
+		if err == nil {
+			defer k.Close()
+			if v, _, err := k.GetIntegerValue(filepath.Base(exe)); err == nil && v != 0 {
+				return "", true
+			}
+		}
+		return "this program is not on the user's Windows Error Reporting exclusion list", true
+	}
+	return "", false
+}
+
+// closedToTheUser: the access list gives SYSTEM and Administrators what it
+// likes, the owner no more than the three rights, and nobody else anything.
+func closedToTheUser(dacl *windows.ACL) bool {
+	if dacl == nil { // no list at all lets everyone in
+		return false
+	}
+	system, _ := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	admins, _ := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	owner, _ := windows.CreateWellKnownSid(windows.WinCreatorOwnerRightsSid)
+	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if windows.GetAce(dacl, i, &ace) != nil || ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+			return false
+		}
+		switch sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart)); {
+		case sid.Equals(system), sid.Equals(admins):
+		case sid.Equals(owner) && ace.Mask&^0x101001 == 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// A process is elevated or it is not: system's line is about this one.
+const systemIsOfTheProcess = true
 
 // system says whether this process is elevated: an elevated administrator's
 // other elevated programs are let in by the access list itself.

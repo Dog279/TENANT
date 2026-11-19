@@ -32,17 +32,38 @@ var (
 	ordinarySD     *windows.SECURITY_DESCRIPTOR // the access list the user's objects had before Protect
 )
 
+// hasConsole: this process is joined to a console. A variable, so that a test
+// can say it is not without leaving the console the tests run on.
+var hasConsole = func() bool { return len(consoleClients()) > 0 }
+
+// consoleOfItsOwn are the creation flags by which a caller chooses a child's
+// console itself.
+const consoleOfItsOwn = windows.CREATE_NEW_CONSOLE | windows.DETACHED_PROCESS | windows.CREATE_NO_WINDOW
+
 // Child prepares cmd to start as an ordinary process of the user: the token
 // Tenant itself had before Protect, and an access list given explicitly for
 // the process and its first thread. What the caller set already is kept.
+//
+// It also keeps a Tenant that has no console from putting a window on the
+// desktop for every command it starts. Windows gives a console program whose
+// parent has no console a new one, with a window that takes the keyboard
+// from whatever the operator is doing; a Tenant has no console when it is
+// the service, when another program started it detached, and if it left its
+// console and could not join it again (console_windows.go). The child is
+// then started with CREATE_NO_WINDOW: a console with no window. A Tenant on
+// a console starts its commands as before, on that console, hidden or not.
+// A program that is not a console program (the browser) ignores the flag.
 func Child(cmd *exec.Cmd) {
-	if ordinaryToken == 0 {
-		return
-	}
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
 	a := cmd.SysProcAttr
+	if a.CreationFlags&consoleOfItsOwn == 0 && !hasConsole() {
+		a.CreationFlags |= windows.CREATE_NO_WINDOW
+	}
+	if ordinaryToken == 0 {
+		return
+	}
 	sa := &syscall.SecurityAttributes{Length: uint32(unsafe.Sizeof(syscall.SecurityAttributes{})),
 		SecurityDescriptor: uintptr(unsafe.Pointer(ordinarySD))} // ordinarySD is never freed
 	if a.Token == 0 {

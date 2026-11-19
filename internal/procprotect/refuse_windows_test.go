@@ -21,7 +21,7 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-var controlIDs = []string{"windows.thread-dacl", "windows.process-dacl", "windows.wer-exclusion"}
+var controlIDs = []string{"windows.thread-dacl", "windows.process-dacl", "windows.console-host", "windows.wer-exclusion"}
 
 // What the user's other programs may still do to a protected Tenant: Task
 // Manager lists it and ends it, and a program can wait for it to exit.
@@ -30,6 +30,7 @@ var stillAllowed = map[string]bool{
 	"wait for it to exit (SYNCHRONIZE)":                                             true,
 	"read its account (its token, TOKEN_QUERY; Task Manager's User name)":           true,
 	"copy its token (TOKEN_DUPLICATE; the copy is no more than the attacker's own)": true,
+	"read its token as the console host does (TOKEN_READ)":                          true,
 	"end it (TerminateProcess, Task Manager's End task)":                            true,
 }
 
@@ -41,8 +42,6 @@ func attackerTooStrong() string {
 	}
 	return ""
 }
-
-const werExcluded = `Software\Microsoft\Windows\Windows Error Reporting\ExcludedApplications`
 
 // werExclusion reports whether this test binary's name is in the user's list
 // of programs Windows Error Reporting leaves alone.
@@ -188,7 +187,7 @@ func selfState() map[string]string {
 		}
 		windows.CloseHandle(h)
 	}
-	return map[string]string{
+	state := map[string]string{
 		"process access list":                        sddl(windows.CurrentProcess()),
 		"access list new objects get":                defaultDACL(),
 		"access lists of its threads":                strings.Join(threads, " | "),
@@ -196,6 +195,22 @@ func selfState() map[string]string {
 		"info:threads":                               fmt.Sprintf("%d, of which %d refuse the process itself THREAD_SET_CONTEXT by id", len(ids), denied),
 		"info:excluded from Windows Error Reporting": fmt.Sprint(werExclusion()),
 	}
+	if os.Getenv(envConsole) != "" && os.Getenv(envHelper) == "victim" {
+		for k, v := range consoleState() {
+			state[k] = v
+		}
+	}
+	if os.Getenv(envLinger) != "" && os.Getenv(envHelper) == "victim" {
+		// A console command that stays a while, started the way Tenant
+		// starts every command. The test ends it.
+		c := exec.Command("ping", "-n", "20", "127.0.0.1") // one process: ending it leaves nothing
+		if err := Start(c); err != nil {
+			state["info:a command that stays"] = err.Error()
+		} else {
+			state["info:a command that stays"] = fmt.Sprint(c.Process.Pid)
+		}
+	}
+	return state
 }
 
 // childState is selfState for a process the victim started, plus whether it
@@ -207,12 +222,9 @@ func childState() map[string]string {
 	return s
 }
 
-var (
-	kernel32 = windows.NewLazySystemDLL("kernel32.dll")
-	// A function every process has at the same address, that takes anything
-	// and does nothing: what a queued call or a new thread is pointed at.
-	harmless = kernel32.NewProc("GetCurrentProcessId").Addr()
-)
+// A function every process has at the same address, that takes anything and
+// does nothing: what a queued call or a new thread is pointed at.
+var harmless = kernel32.NewProc("GetCurrentProcessId").Addr()
 
 // call calls a kernel32 function that returns a BOOL.
 func call(name string, args ...uintptr) error {
@@ -414,6 +426,9 @@ var attempts = []attempt{
 	{"copy its token (TOKEN_DUPLICATE; the copy is no more than the attacker's own)", func(v victimInfo) (string, error) {
 		return openToken(v, windows.TOKEN_DUPLICATE, nil)
 	}},
+	{"read its token as the console host does (TOKEN_READ)", func(v victimInfo) (string, error) {
+		return openToken(v, windows.TOKEN_READ, nil)
+	}},
 	{"read its account (its token, TOKEN_QUERY; Task Manager's User name)", func(v victimInfo) (string, error) {
 		return openToken(v, windows.TOKEN_QUERY, func(t windows.Token) (string, error) {
 			u, err := t.GetTokenUser()
@@ -592,42 +607,62 @@ func TestProtectThisProcess(t *testing.T) {
 	})
 	// What Tenant does in its own process still works: Windows copies the
 	// process's token to answer a group question, the data-protection
-	// service is asked to seal a secret, and names resolve.
-	users, _ := windows.CreateWellKnownSid(windows.WinBuiltinUsersSid)
-	if _, err := windows.Token(0).IsMember(users); err != nil {
-		t.Errorf("CheckTokenMembership on the process's own token: %v", err)
-	}
-	if _, err := user.Current(); err != nil {
-		t.Errorf("user.Current: %v", err)
-	}
-	secret := []byte("ten535")
-	in := windows.DataBlob{Size: uint32(len(secret)), Data: &secret[0]}
-	var sealed, opened windows.DataBlob
-	if err := windows.CryptProtectData(&in, nil, nil, 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &sealed); err != nil {
-		t.Errorf("CryptProtectData: %v", err)
-	} else {
-		if err := windows.CryptUnprotectData(&sealed, nil, nil, 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &opened); err != nil ||
-			string(unsafe.Slice(opened.Data, opened.Size)) != "ten535" {
-			t.Errorf("CryptUnprotectData: %v", err)
+	// service is asked to seal a secret, and names resolve. And all of it
+	// works inside Ordinary, which is where every command and every tool
+	// runs (cmd/tenant's main, toolmux's Dispatch).
+	everyday := func(where string) {
+		users, _ := windows.CreateWellKnownSid(windows.WinBuiltinUsersSid)
+		if _, err := windows.Token(0).IsMember(users); err != nil {
+			t.Errorf("%sCheckTokenMembership on the process's own token: %v", where, err)
 		}
-		windows.LocalFree(windows.Handle(unsafe.Pointer(sealed.Data)))
-		if opened.Data != nil {
-			windows.LocalFree(windows.Handle(unsafe.Pointer(opened.Data)))
+		if _, err := user.Current(); err != nil {
+			t.Errorf("%suser.Current: %v", where, err)
 		}
-	}
-	if _, err := net.LookupHost("localhost"); err != nil {
-		t.Errorf("LookupHost: %v", err)
-	}
-	if ln, err := net.Listen("tcp", "127.0.0.1:0"); err != nil {
-		t.Errorf("Listen: %v", err)
-	} else {
-		c, err := net.Dial("tcp", ln.Addr().String())
-		if err != nil {
-			t.Errorf("Dial: %v", err)
+		secret := []byte("ten535")
+		in := windows.DataBlob{Size: uint32(len(secret)), Data: &secret[0]}
+		var sealed, opened windows.DataBlob
+		if err := windows.CryptProtectData(&in, nil, nil, 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &sealed); err != nil {
+			t.Errorf("%sCryptProtectData: %v", where, err)
 		} else {
-			c.Close()
+			if err := windows.CryptUnprotectData(&sealed, nil, nil, 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &opened); err != nil ||
+				string(unsafe.Slice(opened.Data, opened.Size)) != "ten535" {
+				t.Errorf("%sCryptUnprotectData: %v", where, err)
+			}
+			windows.LocalFree(windows.Handle(unsafe.Pointer(sealed.Data)))
+			if opened.Data != nil {
+				windows.LocalFree(windows.Handle(unsafe.Pointer(opened.Data)))
+			}
 		}
-		ln.Close()
+		if _, err := net.LookupHost("localhost"); err != nil {
+			t.Errorf("%sLookupHost: %v", where, err)
+		}
+		if ln, err := net.Listen("tcp", "127.0.0.1:0"); err != nil {
+			t.Errorf("%sListen: %v", where, err)
+		} else {
+			c, err := net.Dial("tcp", ln.Addr().String())
+			if err != nil {
+				t.Errorf("%sDial: %v", where, err)
+			} else {
+				c.Close()
+			}
+			ln.Close()
+		}
+	}
+	everyday("")
+	Ordinary(func() { everyday("inside Ordinary: ") })
+	// A thread Windows itself starts from inside Ordinary (CreateThread, as
+	// a system library does) still gets the restricted list: a new thread's
+	// list comes from the process's token, not from the one its creator's
+	// thread carries. Running whole commands inside Ordinary rests on this.
+	startedInside := "CreateThread failed"
+	Ordinary(func() {
+		if h, _, _ := kernel32.NewProc("CreateThread").Call(0, 0, kernel32.NewProc("Sleep").Addr(), 200, 0, 0); h != 0 {
+			startedInside = sddl(windows.Handle(h))
+			windows.CloseHandle(windows.Handle(h))
+		}
+	})
+	if startedInside != restricted {
+		t.Errorf("a thread Windows starts from inside Ordinary carries %q, want %q", startedInside, restricted)
 	}
 	f, err := os.CreateTemp(t.TempDir(), "made-after-protect")
 	if err != nil {
@@ -666,4 +701,78 @@ func pipeErr() error {
 		w.Close()
 	}
 	return err
+}
+
+// TestNowReadsTheStateAgain: a control another program of the user undoes
+// while Tenant runs is not reported as in force any more (TEN-535 hardening:
+// the tester deleted the error-reporting exclusion under a running serve, and
+// the report did not change). Now reads again what can be read, and says
+// which controls it could not.
+func TestNowReadsTheStateAgain(t *testing.T) {
+	if Disabled {
+		if r := Now(); !r.Disabled || len(r.Controls) != 0 {
+			t.Fatalf("a debugattach build's Now() = %+v", r)
+		}
+		t.Skip("built with -tags debugattach: nothing to read again")
+	}
+	if m := Protect().Missing(); len(m) != 0 {
+		t.Fatalf("Protect: %+v", m)
+	}
+	t.Cleanup(cleanupMachine)
+	now := Now()
+	if len(now.Missing()) != 0 || now.PID != os.Getpid() || len(now.System) != 1 {
+		t.Fatalf("Now() = %+v", now)
+	}
+	asAtStart := map[string]bool{}
+	for _, c := range now.Controls {
+		asAtStart[c.ID] = c.AsAtStart
+	}
+	// Read again in full: the process's list and the exclusion. Not, or not
+	// wholly: the threads that exist, and the console host's handle.
+	want := map[string]bool{"windows.thread-dacl": true, "windows.process-dacl": false, "windows.console-host": true, "windows.wer-exclusion": false}
+	if fmt.Sprint(asAtStart) != fmt.Sprint(want) {
+		t.Errorf("as at start: %v, want %v", asAtStart, want)
+	}
+
+	// What the tester did: the value is the user's own to delete.
+	k, err := registry.OpenKey(registry.CURRENT_USER, werExcluded, registry.SET_VALUE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = k.DeleteValue(filepath.Base(os.Args[0]))
+	k.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := Now().Missing()
+	const reason = "it was in force when Tenant started and is not any more: this program is not on the user's Windows Error Reporting exclusion list"
+	if len(m) != 1 || m[0].ID != "windows.wer-exclusion" || !m[0].Undone || m[0].Reason != reason || m[0].Leaves == "" {
+		t.Fatalf("with the exclusion deleted, Now() reports as not in force: %+v", m)
+	}
+	if again := Protect(); len(again.Missing()) != 0 { // what a restart does
+		t.Fatalf("Protect, again: %+v", again.Missing())
+	}
+	if m := Now().Missing(); len(m) != 0 {
+		t.Errorf("with the exclusion back, Now() still reports: %+v", m)
+	}
+
+	// An access list that lets the user in is not the restricted one.
+	for sddl, closed := range map[string]bool{
+		restrictedSDDL:               true,
+		"D:(A;;GA;;;SY)(A;;GA;;;BA)": true,
+		"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x101001;;;OW)(A;;GA;;;WD)": false,
+		"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x1fffff;;;OW)":             false,
+		"D:(A;;GA;;;SY)(D;;GA;;;WD)":                               false, // not a list Protect writes
+	} {
+		sd, err := windows.SecurityDescriptorFromString(sddl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dacl, _, _ := sd.DACL(); closedToTheUser(dacl) != closed {
+			t.Errorf("closedToTheUser(%s) = %v, want %v", sddl, !closed, closed)
+		}
+	}
+	if closedToTheUser(nil) {
+		t.Error("no access list at all counts as closed")
+	}
 }

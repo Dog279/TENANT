@@ -14,6 +14,9 @@
 package procprotect
 
 import (
+	"errors"
+	"os"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -27,12 +30,23 @@ type Control struct {
 	Name string `json:"name"`
 	// OK is true when the control is in force.
 	OK bool `json:"ok"`
-	// Reason is why it is not in force.
+	// Reason is why it is not in force. It is the same at every start for
+	// the same cause: an acknowledgement of a missing control is matched on
+	// it. What varies from start to start (an id, a count) is in Detail.
 	Reason string `json:"reason,omitempty"`
+	// Detail is what Reason leaves out. Nothing matches on it.
+	Detail string `json:"detail,omitempty"`
 	// Leaves is what its absence leaves open.
 	Leaves string `json:"leaves"`
 	// Note qualifies a control that is in force ("attach denied, not verified").
 	Note string `json:"note,omitempty"`
+	// Undone: the control was in force when the process started and is not
+	// any more. Reason says what was found. Only Now sets it.
+	Undone bool `json:"undone,omitempty"`
+	// AsAtStart: the system does not let the process read this control's
+	// state again, or not all of it, so OK is what was true when the process
+	// started. Only Now sets it.
+	AsAtStart bool `json:"as_at_start,omitempty"`
 }
 
 // Report is what Protect did.
@@ -42,6 +56,12 @@ type Report struct {
 	// Controls are this system's controls, in the order they were applied.
 	// Empty on a system that has none, and when Disabled.
 	Controls []Control `json:"controls"`
+	// PID is the process the report is of. Only Now sets it.
+	PID int `json:"pid,omitempty"`
+	// System is what the operating system says about that process, where
+	// that is a fact about the process and not about the machine. Only Now
+	// sets it.
+	System []string `json:"system,omitempty"`
 }
 
 // Missing returns the controls that are not in force.
@@ -62,7 +82,54 @@ func Protect() Report {
 	if Disabled {
 		return Report{Disabled: true}
 	}
-	return Report{Controls: protect()}
+	r := Report{Controls: protect()}
+	appliedMu.Lock()
+	applied = r
+	appliedMu.Unlock()
+	return r
+}
+
+var (
+	appliedMu sync.Mutex
+	applied   Report // what Protect last reported in this process
+)
+
+// undone starts the reason of a control that was in force and is not.
+const undone = "it was in force when Tenant started and is not any more: "
+
+// Now is this process's report as it stands: what Protect reported at start,
+// with each control read again where the system lets the process read it.
+// Another program of the same user can undo some controls from outside (the
+// Windows Error Reporting exclusion is a registry value of the user's, and
+// the soft core limit can be raised with prlimit); the report of the start
+// would go on saying they are in force.
+//
+// A control that was in force and is not any more comes back not OK and
+// Undone, with what was found as its reason. One that cannot be read again,
+// or not wholly, is marked AsAtStart. A control that was not in force at
+// start is left as it was reported.
+//
+// A running serve answers doctor with it (GET /api/status).
+func Now() Report {
+	appliedMu.Lock()
+	r := Report{Disabled: Disabled, Controls: slices.Clone(applied.Controls), PID: os.Getpid()}
+	appliedMu.Unlock()
+	for i := range r.Controls {
+		c := &r.Controls[i]
+		if !c.OK {
+			continue
+		}
+		switch found, whole := reread(c.ID); {
+		case found != "":
+			c.OK, c.Undone, c.Reason = false, true, undone+found
+		case !whole:
+			c.AsAtStart = true
+		}
+	}
+	if systemIsOfTheProcess {
+		r.System = system()
+	}
+	return r
 }
 
 var (
@@ -96,11 +163,21 @@ func apply(c Control, do func() error) Control {
 	}
 	if err := do(); err != nil {
 		c.Reason = err.Error()
+		var f *failure
+		if errors.As(err, &f) {
+			c.Detail = f.detail
+		}
 		return c
 	}
 	c.OK = true
 	return c
 }
+
+// failure is a control's error whose text is its reason, the same at every
+// start, with what varies kept beside it.
+type failure struct{ reason, detail string }
+
+func (f *failure) Error() string { return f.reason }
 
 // stillOpen is what the controls leave readable on each system.
 var stillOpen = map[string]string{
@@ -112,6 +189,20 @@ var stillOpen = map[string]string{
 // StillOpen says, in plain words, what the controls leave readable on goos
 // (runtime.GOOS); "" for a system that has no controls.
 func StillOpen(goos string) string { return stillOpen[goos] }
+
+// notStopped is what a program of the same user can still do to a protected
+// Tenant on each system, beyond reading what stillOpen lists.
+var notStopped = map[string][]string{
+	"windows": {
+		"a program of the same user can end Tenant, and can end, wait for and resume each of its threads; ending threads stops work and reads nothing",
+		"whoever started Tenant holds a handle to it from before these controls, with full access, for as long as it keeps it (a shell waiting for the command, for one), and a program of the same user can copy that handle out of the starter",
+	},
+}
+
+// NotStopped says, a line each, what the user's other programs can still do
+// to a protected Tenant on goos (runtime.GOOS) that is particular to that
+// system. The limits every system shares are the caller's to state.
+func NotStopped(goos string) []string { return notStopped[goos] }
 
 // System is what the operating system itself reports about this process's
 // exposure, where that can be read without elevation: a line per fact.

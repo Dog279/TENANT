@@ -38,6 +38,18 @@ func protect() []Control {
 	}
 }
 
+// reread reads a control's state again, for Now. The core limit can be read;
+// whether the kernel still refuses an attach cannot be asked.
+func reread(id string) (found string, whole bool) {
+	if id == "darwin.core-limit" {
+		return coreLimitNow()
+	}
+	return "", false
+}
+
+// What system reports is the machine's, the same whichever process reads it.
+const systemIsOfTheProcess = false
+
 // system is what macOS says about itself: whether System Integrity
 // Protection is on (with it off, any program of the user can attach to any
 // other), and whether the disk is encrypted (swap and the sleep image hold

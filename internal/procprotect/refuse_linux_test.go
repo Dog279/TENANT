@@ -35,6 +35,11 @@ func attackerTooStrong() string {
 
 func cleanupMachine() {}
 
+// envLiftCore is set for the victims of TestNoDumpAfterCrash, and no others:
+// its control must be able to dump. A victim of another test keeps the limit
+// it was started with, so that it compares with one that changed nothing.
+const envLiftCore = "PROCPROTECT_LIFT_CORE"
+
 // victimReady: where kernel.yama.ptrace_scope is 1, only an ancestor may
 // attach to a process, protected or not, so the control would be refused for
 // a reason that has nothing to do with Protect. The victim lifts that for
@@ -42,7 +47,7 @@ func cleanupMachine() {}
 // stays closed. With no Yama this fails, and nothing needed lifting.
 func victimReady() {
 	_ = unix.Prctl(unix.PR_SET_PTRACER, ^uintptr(0) /* PR_SET_PTRACER_ANY */, 0, 0, 0)
-	if os.Getenv("PROCPROTECT_CORE") != "" && os.Getenv(envKind) == "plain" {
+	if os.Getenv(envLiftCore) != "" && os.Getenv(envKind) == "plain" {
 		// The control of the crash test must be able to dump where the
 		// pattern is a file: lift its soft limit to the hard one.
 		var lim unix.Rlimit
@@ -212,6 +217,51 @@ func TestProtectThisProcess(t *testing.T) {
 	if err := Run(exec.Command("sh", "-c", "true")); err != nil {
 		t.Fatalf("Run after Protect: %v", err)
 	}
+
+	// Now reads the state again (TEN-535 hardening): the tester raised the
+	// soft core limit of a running serve from another program (prlimit), and
+	// the report went on saying it was 0.
+	now := Now()
+	if len(now.Missing()) != 0 || now.PID != os.Getpid() || len(now.System) != 0 {
+		t.Fatalf("Now() = %+v", now)
+	}
+	for _, c := range now.Controls {
+		if c.AsAtStart {
+			t.Errorf("%s is reported as at start: both of Linux's can be read again", c.ID)
+		}
+	}
+	undo := map[string]func() (redo func()){
+		"linux.dumpable: the dumpable flag is on": func() func() {
+			_ = unix.Prctl(unix.PR_SET_DUMPABLE, 1, 0, 0, 0)
+			return func() { _ = unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0) }
+		},
+		"linux.core-limit: the soft core limit is not 0": func() func() {
+			var lim unix.Rlimit
+			if err := unix.Getrlimit(unix.RLIMIT_CORE, &lim); err != nil || lim.Max == 0 {
+				return nil // a hard limit of 0: nobody can raise the soft one
+			}
+			lim.Cur = lim.Max
+			_ = unix.Setrlimit(unix.RLIMIT_CORE, &lim)
+			return func() { _ = noCoreFile() }
+		},
+	}
+	for what, do := range undo {
+		id, found, _ := strings.Cut(what, ": ")
+		redo := do()
+		if redo == nil {
+			t.Logf("NOT SHOWN HERE: %s cannot be undone on this machine", id)
+			continue
+		}
+		m := Now().Missing()
+		redo()
+		if len(m) != 1 || m[0].ID != id || !m[0].Undone || m[0].Leaves == "" ||
+			m[0].Reason != "it was in force when Tenant started and is not any more: "+found {
+			t.Errorf("with %s undone, Now() reports as not in force: %+v", id, m)
+		}
+		if m := Now().Missing(); len(m) != 0 {
+			t.Errorf("with %s back, Now() still reports: %+v", id, m)
+		}
+	}
 }
 
 // TestNoDumpAfterCrash sends SIGSEGV to a victim that asked the Go runtime
@@ -231,7 +281,7 @@ func TestNoDumpAfterCrash(t *testing.T) {
 	dumped := func(kind string) bool {
 		c := exec.Command(os.Args[0])
 		c.Dir = t.TempDir() // where a file pattern would put it
-		c.Env = append(os.Environ(), envHelper+"=victim", envKind+"="+kind, envMarker+"=x", "GOTRACEBACK=crash")
+		c.Env = append(os.Environ(), envHelper+"=victim", envKind+"="+kind, envMarker+"=x", "GOTRACEBACK=crash", envLiftCore+"=1")
 		stdin, _ := c.StdinPipe()
 		stdout, _ := c.StdoutPipe()
 		if err := c.Start(); err != nil {

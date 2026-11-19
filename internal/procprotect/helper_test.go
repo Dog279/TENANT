@@ -35,6 +35,7 @@ const (
 	envKind   = "PROCPROTECT_VICTIM" // plain | protected | forced
 	envMarker = "PROCPROTECT_MARKER" // the bytes an attack looks for
 	envTarget = "PROCPROTECT_TARGET" // the victim, as JSON, for an attack
+	envInfo   = "PROCPROTECT_INFO"   // the file a victim writes its report to, when its output is not a pipe to the test
 )
 
 func TestMain(m *testing.M) {
@@ -46,6 +47,7 @@ func TestMain(m *testing.M) {
 	case "child":
 		emit(childState())
 	default:
+		anchorIfAsked() // Windows: this binary run as a victim's console anchor
 		code := m.Run()
 		cleanupMachine()
 		os.Exit(code)
@@ -108,6 +110,14 @@ func victimMain() {
 		info.Child = map[string]string{"error": err.Error()}
 	} else if err := json.Unmarshal(out, &info.Child); err != nil {
 		info.Child = map[string]string{"error": err.Error() + ": " + string(out)}
+	}
+	if path := os.Getenv(envInfo); path != "" { // its streams are a console of its own
+		b, _ := json.Marshal(info)
+		_ = os.WriteFile(path+".tmp", b, 0o600)
+		_ = os.Rename(path+".tmp", path)
+		for { // until the test ends it; a sleep, so that the runtime does not call a process with nothing else to do deadlocked
+			time.Sleep(time.Hour)
+		}
 	}
 	emit(info)
 	_, _ = io.Copy(io.Discard, os.Stdin) // until the test closes it

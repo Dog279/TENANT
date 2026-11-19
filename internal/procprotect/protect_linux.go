@@ -42,6 +42,26 @@ func protect() []Control {
 	}
 }
 
+// reread reads a control's state again, for Now: found says what is wrong
+// with it, and whole that everything the control covers was read. Both of
+// Linux's can be read.
+func reread(id string) (found string, whole bool) {
+	switch id {
+	case "linux.dumpable":
+		v, err := unix.PrctlRetInt(unix.PR_GET_DUMPABLE, 0, 0, 0, 0)
+		if err == nil && v != 0 {
+			found = "the dumpable flag is on"
+		}
+		return found, err == nil
+	case "linux.core-limit":
+		return coreLimitNow()
+	}
+	return "", false
+}
+
+// What system reports is the machine's, the same whichever process reads it.
+const systemIsOfTheProcess = false
+
 // system is the kernel's own ptrace restriction, shown beside the flag. It
 // is not what protects Tenant: at 0 it restricts nothing, and at 1 it still
 // lets a process's ancestors in.
