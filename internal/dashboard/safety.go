@@ -181,6 +181,13 @@ func (s *Server) queue() approvalQueue {
 		if p.Origin == "imessage" {
 			it.From = "iMessage"
 		}
+		if p.Host != "" {
+			// An action on a fleet machine (TEN-531): the headline names the
+			// machine, where every category's own line says "on this
+			// computer". "For this session" covers one request there, so the
+			// step that promises more is not offered.
+			it.Title, it.Standing = "Your agent wants to act on your fleet machine "+p.HostName, false
+		}
 		q.Items = append(q.Items, it)
 	}
 	return q
