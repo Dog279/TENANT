@@ -21,7 +21,8 @@ Releases page.
     threads stops work and reads nothing. Task Manager still lists Tenant (its End task
     was not tested), and `taskkill /F`, PowerShell's `Stop-Process -Force` and Node's
     `process.kill` end it, which need the right to query the process's information; plain
-    `Stop-Process` and Python's `os.kill` ask for more and are refused. A program running as you could always read Tenant's exit code, times, priority,
+    `Stop-Process` and Python's `os.kill` ask for more and are refused. A program running as
+    you could always read Tenant's exit code, times, priority,
     counters, module paths and where its memory lies and how it is protected, and that right
     adds which of its pages are resident and shared (the working set), its handles by number,
     kind and rights, its mitigation policy, and a walk of its threads that gives no more than
