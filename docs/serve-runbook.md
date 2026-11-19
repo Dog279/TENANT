@@ -171,6 +171,13 @@ tenant service uninstall
 `tenant doctor` warns when no service is installed or when the unit no longer matches the
 dirs or binary this command uses; `--fix` rewrites it.
 
+`install`, `start` and `restart` first check process protection, at the terminal they are typed
+in: when this system cannot apply one of the controls they say which and what that leaves open,
+and ask `Continue without it? [y/N]`. The service has nobody to ask, so it starts only once
+someone has said yes here (see "When a protection cannot be applied" below). Run from a script,
+with no terminal, they stop with the reason instead. On macOS `install` also signs the binary
+with the hardened runtime before it writes the unit (see "macOS: the hardened runtime").
+
 Without `--system`, the verbs other than `install` act on your own logon task when you have one, and
 on a `--system` service only when that is all this account has; `--system` names the service. So a
 standard user on a machine where an administrator installed the service sees and removes their own
@@ -209,7 +216,8 @@ Everything the hub does is in the log book either way (`tenant logs`, the dashbo
 
 `tenant update` moves an install to the latest release with a way back (TEN-500). It downloads the
 release archive for this OS and architecture, verifies its SHA-256 (and its signature when `cosign`
-is on PATH), runs the new binary's `version` before touching anything, asks, then:
+is on PATH), on macOS signs the new binary with the hardened runtime, runs the new binary's
+`version --protection` before touching anything, asks, then:
 
 1. writes an unencrypted backup of the config and data dirs to `<data dir>-backups/pre-update-<old version>.tenant-backup`
    (credentials are left out; the previous pre-update backup is replaced);
@@ -223,6 +231,17 @@ tenant update --check                 # one line, running vs latest; exit 10 whe
 tenant update [--version vX.Y.Z] [--yes] [--now] [--force]
 tenant update --rollback              # put tenant.prev back; prints the data-restore command
 ```
+
+**A new version asks again about a protection it cannot apply**, and the service it runs as has
+nobody to ask. So the update asks, before it changes anything: that run of the new binary prints
+what the new binary could not apply on this system, and each control nobody has acknowledged for
+the new version is put to you with `Continue without it? [y/N]`. A yes is recorded for the new
+version, and the restarted service starts on it. `--yes` answers the update's own question, not
+this one. **An unattended update** (no terminal: cron, a script) that meets one changes nothing,
+exits 2 and says why: `not updated; <running version> keeps running. On this system <new version>
+cannot apply a process protection, …`. Run `tenant update` at a terminal once to acknowledge it.
+`--rollback` does not ask: the previous version starts on the acknowledgement recorded when it
+was the running one (the last 16 are kept).
 
 **Schemas move forward only.** The log book refuses a database written by a newer version, so once
 the new version has migrated a store, the old binary alone is not enough. Rollback is the old binary
@@ -254,7 +273,7 @@ protection"; `tenant security audit` raises a finding when one is off.
 |---|---|---|
 | Linux | a debugger (`ptrace`), `/proc/<pid>/mem`, `/proc/<pid>/environ`, `process_vm_readv`, `pidfd_getfd`, `perf_event_open`; no crash dump, to a file or to a crash collector | the command line, `/proc/<pid>/status` |
 | Windows | reading memory, a dump (Task Manager, procdump), a debugger, opening or redirecting a thread, rewriting the access lists, changing the process's token | the command line, the program's path, the account |
-| macOS | a later debugger attach (reported as "attach denied, not verified"), core files | the command line, and the environment Tenant started with |
+| macOS | a later debugger attach (reported as "attach denied, not verified"), core files; with the hardened runtime on the installed binary, a debugger outright (see below) | the command line, and the environment Tenant started with |
 
 It is one layer. The files on disk are as readable as before, an administrator or root is not
 stopped, and neither is a program that started Tenant itself. The Linux and Windows rows were
@@ -284,6 +303,123 @@ What an operator meets:
 - **Commands the agent runs are ordinary processes.** They are not protected, they see none of
   Tenant's secret variables unless an exec profile passes one by name, and on Linux they inherit
   a core-file limit of 0, which they may raise (`ulimit -c`).
+
+### When a protection cannot be applied
+
+A control the operating system refuses has to be acknowledged by a person; Tenant does not carry
+on silently (`cmd/tenant/protectiongate.go`). Only `tenant tui` and `tenant serve` are held to
+it, and they check before they read the config, a secret or a store. No other command asks.
+
+| How Tenant is started | What happens |
+|---|---|
+| `tenant tui` or `tenant serve`, at a terminal | It says which control is off, the system's reason and what that leaves open, and asks `Continue without it? [y/N]`. `y` or `yes` goes on and is recorded. Anything else, the end of the input included, exits 1. |
+| the service, a scheduled start, `serve --hidden`, or input or output that is not a terminal | It does not start and exits 1. The reason is in the log book (system 3030) and in the system's own log. |
+| either, once that control failing for that reason in that version was acknowledged | It starts, and says so at every start: system 2030, and a `process protection: running without …` line in the status feed (serve's stdout). |
+
+The record is in `settings.<agent>.json`, the settings of the agent that serve or the TUI runs
+as (`main` for the service):
+
+```json
+"protection_acknowledged": [
+  {"control": "linux.dumpable", "reason": "operation not permitted", "version": "0.3.0", "at": "2026-11-19T03:02:11Z"}
+]
+```
+
+All three have to match: a different control, a different reason or a new version asks again.
+The newest 16 entries are kept, so a rollback finds the one made for the version it goes back
+to. Deleting an entry makes Tenant ask again. The agent's file tools refuse this file
+(`TestFileToolsCannotRewriteControlFiles`); a program running as you could still write it, which
+is tampering and outside what process protection covers.
+
+`tenant service install`, `start` and `restart`, `tenant setup` when it installs the service,
+and `tenant update` (for the new version) ask at the terminal they are typed in, so the
+question comes up while you are there. A build made with `-tags debugattach` has no controls and
+is never asked about.
+
+Where to read why a service did not start:
+
+- **Tenant's log:** `tenant logs query "provider:system id:3030"`; the same line is in
+  `<data>/logs/system/<day>.log`.
+- **Windows:** Event Viewer, Windows Logs, Application, source `Tenant`, level Error:
+  `Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='Tenant'} -MaxEvents 5 | Format-List TimeCreated, Message`.
+  Event Viewer prints "the description for Event ID 1 from source Tenant cannot be found" above
+  the text, because Tenant registers no message file (that would take an administrator).
+- **Linux:** `journalctl -t tenant` (the syslog line), and `journalctl --user -u tenant` for the
+  `error:` line the unit's stderr carries.
+- **macOS:** `~/Library/Logs/tenant/serve.err.log` has the `error:` line; the syslog line is
+  `log show --last 10m --predicate 'eventMessage CONTAINS "did not start"'`.
+
+This refusal is the one thing Tenant writes to the system's own log. The writes themselves are
+not exercised by the test suite, which cannot take a line back out of that log: the tests check
+that the log can be opened, and `TENANT_LIVE_SYSTEM_LOG=1 go test ./cmd/tenant -run
+TestSystemLogLive` writes one line under a test name (`TenantTest` on Windows, `tenant-test`
+elsewhere) to read back by hand.
+
+Known gap: on Windows the reason of `windows.thread-dacl` names the threads it failed for by
+thread id, which differs at every start, so an acknowledgement of that one control never matches
+again (`TestFailureReasonsAreTheSameAtEveryStart` in `internal/procprotect` fails until the
+reason is made stable).
+
+### macOS: the hardened runtime
+
+The hardened-runtime flag on the binary is what makes macOS refuse a debugger outright ("Not
+allowed to attach to process"), with no password prompt. It works with a local, ad hoc
+signature, so three things put it on the binary they install, each the same way
+(`cmd/tenant/codesign.go`, `scripts/install.sh`): sign a **copy** with
+`/usr/bin/codesign --force --sign - --options runtime` (no entitlements), read the flag back from
+the copy (`codesign -dv`), and only then move the copy into place.
+
+| | The copy | When signing fails |
+|---|---|---|
+| `scripts/install.sh` | `<install dir>/.tenant.<pid>` | the script stops; a Tenant installed before is untouched |
+| `tenant update` | the staged binary in `<bin dir>/.tenant-update/`, signed before its smoke test | the update stops; the running version stays |
+| `tenant service install` | `<binary>.signing`, when the binary does not carry the flag yet | a warning; the service is installed with the binary as it was |
+
+A binary that already carries the flag is left alone, whoever signed it. `tenant doctor` shows
+the flag and the kind of signature ("ad hoc, signed on this machine", "ad hoc, by the Go linker",
+or the certificate's name); `tenant security audit` raises `process.darwin.hardened-runtime` for
+a release binary without it. A source build without it is not a finding: it is "attach denied,
+not verified", and `tenant service install` signs it. A release signed and notarized with a
+Developer ID certificate is TEN-539.
+
+**None of this has run on a Mac.** The Go side is tested against a stand-in for `codesign`, the
+script under `sh` against one on `PATH`, and the Packaging workflow's macOS job checks the flag
+on what the script installs. On a Mac, check:
+
+```sh
+# 1. The install script signs what it installs.
+TENANT_INSTALL_DIR="$HOME/.local/bin" sh scripts/install.sh          # or the release one-liner
+codesign -dv "$HOME/.local/bin/tenant" 2>&1 | grep '^CodeDirectory'   # want flags=0x10002(adhoc,runtime)
+codesign --verify --strict "$HOME/.local/bin/tenant" && echo verified
+
+# 2. The signed binary runs, and doctor sees the flag.
+tenant version
+tenant doctor | grep -A12 'process protection'   # want "on:  the hardened runtime on this binary … (ad hoc, signed on this machine)"
+
+# 3. A debugger and vmmap are refused outright, with no password prompt.
+tenant serve --backend echo --dashboard=false --data /tmp/t-data --config /tmp/t-cfg &
+lldb -p "$!" -o detach -o quit                   # want "attach failed … Not allowed to attach to process"
+vmmap "$!" | head -3                             # want a refusal, and no password prompt
+kill "$!"
+
+# 4. A source build: nothing warns, and `service install` signs it where it is.
+go build -o /tmp/tenant-src ./cmd/tenant
+codesign -dv /tmp/tenant-src 2>&1 | grep '^CodeDirectory'   # Apple silicon: flags=0x20002(adhoc,linker-signed)
+/tmp/tenant-src doctor | grep -A12 'process protection'     # want "a source build without the hardened runtime … attach denied, not verified"
+lldb -p "$(/tmp/tenant-src serve --backend echo --dashboard=false --data /tmp/t-data --config /tmp/t-cfg >/dev/null 2>&1 & echo $!)" -o detach -o quit   # record what PT_DENY_ATTACH alone does
+/tmp/tenant-src service install --data /tmp/t-data --config /tmp/t-cfg   # a test Mac: this installs com.tenant.serve
+codesign -dv /tmp/tenant-src 2>&1 | grep '^CodeDirectory'   # want flags=…(adhoc,runtime), and no /tmp/tenant-src.signing left
+/tmp/tenant-src service status --data /tmp/t-data --config /tmp/t-cfg   # running, on the signed binary
+/tmp/tenant-src service uninstall --data /tmp/t-data --config /tmp/t-cfg
+
+# 5. `tenant update` leaves a signed binary that the service starts.
+tenant update && codesign -dv "$(command -v tenant)" 2>&1 | grep '^CodeDirectory' && tenant service status
+
+# 6. The tests, on the Mac, and the system-log line.
+go test ./cmd/tenant ./internal/procprotect
+TENANT_LIVE_SYSTEM_LOG=1 go test ./cmd/tenant -run TestSystemLogLive
+log show --last 5m --predicate 'eventMessage CONTAINS "TEN-535"'
+```
 
 ## Health
 

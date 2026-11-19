@@ -22,11 +22,18 @@ Releases page.
     11, not elevated; an actual crash dump by Windows Error Reporting was not attempted.
   - **macOS:** Tenant denies a later debugger attach and turns core files off. This was compiled
     and not yet run on a Mac, and what the call stops on its own is not measured, so doctor
-    reports it as "attach denied, not verified". Signing the installed binary, which is the
-    stronger control, comes with the install step. The command line and the environment Tenant
-    started with stay readable to your other programs, so a key set in an environment variable is
-    reported: a warning in the system log at start, and a finding in `tenant security audit`.
-    Save keys with `/configure <plugin>` or the dashboard's keys page.
+    reports it as "attach denied, not verified". The stronger control is the hardened-runtime
+    flag on the installed binary, which makes macOS refuse a debugger outright. The install
+    script, `tenant service install` and `tenant update` now put it there: they sign a copy of
+    the binary on your machine (`codesign --force --sign - --options runtime`, no entitlements),
+    check the flag on the copy, and only then move it into place. If signing fails, what was
+    installed stays as it was and the command says so. Doctor reports the flag and the kind of
+    signature, and the audit raises a release binary that lacks it. The signing step has not
+    yet run on a Mac either: it is tested against a stand-in for `codesign`. The command line
+    and the environment Tenant started with stay readable to your other programs, so a key set
+    in an environment variable is reported: a warning in the system log at start, and a finding
+    in `tenant security audit`. Save keys with `/configure <plugin>` or the dashboard's keys
+    page.
 
   This is one layer. It protects the running process, not the files on disk, which a program
   running as you can still read; and it does not stop an administrator or root, or a program that
@@ -41,11 +48,33 @@ Releases page.
   runtime asks for a memory dump at a crash, which Tenant cannot lower from inside; doctor points
   it out.
 
+  **When a protection cannot be applied, a person has to say so.** `tenant tui` and `tenant
+  serve` read what the system refused before they load anything else. At a terminal they print
+  which protection is missing and what that leaves open, and ask `Continue without it? [y/N]`;
+  anything but yes exits. With no terminal (the service, a scheduled start) Tenant does not
+  start, and the reason is in its log (system 3030) and in the system's own log (the
+  Application event log on Windows, the journal or syslog elsewhere), unless that control
+  failing for that reason in that version was acknowledged before. A yes is recorded in
+  `settings.<agent>.json` under `protection_acknowledged`: the control, the reason, the version
+  and the time. A different control, a different reason or a new version asks again. Every start
+  that goes ahead on an acknowledgement says so (system 2030, and a line in the status feed).
+
+  `tenant service install`, `start` and `restart`, and `tenant setup` when it installs the
+  service, ask first, at the terminal you typed them in, because the service has nobody to ask.
+  `tenant update` asks about the new version before it changes anything: it runs the new binary,
+  reads what that binary could not apply here (`tenant version --protection` prints it), and
+  with nobody at a terminal it stops there and the running version stays. `--yes` does not
+  answer this question. Doctor and the audit show what is off and when it was acknowledged. No
+  other command asks, and a `-tags debugattach` build is never asked about.
+
   For people working on the code: on Windows the protection changes a default that every object
   the process creates inherits, so a command must be started through `internal/procprotect`
   (`Start`, `Run`, `Output`, `CombinedOutput`, or `Child` with the call inside `Ordinary`). A
   command started any other way fails with "pipe: Access is denied" for a user who is not an
-  administrator. A test in `internal/archtest` holds the source to it.
+  administrator. A test in `internal/archtest` holds the source to it. The acceptance tests of
+  the acknowledgement run a `tenant` built with `-tags procprotecttest`, in which the environment
+  can say that a control cannot be applied; `tenant version` announces such a build, and no
+  release is built with the tag.
 - **Fixed: a power cut could leave more files than `config.json` unreadable.** The fix that
   flushes a saved file to the disk before it replaces the old one now covers every file Tenant
   saves that way: the user profile, a research run's manifest, the Claude Code session ledger, the

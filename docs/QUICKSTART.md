@@ -62,7 +62,11 @@ The script downloads the release for your OS and CPU, checks its SHA-256 against
 the release's `checksums.txt`, and installs `tenant` to `~/.local/bin`
 (`%LOCALAPPDATA%\Programs\tenant` on Windows). No sudo or administrator rights,
 no Go toolchain, and no Gatekeeper or SmartScreen prompt: a `curl` or PowerShell
-download carries no quarantine mark (a browser download does). If the directory
+download carries no quarantine mark (a browser download does). On macOS the
+script signs the binary on your machine with the hardened runtime
+(`/usr/bin/codesign`, ad hoc, no entitlements) before it moves it into place,
+which makes macOS refuse a debugger that tries to attach to Tenant; if that
+fails, nothing is installed or changed. If the directory
 is not on your `PATH`, the script says what to add. `TENANT_VERSION` pins a
 version and `TENANT_INSTALL_DIR` picks the directory.
 
@@ -271,7 +275,12 @@ Tenant then starts when you log in and restarts after a crash:
 
 `start`, `stop`, `restart` and `uninstall` do what they say; `restart` waits for
 the running turn to finish unless you pass `--now`. `tenant doctor` reports the
-service. An OS restart or shutdown mid-task is safe: the turn is cut and
+service. If this system cannot apply one of Tenant's process protections,
+`install`, `start` and `restart` say which and ask `Continue without it? [y/N]`
+before they go on: the service has nobody to ask, and does not start until
+someone has said yes at a terminal (`docs/serve-runbook.md`, "When a protection
+cannot be applied"). On macOS `install` first signs the binary with the hardened
+runtime. An OS restart or shutdown mid-task is safe: the turn is cut and
 recorded, your channel gets "I was stopped mid-task… say `continue`", and after
 boot Tenant reminds you and catches up the Discord DMs sent while it was down.
 Nothing is re-run on its own.
@@ -294,6 +303,12 @@ picks a release, `--yes` skips the prompt, `--now` restarts without waiting for
 the running turn. Tenant checks for a newer release once a day and writes one
 log line; `"update_check": false` in `config.json` turns that off. Nothing is
 applied automatically, and a dev build refuses to update.
+
+A new version asks again about a process protection it cannot apply on this
+system, so `update` asks you before it changes anything (`--yes` does not answer
+that question). Run with no terminal, an update that meets one changes nothing,
+exits 2 and says why; run it once at a terminal. On macOS `update` signs the new
+binary with the hardened runtime before it runs it or moves it into place.
 
 Rollback: `tenant update --rollback` puts the old binary back. If the new
 version migrated data, restore the backup too:
