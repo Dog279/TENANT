@@ -362,6 +362,11 @@ var runningCommand string
 
 var unprotectedLogged sync.Once
 
+// sayUnprotected is the short line on stderr for a control not in force.
+func sayUnprotected(m procprotect.Control) {
+	fmt.Fprintf(os.Stderr, "process protection: running without %s: %s. `tenant doctor` says what that leaves open\n", m.ID, m.Reason)
+}
+
 // stderrAtTerminal: a person can read what is written to stderr. Tests swap
 // it (protecttest.go).
 var stderrAtTerminal = func() bool { return fileIsTerminal(os.Stderr) }
@@ -394,7 +399,7 @@ func logUnprotected(ctx context.Context, c *commonFlags) {
 			evs = append(evs, sysStartedUnprotected.Build(ctx, "control", m.ID, "name", m.Name, "reason", m.Reason, "leaves", m.Leaves,
 				"acknowledged", at, "version", version.Version, "command", runningCommand))
 			if atTerminal {
-				fmt.Fprintf(os.Stderr, "process protection: running without %s: %s. `tenant doctor` says what that leaves open\n", m.ID, m.Reason)
+				sayUnprotected(m)
 			}
 		}
 		if err := toLogbook(ctx, c, evs...); err != nil {

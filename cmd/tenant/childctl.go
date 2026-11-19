@@ -102,6 +102,15 @@ func cmdChild(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// A child has no log book, and never passes commonFlags.resolveDirs where
+	// every other command files a process protection that is not in force
+	// (logUnprotected, TEN-535). The operator's short commands say it on
+	// stderr at a terminal; `child run` in its log and its audit log.
+	if verb != "run" && stderrAtTerminal() {
+		for _, m := range protection.Missing() {
+			sayUnprotected(m)
+		}
+	}
 	switch verb {
 	case "install":
 		return childInstall(ctx, os.Stdin, os.Stdout, dir, childInstallOpts{system: *system, ceiling: *ceiling, sandbox: *sandboxName, updates: *updates})
@@ -565,6 +574,12 @@ type childRunOpts struct {
 // is applied between two links (childApply), and this process then gives
 // way to the new version (childReplace).
 func childRun(ctx context.Context, dir string, log *slog.Logger, o childRunOpts) error {
+	// Every child process, the trial and the kept one too: each serves calls.
+	// The audit log has it as well (childServe).
+	for _, m := range protection.Missing() {
+		log.Warn("fleet child: process protection: running without a control. `tenant doctor` says what that leaves open",
+			"control", m.ID, "name", m.Name, "reason", m.Reason)
+	}
 	ctx, stopSignals := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 	if o.trial || o.kept {
@@ -675,6 +690,16 @@ func childServe(ctx context.Context, dir string, log *slog.Logger, hello func() 
 	if err := audit.Ready(); err != nil {
 		log.Error("fleet child: the audit log cannot be written, so every call is refused until it can", "err", err)
 	}
+	// Once per process, before the first link: the calls recorded after it ran
+	// without the control. On Windows nothing keeps a child's own log, so this
+	// record, and its line in the system's log, is what the operator has.
+	childUnprotectedAudited.Do(func() {
+		for _, m := range protection.Missing() {
+			if err := audit.Unprotected(m.ID, m.Reason); err != nil {
+				log.Warn("fleet child: a missing process protection could not be written to the audit log", "control", m.ID, "err", err)
+			}
+		}
+	})
 
 	// The unit's working directory. An operator who cleared it out gets it
 	// back, not a service that cannot start.
@@ -765,6 +790,10 @@ func childServe(ctx context.Context, dir string, log *slog.Logger, hello func() 
 		stopTools() // paused: the background commands and the browser end with the link
 	}
 }
+
+// childUnprotectedAudited: the audit log is told of a missing control once per
+// process, though childServe opens it again after a rolled-back update.
+var childUnprotectedAudited sync.Once
 
 // sleepCtx waits d and reports whether ctx is still live.
 func sleepCtx(ctx context.Context, d time.Duration) bool {
