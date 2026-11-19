@@ -1552,7 +1552,11 @@ func TestWireShapesThatNeverChange(t *testing.T) {
 	}
 	// What the child answers to exactly those bytes, and to the same with a
 	// field it has never heard of.
-	hello := `{"link":1,"os":"` + runtime.GOOS + `","user":"root","version":"1.2.3","sandbox":"host","ceiling":"full"}`
+	// TEN-533 added "arch" (and "update", when there is one to say) at the
+	// end of the answer, without a new link version: an older master reads
+	// past them (below), and an older child's answer, without them, is read
+	// as it was (TestHelloArchAndUpdate).
+	hello := `{"link":1,"os":"` + runtime.GOOS + `","user":"root","version":"1.2.3","sandbox":"host","ceiling":"full","arch":"` + runtime.GOARCH + `"}`
 	for _, tc := range []struct{ method, params, want string }{
 		{"fleet/hello", `{"link":1}`, hello},
 		{"fleet/hello", `{"link":1,"later":{"x":[1]}}`, hello},

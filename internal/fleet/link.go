@@ -26,7 +26,7 @@ import (
 //
 // Master to child:
 //
-//	fleet/hello     {"link":N}                         -> {"link":N,"os","user","version","sandbox","ceiling"}
+//	fleet/hello     {"link":N}                         -> {"link":N,"os","user","version","sandbox","ceiling"[,"arch"][,"update"]}
 //	ping            (no params)                        -> {}
 //	fleet/update    {"version","sha256","size","offset","data"} -> {"received":N,"applying":bool}
 //	tools/list      (no params)                        -> {"tools":[{"name","description","parameters"}]}
@@ -225,6 +225,60 @@ type UpdateAck struct {
 	Applying bool  `json:"applying"` // the archive is whole and checked, and the child is restarting into it
 }
 
+// What a child says of the last update it was sent (UpdateReport.State).
+const (
+	// UpdateTrial: the new version runs beside the old one, which waits for it
+	// to reach the master before it replaces itself.
+	UpdateTrial = "trial"
+	// UpdateDone: the machine runs the new version, and it reached the master.
+	UpdateDone = "done"
+	// UpdateRolledBack: the machine runs the version it had; Reason says why.
+	UpdateRolledBack = "rolled_back"
+)
+
+// UpdateReport is what a child says, in its hello, about the last update it
+// was sent. It is the machine's word, like the rest of the hello: text to
+// show the operator, bounded and printable, and for the master's update to
+// wait on. An older child sends none; an older master reads past it.
+type UpdateReport struct {
+	From   string    `json:"from"`
+	To     string    `json:"to"`
+	State  string    `json:"state"`
+	Reason string    `json:"reason,omitempty"`
+	At     time.Time `json:"at"`
+}
+
+const maxUpdateReason = 512
+
+// check bounds a report a child sent; nil when it is not one.
+func (r *UpdateReport) check() *UpdateReport {
+	if r == nil || len(r.From) > maxReportedLen || len(r.To) > maxReportedLen || !printable(r.From) || !printable(r.To) || r.To == "" {
+		return nil
+	}
+	switch r.State {
+	case UpdateTrial, UpdateDone, UpdateRolledBack:
+	default:
+		return nil
+	}
+	out := *r
+	out.Reason, _ = cut(out.Reason, maxUpdateReason)
+	out.Reason = strings.Map(func(c rune) rune {
+		if unicode.IsPrint(c) {
+			return c
+		}
+		return ' '
+	}, out.Reason)
+	return &out
+}
+
+// The architectures a child may say it runs on: the ones a release is built
+// for. Anything else is kept as unknown.
+var knownArch = map[string]bool{"amd64": true, "arm64": true}
+
+// Served reports whether this build, as a master, still serves a child that
+// speaks link version link: tools/list, tools/call and fleet/result.
+func Served(link int) bool { return speaks(LinkVersion, link) }
+
 func (u Update) validate() error {
 	if _, err := parseFingerprint(u.SHA256); err != nil || len(u.Version) == 0 || len(u.Version) > maxReportedLen || !printable(u.Version) ||
 		u.Size < 1 || u.Size > maxUpdateSize || u.Offset < 0 || len(u.Data) > MaxUpdateChunk || u.Offset+int64(len(u.Data)) > u.Size {
@@ -242,6 +296,10 @@ type helloParams struct {
 type helloResult struct {
 	Link int `json:"link"`
 	Reported
+	// Both added after link version 1 shipped, without a new version: an
+	// older child leaves them out, and an older master reads past them.
+	Arch   string        `json:"arch,omitempty"`   // runtime.GOARCH: which build an update needs
+	Update *UpdateReport `json:"update,omitempty"` // the last update, while the child keeps a word about it
 }
 
 type toolsResult struct {

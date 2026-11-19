@@ -81,6 +81,12 @@ type MachineStatus struct {
 	InFlight int    // tool calls in flight
 	// LastError is why its last link ended or was not made.
 	LastError string
+	// Arch is the architecture the machine said it runs on in its hello:
+	// amd64 or arm64, "" when it did not say (an older child) or is offline.
+	Arch string
+	// Update is what the machine said about its last update in its hello;
+	// nil when it said nothing or is offline. Its word, like Reported.
+	Update *UpdateReport
 }
 
 // Manager is the master's end of the fleet: the one fleet port, with the
@@ -325,6 +331,7 @@ func (m *Manager) Machines() ([]MachineStatus, error) {
 		out[i] = MachineStatus{Machine: mach, Since: seen.at, LastError: seen.err}
 		if l := m.links[mach.ID]; l != nil {
 			out[i].Online, out[i].Since, out[i].Link, out[i].Remote, out[i].InFlight = true, l.connected, l.version, l.remote, len(l.slots)
+			out[i].Arch, out[i].Update = l.arch, l.update
 		}
 	}
 	return out, nil
@@ -617,8 +624,10 @@ type link struct {
 	remote string
 	sess   *mcp.Session
 
-	version   int       // the link version the child said in its hello
-	connected time.Time // set when the hello is done, under m.mu
+	version   int           // the link version the child said in its hello
+	arch      string        // the architecture it said, when it is a known one
+	update    *UpdateReport // what it said about its last update, bounded
+	connected time.Time     // set when the hello is done, under m.mu
 
 	slots  chan struct{}         // tools/call in flight
 	credit atomic.Int64          // results the child may still send: one per request sent
@@ -689,7 +698,10 @@ func (l *link) hello(mach Machine) error {
 	if res.Link < 1 || res.Link > maxLinkVersion {
 		return fmt.Errorf("fleet: the machine claims link version %d", res.Link)
 	}
-	l.version = res.Link
+	l.version, l.update = res.Link, res.Update.check()
+	if knownArch[res.Arch] {
+		l.arch = res.Arch
+	}
 	// What a machine says about itself is its word, kept to show the operator:
 	// its version after an update, for one.
 	if rep := res.Reported; rep != mach.Reported && rep.validate() == nil {

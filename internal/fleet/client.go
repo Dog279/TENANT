@@ -102,6 +102,10 @@ type ClientConfig struct {
 	// Update takes one piece of a new Tenant (fleet/update). Nil answers that
 	// this machine cannot be updated over the link.
 	Update func(ctx context.Context, u Update) (UpdateAck, error)
+	// Hello is asked at every hello for what to say about the last update;
+	// nil, or a nil report, says nothing. That the master is saying hello is
+	// the news an update in progress waits for: the link is back.
+	Hello func() *UpdateReport
 	// Log gets what is worth a line on the machine. Nil is the process logger.
 	Log *slog.Logger
 }
@@ -470,8 +474,12 @@ func (l *childLink) hello(params json.RawMessage) (json.RawMessage, error) {
 		c.setStatus(LinkConnected, l.addr, incompatible("this machine", c.linkVersion, p.Link))
 	}
 	child, _ := c.file.Current()
-	return encode(helloResult{Link: c.linkVersion, Reported: Reported{
-		OS: runtime.GOOS, User: c.cfg.User, Version: c.cfg.Version, Sandbox: child.Sandbox, Ceiling: string(child.Ceiling)}})
+	res := helloResult{Link: c.linkVersion, Arch: runtime.GOARCH, Reported: Reported{
+		OS: runtime.GOOS, User: c.cfg.User, Version: c.cfg.Version, Sandbox: child.Sandbox, Ceiling: string(child.Ceiling)}}
+	if c.cfg.Hello != nil {
+		res.Update = c.cfg.Hello()
+	}
+	return encode(res)
 }
 
 // call runs one tool. The tool's context is the child's, not the link's: a
