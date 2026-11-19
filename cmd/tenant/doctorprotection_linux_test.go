@@ -8,6 +8,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// doneByDoctorItself: no control a doctor's own start applies is one a
+// running Tenant reads back from a shared place here (Windows only).
+const doneByDoctorItself = ""
+
 // undoFromOutside is how another program of the user undoes one control of a
 // running Tenant on Linux, as the tester did: prlimit raises the soft core
 // limit of any process of the same user, up to its hard limit.

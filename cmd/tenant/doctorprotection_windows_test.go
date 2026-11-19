@@ -11,6 +11,21 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
+// removeTestExclusion takes the test binary's name off the user's Windows
+// Error Reporting exclusion list when the test ends: a test whose Tenant
+// applies every control for real writes it there.
+func removeTestExclusion(t *testing.T, bin string) {
+	t.Cleanup(func() {
+		p, _ := windows.UTF16PtrFromString(filepath.Base(bin))
+		_, _, _ = windows.NewLazySystemDLL("wer.dll").NewProc("WerRemoveExcludedApplication").Call(uintptr(unsafe.Pointer(p)), 0)
+	})
+}
+
+// doneByDoctorItself is what `tenant doctor` says when its own start put back
+// a control it then asks a running Tenant about (putBackBeforeAsking): on
+// Windows the exclusion from Windows Error Reporting, kept by file name.
+const doneByDoctorItself = "OFF until this doctor started"
+
 // undoFromOutside is how another program of the user undoes one control of a
 // running Tenant on Windows, as the tester did: the exclusion from Windows
 // Error Reporting is a value in the user's own registry, under the program's
@@ -22,10 +37,7 @@ import (
 func undoFromOutside(t *testing.T, bin string) (env []string, undo func(t *testing.T, pid int), found string) {
 	const list = `Software\Microsoft\Windows\Windows Error Reporting\ExcludedApplications`
 	name := filepath.Base(bin)
-	t.Cleanup(func() {
-		p, _ := windows.UTF16PtrFromString(name)
-		_, _, _ = windows.NewLazySystemDLL("wer.dll").NewProc("WerRemoveExcludedApplication").Call(uintptr(unsafe.Pointer(p)), 0)
-	})
+	removeTestExclusion(t, bin)
 	return nil, func(t *testing.T, _ int) {
 		k, err := registry.OpenKey(registry.CURRENT_USER, list, registry.QUERY_VALUE|registry.SET_VALUE)
 		if err != nil {

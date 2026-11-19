@@ -54,6 +54,11 @@ const restrictedSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x101001;;;OW)"
 //	    type into its own console or read its screen back.
 const tokenSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x2000a;;;OW)"
 
+var (
+	procNtGetNextThread = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtGetNextThread")
+	procGetThreadId     = kernel32.NewProc("GetThreadId")
+)
+
 // ownToken is this process's token, opened once, before its access list is
 // closed: the handle keeps the rights it was opened with.
 var ownToken windows.Token
@@ -98,12 +103,21 @@ func protect() []Control {
 		return err
 	})
 	console.Note = note
-	return []Control{threads, process, console,
-		apply(Control{ID: "windows.wer-exclusion",
-			Name:   "no crash dump by Windows Error Reporting (the program is on the user's exclusion list)",
-			Leaves: "Windows Error Reporting, which runs as SYSTEM, can write a dump of Tenant's memory when it crashes",
-		}, excludeFromErrorReporting),
+	wasMissing := false
+	wer := apply(Control{ID: "windows.wer-exclusion",
+		Name:   "no crash dump by Windows Error Reporting (the program is on the user's exclusion list)",
+		Leaves: "Windows Error Reporting, which runs as SYSTEM, can write a dump of Tenant's memory when it crashes",
+	}, func() error {
+		found, _ := reread("windows.wer-exclusion")
+		if wasMissing = found != ""; !wasMissing {
+			return nil // on the list already: nothing to add, and wer.dll is not loaded for it
+		}
+		return excludeFromErrorReporting()
+	})
+	if wer.OK && wasMissing {
+		wer.Note = ExclusionPutBack
 	}
+	return []Control{threads, process, console, wer}
 }
 
 type tokenDefaultDACL struct{ DefaultDacl *windows.ACL }
@@ -161,35 +175,37 @@ func restrictThreads(sd *windows.SECURITY_DESCRIPTOR) error {
 		return fmt.Errorf("the token's own access list: %w", err)
 	}
 
-	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
-	if err != nil {
-		return fmt.Errorf("listing the threads: %w", err)
-	}
-	defer windows.CloseHandle(snap)
-	pid := windows.GetCurrentProcessId()
+	// This process's threads, one after the other (NtGetNextThread), each
+	// opened with whatever its list grants: a list of every thread on the
+	// system, which is what a Toolhelp snapshot reads, cost most of the
+	// start-up time protection adds (about 55 ms of 60).
 	var causes, ids []string
-	te := windows.ThreadEntry32{Size: uint32(unsafe.Sizeof(windows.ThreadEntry32{}))}
-	for err := windows.Thread32First(snap, &te); err == nil; err = windows.Thread32Next(snap, &te) {
-		if te.OwnerProcessID != pid {
-			continue
-		}
-		h, err := windows.OpenThread(windows.WRITE_DAC, false, te.ThreadID)
-		switch {
-		case errors.Is(err, windows.ERROR_ACCESS_DENIED):
-			// Its list already refuses its owner: it started after the
-			// default changed.
-			continue
-		case errors.Is(err, windows.ERROR_INVALID_PARAMETER):
-			continue // it has ended
-		case err == nil:
-			err = windows.SetKernelObjectSecurity(h, windows.DACL_SECURITY_INFORMATION, sd)
+	var h windows.Handle
+	for {
+		var next windows.Handle
+		st, _, _ := procNtGetNextThread.Call(uintptr(windows.CurrentProcess()), uintptr(h), windows.MAXIMUM_ALLOWED, 0, 0, uintptr(unsafe.Pointer(&next)))
+		if h != 0 {
 			windows.CloseHandle(h)
+		}
+		if windows.NTStatus(st) == windows.STATUS_NO_MORE_ENTRIES {
+			break
+		}
+		if st != 0 {
+			return fmt.Errorf("listing the threads: NtGetNextThread: %w", windows.NTStatus(st))
+		}
+		h = next
+		err := windows.SetKernelObjectSecurity(h, windows.DACL_SECURITY_INFORMATION, sd)
+		if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+			// Its list already refuses its owner WRITE_DAC: it started
+			// after the default changed.
+			continue
 		}
 		if err != nil {
 			if !slices.Contains(causes, err.Error()) {
 				causes = append(causes, err.Error())
 			}
-			ids = append(ids, strconv.FormatUint(uint64(te.ThreadID), 10))
+			id, _, _ := procGetThreadId.Call(uintptr(h))
+			ids = append(ids, strconv.FormatUint(uint64(id), 10))
 		}
 	}
 	if len(causes) > 0 {

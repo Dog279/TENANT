@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -175,8 +176,31 @@ func checkProcessProtection(ctx context.Context, e *doctorEnv) checkResult {
 		whose = fmt.Sprintf("The Tenant running at %s (process %d, version %s), asked just now:", addr, st.Protection.PID, firstNonEmpty(st.Version, "unknown"))
 	}
 	r := processProtectionCheck(a, runtime.GOOS)
+	if st.Protection != nil {
+		putBackBeforeAsking(&r, protection)
+	}
 	r.Detail = whose + "\n       " + r.Detail
 	return r
+}
+
+// putBackBeforeAsking: this command's own start (own) put its program back
+// on the user's Windows Error Reporting exclusion list, which is kept by file
+// name, before it asked the running Tenant. A running Tenant of the same file
+// name was without the exclusion until then, and now reads it as in force:
+// r says so, rather than let the answer stand for what was there.
+func putBackBeforeAsking(r *checkResult, own procprotect.Report) {
+	for _, c := range own.Controls {
+		if c.ID != "windows.wer-exclusion" || c.Note != procprotect.ExclusionPutBack {
+			continue
+		}
+		name := "this program"
+		if exe, err := os.Executable(); err == nil {
+			name = filepath.Base(exe)
+		}
+		r.Status = statusWarn
+		r.Detail = "OFF until this doctor started: " + c.Name + ". " + name + " was not on the user's exclusion list when this doctor started, and the doctor's own start put it back, so a running Tenant of that file name reads it as on. Until then: " + c.Leaves + "\n       " + r.Detail
+		r.Fix = strings.TrimPrefix(r.Fix+"; something on this machine took the exclusion off; a restart of Tenant applies it again", "; ")
+	}
 }
 
 func processProtectionCheck(a processProtectionAudit, goos string) checkResult {

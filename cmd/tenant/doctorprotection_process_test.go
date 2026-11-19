@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -100,4 +101,19 @@ func TestDoctorDescribesTheRunningServe(t *testing.T) {
 		t.Errorf("with a control of the serve undone from outside, doctor says (%v):\n%s\nfix: %s", r.Status, r.Detail, r.Fix)
 	}
 	t.Logf("doctor, after the control was undone from outside:\n%s", r.Detail)
+
+	// The real `tenant doctor`, which applies the controls to itself at its
+	// start like every command, and may so redo what was undone before it
+	// asks. It must say so rather than report the control on.
+	if doneByDoctorItself == "" {
+		return
+	}
+	if err := os.WriteFile(launchConfigPath(u.cfg), []byte(`{"dashboard":{"addr":"`+addr+`"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The control is still undone from above.
+	out, err := u.command(ctx, nil, "doctor", "--data", u.data, "--config", u.cfg).CombinedOutput()
+	if !strings.Contains(string(out), whose) || !strings.Contains(string(out), doneByDoctorItself) {
+		t.Errorf("tenant doctor, with a control of the serve undone from outside (%v):\n%s", err, out)
+	}
 }

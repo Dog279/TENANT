@@ -94,6 +94,14 @@ var (
 	applied   Report // what Protect last reported in this process
 )
 
+// ExclusionPutBack is the note on windows.wer-exclusion when this start
+// found the program's name missing from the user's exclusion list and put it
+// there: on the first start of a program of that name, or after something
+// took it off. Every command applies the controls at its start, so a
+// `tenant doctor` puts back the exclusion of a running Tenant of the same
+// file name before it asks that Tenant (checkProcessProtection says so).
+const ExclusionPutBack = "this start put the program on the list: it was not on it"
+
 // undone starts the reason of a control that was in force and is not.
 const undone = "it was in force when Tenant started and is not any more: "
 
