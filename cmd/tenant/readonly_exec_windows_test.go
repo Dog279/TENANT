@@ -44,6 +44,12 @@ func TestReadOnlyExec_PowerShell(t *testing.T) {
 		// variable name") and leaves the file alone; it asks all the same.
 		`Get-Date -OutVariable '` + file + `'`,
 		`dir -ErrorVariable '` + file + `'`,
+		// PowerShell ends an argument at the quote that began it, and a program
+		// drops a quote inside a quoted argument: each reads //localhost/c$.
+		`Select-String 'fonts'//localhost/c$/Windows/win.ini`,
+		`cat 'x'//localhost/c$/Windows/win.ini`,
+		`git diff --no-index --stat '/"/localhost/c$/Windows/win.ini' '` + file + `'`,
+		"Get-Date -p v | Write-Output",
 	} {
 		before := *asked
 		out, isErr := run(cmd, dir)

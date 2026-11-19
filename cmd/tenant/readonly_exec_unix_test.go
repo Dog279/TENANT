@@ -37,6 +37,9 @@ func TestReadOnlyExec_Sh(t *testing.T) {
 		"sort -T " + dir + " " + keep,
 		"file -p " + keep,
 		"git status --help",
+		// bash (sh on macOS) connects for /dev/tcp after quote removal.
+		"cat < /dev/t'c'p/127.0.0.1/9",
+		"git branch --sort=signature",
 	} {
 		before := *asked
 		out, isErr := run(cmd, dir)

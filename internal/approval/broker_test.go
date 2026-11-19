@@ -917,6 +917,17 @@ func TestBroker_DangerNoteCannotBeForged(t *testing.T) {
 			t.Errorf("cards=%d, want the ask rule to raise one", *asked)
 		}
 	})
+	t.Run("os_exec_dangerous: an allow rule for every segment still asks", func(t *testing.T) {
+		b, asked := newBroker(control.DenyOnce)
+		for _, rule := range []string{"os_exec(echo *)", "os_exec(rm *)"} {
+			if err := b.rules.Set(rule, "allow"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if b.Confirm(ctx, "os_exec_dangerous", detail) || *asked != 1 {
+			t.Errorf("cards=%d, want one: a command rule's allow never answers for a destructive command", *asked)
+		}
+	})
 	t.Run("the command read back from a detail", func(t *testing.T) {
 		for _, tc := range []struct{ action, detail, want string }{
 			{"os_exec", forged, forged},

