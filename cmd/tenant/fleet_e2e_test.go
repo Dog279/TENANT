@@ -201,6 +201,10 @@ func scriptedModel() string {
 }
 
 func scriptedChat(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/embeddings") && os.Getenv(e2eEmbedEnv) != "" {
+		scriptedEmbed(w, r)
+		return
+	}
 	if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/chat/completions") {
 		http.NotFound(w, r) // the model list, the tokenizer, embeddings: the callers fall back
 		return
@@ -255,6 +259,34 @@ func scriptedChat(w http.ResponseWriter, r *http.Request) {
 		fmt.Println("E2E-TURN " + base64.RawURLEncoding.EncodeToString(raw))
 		scriptedAnswer(w, req.Stream, "done", nil)
 	}
+}
+
+// e2eEmbedEnv makes the scripted model an embedder too: a master on it then
+// writes episodes, and its machines' memory (TEN-532).
+const e2eEmbedEnv = "TENANT_FLEET_E2E_EMBED"
+
+// scriptedEmbed answers the OpenAI embeddings API with a small vector per
+// text, made from the text.
+func scriptedEmbed(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Input []string `json:"input"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<20)).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	type item struct {
+		Embedding []float32 `json:"embedding"`
+		Index     int       `json:"index"`
+	}
+	out := struct {
+		Data []item `json:"data"`
+	}{}
+	for i, s := range req.Input {
+		out.Data = append(out.Data, item{Embedding: []float32{float32(len(s) % 97), float32(strings.Count(s, " ") % 13), 1}, Index: i})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
 }
 
 // scriptedText is a message's text: a string, or the text parts of a list.
@@ -610,6 +642,7 @@ type e2eMaster struct {
 	scripted  bool     // on the scripted model, with a dashboard: it takes turns
 	master    bool     // its dirs hold a fleet: serve listens for it as it starts
 	shipped   bool     // the intervals a shipped Tenant runs with
+	env       map[string]string
 	proc      *e2eProc
 	dash      string // the dashboard's base URL
 	token     string
@@ -634,7 +667,7 @@ func (m *e2eMaster) serve() {
 	} else {
 		argv = append(argv, "--backend", "echo", "--dashboard=false")
 	}
-	m.proc = m.host.start("serve", e2eSpec{Argv: argv, Model: m.scripted, Shipped: m.shipped})
+	m.proc = m.host.start("serve", e2eSpec{Argv: argv, Env: m.env, Model: m.scripted, Shipped: m.shipped})
 	m.turns, m.fleet = 0, ""
 	if m.scripted {
 		_, line := m.proc.await(0, "E2E-TOKEN ", "serve has a dashboard token")

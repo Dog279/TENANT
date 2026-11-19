@@ -7,10 +7,11 @@ package main
 // files are changed between, as an operator or a disk would.
 //
 // Two things stand in: the operator at init's terminal saves the recovery
-// identity and gives it back (fleetmemory_test.go), and what goes into a
-// machine's memory is written straight into its shadow through a line on the
-// master process's standard input (e2eMemory), since the agent's way in
-// (fleet_note, attribution) is the second half of TEN-532.
+// identity and gives it back (fleetmemory_test.go), and, where a test is
+// about the memory's life rather than what fills it, a fact is written
+// straight into a shadow through a line on the master process's standard
+// input (e2eMemory). TestFleetMemoryTwoMachinesEndToEnd fills it the way the
+// agent does: a turn of a real master on its scripted model.
 
 import (
 	"bytes"
@@ -37,6 +38,7 @@ import (
 //
 //	note <machine> <text>   write a fact into the machine's memory
 //	facts <machine>         {"facts": "a | b", "bare": facts without a vector}
+//	memory <machine>        {"text": every episode and fact, as text}
 //	pass                    the five-minute pass, now
 //	state <machine>         {"state", "detail"}
 func e2eMemory(cmd string) string {
@@ -345,5 +347,126 @@ func TestFleetMemoryEndToEnd(t *testing.T) {
 			t.Fatalf("tenant fleet show does not say so:\n%s", out)
 		}
 		readable("at the end")
+	})
+}
+
+// copiesOn counts the copies of its memory a machine keeps.
+func copiesOn(c *e2eChild) int {
+	entries, _ := os.ReadDir(filepath.Join(c.dir, "memory"))
+	return len(entries)
+}
+
+// The second half of TEN-532 with every piece a process of its own: a real
+// `tenant serve` on the scripted model, which embeds, and two real `tenant
+// child run`. A turn reads a file on each machine: neither machine's output
+// goes into the other's memory or into the master's own. `tenant privacy
+// forget`, in a process of its own, reaches the machine that is online at
+// once, and the one that is offline when it is back.
+func TestFleetMemoryTwoMachinesEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts a master and two machines as processes")
+	}
+	h := thisHost(t)
+	m := h.master(true, "--os")
+	m.env = map[string]string{e2eEmbedEnv: "1"}
+	m.serve()
+	m.init("")
+	web, db := m.join(h, "web1"), m.join(h, "db1")
+	webMark, dbMark := mark("e2e-web1"), mark("e2e-db1")
+	webFile, dbFile := h.join("web1", "label.txt"), h.join("db1", "label.txt")
+	for file, text := range map[string]string{webFile: webMark + " is the disk label", dbFile: dbMark + " is the disk label"} {
+		if err := os.WriteFile(file, []byte(text+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	memory := func(c *e2eChild) string { return m.proc.memory("memory " + c.id)["text"].(string) }
+	step := func(name string, fn func(t *testing.T)) {
+		t.Helper()
+		t.Run(name, fn)
+		if t.Failed() {
+			t.FailNow()
+		}
+	}
+
+	step("a turn on two machines leaves neither machine's output in the other's memory", func(t *testing.T) {
+		turn := m.turn(e2eScript(e2eCall("fleet_read", map[string]any{"host": "web1", "path": webFile}),
+			e2eCall("fleet_read", map[string]any{"host": "db1", "path": dbFile})), nil)
+		if len(turn.Results) != 2 || !strings.Contains(turn.Results[0], webMark) || !strings.Contains(turn.Results[1], dbMark) {
+			t.Fatalf("the turn: %q", turn.Results)
+		}
+		var w, d string
+		eventually(t, "each machine's memory has its part of the turn", func() bool {
+			w, d = memory(web), memory(db)
+			return strings.Contains(w, webMark) && strings.Contains(d, dbMark)
+		})
+		if strings.Contains(w, dbMark) || strings.Contains(d, webMark) {
+			t.Fatalf("a machine's output is in the other's memory:\nweb1: %s\ndb1: %s", w, d)
+		}
+		st, err := episodic.OpenExisting(filepath.Join(m.data, "episodes.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer st.Close()
+		eps, err := st.List(context.Background(), episodic.ListFilter{IncludeTombstoned: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var mine string
+		for _, e := range eps {
+			mine += e.Prompt + e.Response + strings.Join(e.Tags, ",") + fmt.Sprint(e.ToolCalls) + "\n"
+		}
+		if strings.Contains(mine, webMark) || strings.Contains(mine, dbMark) || !strings.Contains(mine, fleetHostTag+web.id) || !strings.Contains(mine, fleetHostTag+db.id) {
+			t.Fatalf("the master's own episodes:\n%s", mine)
+		}
+		t.Logf("files that hold web1's marker after the turn: %v", filesWith(webMark, m.data, m.cfg, web.dir, db.dir))
+		if found := filesWith(webMark, fleetShadowDir(m.data), web.dir, db.dir); len(found) > 0 {
+			t.Fatalf("the marker is readable in the machines' memory on disk: %v", found)
+		}
+		m.proc.memory("pass")
+		m.memoryState(web.id, memoryInStep, "on both sides")
+		m.memoryState(db.id, memoryInStep, "on both sides")
+	})
+
+	step("a forget reaches the machine that is online, and its copies", func(t *testing.T) {
+		// A second generation on web1, so that a purge has something to drop.
+		m.proc.memory("note " + web.id + " a second generation for web1")
+		m.proc.memory("pass")
+		m.memoryState(web.id, memoryInStep, "generation 2 on both sides")
+		before := copiesOn(web)
+		if before != 2 {
+			t.Fatalf("web1 keeps %d copies before the forget, want 2", before)
+		}
+		out := m.must(nil, "privacy", "forget", "--match", webMark, "--yes")
+		if !strings.Contains(out, "fleet: The same is forgotten from every fleet machine's memory") {
+			t.Fatalf("tenant privacy forget:\n%s", out)
+		}
+		eventually(t, "the forget reaches web1's memory", func() bool { return !strings.Contains(memory(web), webMark) })
+		if !strings.Contains(memory(db), dbMark) {
+			t.Fatal("db1's memory lost what was not forgotten")
+		}
+		eventually(t, "web1 keeps only the copy made after the forget", func() bool { return copiesOn(web) == 1 })
+		t.Logf("web1 kept %d copies before the forget, 1 after", before)
+		if found := filesWith(webMark, fleetShadowDir(m.data), web.dir); len(found) > 0 {
+			t.Fatalf("after the forget the marker is in %v", found)
+		}
+		t.Logf("files that hold web1's marker after the forget: %v", filesWith(webMark, m.data, m.cfg, web.dir))
+	})
+
+	step("a forget reaches a machine that was offline when it is back", func(t *testing.T) {
+		m.proc.memory("note " + db.id + " a second generation for db1")
+		m.proc.memory("pass")
+		m.memoryState(db.id, memoryInStep, "generation 2 on both sides")
+		db.proc.stop()
+		m.memoryState(db.id, memoryInStep, "generation 2 on both sides")
+		held := copiesOn(db)
+		m.must(nil, "privacy", "forget", "--match", dbMark, "--yes")
+		eventually(t, "the forget reaches db1's memory on the master", func() bool { return !strings.Contains(memory(db), dbMark) })
+		if copiesOn(db) != held {
+			t.Fatal("the copies of a machine that is offline changed")
+		}
+		db.run()
+		db.state("connected to the master")
+		eventually(t, "db1 drops its copies from before the forget once it is back", func() bool { return copiesOn(db) == 1 })
+		m.memoryState(db.id, memoryInStep, "generation 3 on both sides")
 	})
 }
