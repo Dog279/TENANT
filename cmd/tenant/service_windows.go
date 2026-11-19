@@ -83,6 +83,9 @@ var writeTaskXML = func(def string) (path string, remove func(), err error) {
 // args is what follows the binary on the command line.
 func (s serviceSpec) args() string {
 	a := fmt.Sprintf(`serve --config "%s" --data "%s" --stop-budget %s`, s.CfgDir, s.DataDir, secs(s.StopBudget))
+	if s.Child != "" {
+		a = fmt.Sprintf(`child run --dir "%s"`, s.Child)
+	}
 	if !s.System {
 		a += " --hidden"
 	}
@@ -105,7 +108,7 @@ func (s serviceSpec) taskXML(user string) string {
 	return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>Tenant agent (tenant serve)</Description>
+    <Description>` + esc(s.what()) + `</Description>
   </RegistrationInfo>
   <Triggers>
     <LogonTrigger>
@@ -167,7 +170,11 @@ func (s serviceSpec) installService(ctx context.Context) error {
 	if !isElevated() {
 		return errors.New("tenant service --system needs an elevated terminal (run it as administrator)")
 	}
-	config := []string{s.Label, "binPath=", s.cmdLine(), "start=", "auto", "DisplayName=", "Tenant"}
+	name := "Tenant"
+	if s.Child != "" {
+		name = "Tenant fleet child"
+	}
+	config := []string{s.Label, "binPath=", s.cmdLine(), "start=", "auto", "DisplayName=", name}
 	if out, err := runCmd(ctx, "sc", append([]string{"create"}, config...)...); err != nil {
 		if !strings.Contains(out, "1073") { // ERROR_SERVICE_EXISTS: a reinstall
 			return cmdErr("sc create", out, err)
@@ -176,7 +183,7 @@ func (s serviceSpec) installService(ctx context.Context) error {
 			return cmdErr("sc config", out, err)
 		}
 	}
-	if out, err := runCmd(ctx, "sc", "description", s.Label, "Tenant agent (tenant serve)"); err != nil {
+	if out, err := runCmd(ctx, "sc", "description", s.Label, s.what()); err != nil {
 		return cmdErr("sc description", out, err)
 	}
 	if out, err := runCmd(ctx, "sc", "failure", s.Label, "reset=", "86400", "actions=", "restart/10000/restart/60000/restart/300000"); err != nil {
@@ -201,7 +208,9 @@ func (s serviceSpec) uninstall(ctx context.Context) error {
 		}
 		return nil
 	}
-	askTaskToStop(s.DataDir, s.StopBudget+taskStopMargin)
+	if s.Child == "" { // a child has no window to be asked through; ending its task ends it
+		askTaskToStop(s.DataDir, s.StopBudget+taskStopMargin)
+	}
 	_, _ = runCmd(ctx, "schtasks", "/End", "/TN", s.Label) // not running is fine
 	if out, err := runCmd(ctx, "schtasks", "/Delete", "/F", "/TN", s.Label); err != nil {
 		return cmdErr("schtasks /Delete", out, err)
@@ -237,7 +246,7 @@ const taskStopMargin = 2 * time.Second
 // has already ended its task, and schtasks then has nothing to end.
 func (s serviceSpec) stop(ctx context.Context) error {
 	if !s.System {
-		stopped := askTaskToStop(s.DataDir, s.StopBudget+taskStopMargin)
+		stopped := s.Child == "" && askTaskToStop(s.DataDir, s.StopBudget+taskStopMargin)
 		if out, err := runCmd(ctx, "schtasks", "/End", "/TN", s.Label); err != nil && !stopped {
 			return cmdErr("schtasks /End", out, err)
 		}
@@ -288,6 +297,9 @@ func (s serviceSpec) unitCurrent(ctx context.Context) (bool, error) {
 	}
 	if err != nil {
 		return false, cmdErr("read the unit", out, err)
+	}
+	if s.Child != "" {
+		return strings.Contains(out, s.Exe) && strings.Contains(out, s.Child), nil
 	}
 	return strings.Contains(out, s.Exe) && strings.Contains(out, s.CfgDir) && strings.Contains(out, s.DataDir), nil
 }

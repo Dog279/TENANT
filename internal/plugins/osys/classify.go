@@ -52,7 +52,9 @@ var dangerPatterns = []dangerPattern{
 	// TEN-498: an agent must not stop, remove or replace the Tenant it runs
 	// in without the operator's say. Anchored: `grep tenant service.log` is
 	// not this; a path or .exe before the name is.
-	{regexp.MustCompile(`(?i)^(\S*[\\/])?tenant(\.exe)?\s+(service|update)\b`), "tenant service/update (changes how Tenant itself runs)"},
+	// TEN-531: the same for the fleet child a machine runs: `tenant child
+	// pause`, `resume` and `uninstall` are the operator's on that machine.
+	{regexp.MustCompile(`(?i)^(\S*[\\/])?tenant(\.exe)?\s+(service|update|child)\b`), "tenant service/update/child (changes how Tenant itself runs)"},
 }
 
 // cmdStart anchors a command word at the start of a command: the string's

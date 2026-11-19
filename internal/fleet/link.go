@@ -30,8 +30,8 @@ import (
 //	ping            (no params)                        -> {}
 //	fleet/update    {"version","sha256","size","offset","data"} -> {"received":N,"applying":bool}
 //	tools/list      (no params)                        -> {"tools":[{"name","description","parameters"}]}
-//	tools/call      {"call_id","name","arguments","timeout_ms"} -> {"text","is_error","clipped"}
-//	fleet/result    {"call_id"}                        -> {"state":"done|running|unknown","text","is_error","clipped"}
+//	tools/call      {"call_id","name","arguments","timeout_ms"} -> {"text","is_error","clipped","audit"}
+//	fleet/result    {"call_id"}                        -> {"state":"done|running|unknown","text","is_error","clipped","audit"}
 //	fleet/addresses {"addresses":["host:port"]}        -> {}
 //	fleet/revoked   notification, no params
 //	notifications/cancelled, sent by the session when a caller gives up
@@ -201,6 +201,11 @@ type Result struct {
 	Text    string
 	IsError bool // the tool reported a failure
 	Clipped bool // Text was cut to fit
+	// Audit is the SHA-256, in lowercase hex, of the record the child wrote in
+	// its own audit log for this call (gate.go): the one of how the call
+	// ended, or of its arrival when the end could not be written. Empty when
+	// the child sent none or sent something that is not such a hash.
+	Audit string
 }
 
 // Update is one piece of a new Tenant for a child (fleet/update). The
@@ -254,6 +259,7 @@ type callResult struct {
 	Text    string `json:"text"`
 	IsError bool   `json:"is_error,omitempty"`
 	Clipped bool   `json:"clipped,omitempty"`
+	Audit   string `json:"audit,omitempty"` // the hash of the child's audit record of the call
 }
 
 type resultParams struct {

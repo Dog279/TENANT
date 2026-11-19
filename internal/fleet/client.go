@@ -504,7 +504,9 @@ func (l *childLink) call(ctx context.Context, params json.RawMessage) (json.RawM
 			cancel()
 		}
 	})()
-	res := c.dispatch(context.WithValue(tctx, askKey{}, &asker{id: p.CallID, sess: l.sess}), p)
+	ask := &asker{id: p.CallID, sess: l.sess}
+	res := c.dispatch(context.WithValue(tctx, askKey{}, ask), p)
+	res.Audit = ask.audit
 	return c.finish(p.CallID, res), nil
 }
 
@@ -632,6 +634,9 @@ type askKey struct{}
 type asker struct {
 	id   string
 	sess *mcp.Session
+	// audit is the hash of the call's audit record, left here by the gate
+	// (gate.go) on the goroutine that runs the tool, for the call's result.
+	audit string
 }
 
 // Confirm asks the master to approve an action of the tool call ctx belongs

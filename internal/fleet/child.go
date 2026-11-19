@@ -17,12 +17,14 @@ import (
 )
 
 const (
-	childFileName = "child.json"
-	childVersion  = 1
-	maxChildBytes = 64 << 10
-	maxChildTools = 512
-	maxToolLen    = 128
-	maxSandboxLen = 32
+	childFileName  = "child.json"
+	childVersion   = 1
+	maxChildBytes  = 64 << 10
+	maxChildTools  = 512
+	maxToolLen     = 128
+	maxSandboxLen  = 32
+	maxSecretPaths = 256
+	maxPathLen     = 1024
 )
 
 // Ceiling is the limit a machine sets on itself, in its own child.json,
@@ -47,7 +49,9 @@ func (c Ceiling) valid() bool {
 }
 
 // Child is child.json: all a child knows about its master and about what it
-// lets that master do. Every field but Tools is required.
+// lets that master do. The fields from ID to Ceiling are required. Whether
+// the machine is paused is not in this file (PausedPath): a pause is a state
+// a command sets, and this file is what the operator wrote.
 type Child struct {
 	// ID and Name are the ones the master gave this machine at enrollment.
 	ID   string `json:"id"`
@@ -64,6 +68,10 @@ type Child struct {
 	// Left out, the ceiling alone decides. An empty list is an error, not
 	// "none" and not "all".
 	Tools []string `json:"tools,omitempty"`
+	// SecretPaths are the operator's additions to what this machine's file
+	// tools never read or write, whoever asks: absolute paths of files or
+	// directories, the last element of which may use "*".
+	SecretPaths []string `json:"secret_paths,omitempty"`
 }
 
 // childFile is child.json as written: Child and the file's version.
@@ -113,6 +121,16 @@ func (c Child) validate() error {
 	}
 	if !c.Ceiling.valid() {
 		return errors.New("fleet: child.json: ceiling is not full, no-exec or read-only")
+	}
+	if c.SecretPaths != nil && (len(c.SecretPaths) == 0 || len(c.SecretPaths) > maxSecretPaths) {
+		return fmt.Errorf("fleet: child.json: secret_paths lists between 1 and %d paths; leave it out to add none", maxSecretPaths)
+	}
+	for i, p := range c.SecretPaths {
+		// A relative path would name a different file from every working
+		// directory, and so protect none.
+		if len(p) > maxPathLen || !printable(p) || !filepath.IsAbs(p) || slices.Contains(c.SecretPaths[:i], p) {
+			return fmt.Errorf("fleet: child.json: secret_paths entry %d is not an absolute path, or is there twice", i)
+		}
 	}
 	if c.Tools == nil {
 		return nil
@@ -264,6 +282,6 @@ func (f *ChildFile) Current() (Child, error) {
 		f.stamp, f.loaded = st, true
 	}
 	c := f.cur
-	c.MasterAddresses, c.Tools = slices.Clone(c.MasterAddresses), slices.Clone(c.Tools)
+	c.MasterAddresses, c.Tools, c.SecretPaths = slices.Clone(c.MasterAddresses), slices.Clone(c.Tools), slices.Clone(c.SecretPaths)
 	return c, f.err
 }
