@@ -113,13 +113,20 @@ write covers most prompts. Add it when a real installer needs a TTY.
   still runs unasked): each command is a bare read-only word, as written (no
   path, no `VAR=value` before it); a word that acts with some arguments has an
   argument rule (`readOnlyWords`) and takes only literal arguments, judged as
-  sh and as PowerShell 5.1 each hand them to the program; no argument is a
-  network path, and what one command prints is no other's path (`$( )` only
+  sh and as PowerShell 5.1 each hand them to the program; every argument is
+  split alike by sh, by PowerShell and by a program that parses the command
+  line PowerShell builds for it (no quoted start with text after it, no `@` or
+  `--%`, and no quote inside a quoted argument of anything but a cmdlet); no
+  argument is a network path, no `<` opens bash's `/dev/tcp` or a name with a
+  variable, and what one command prints is no other's path (`$( )` only
   after `echo` and `Write-Output`, no pipe into the cmdlets that read a piped
-  string as a path, no `-OutVariable`); and a line the two shells would read
-  differently is not read-only. The broker reads the command out of an
-  approval's detail whole: only an `os_exec_dangerous` detail carries the
-  note, after the command, cut at its last marker.
+  string as a path, no `-OutVariable`, `-p` or kin); and a line the two shells
+  would read differently is not read-only. git's format and sort fields are
+  vetted by name: `%G…` and `%(describe)` for log and show, the signature
+  fields and `describe` for `git branch --format`/`--sort`. The broker reads
+  the command out of an approval's detail whole: only an `os_exec_dangerous`
+  detail carries the note, after the command, cut at its last marker; and a
+  command rule splits a line at a lone carriage return too.
 - **Command rules:** tool rules learn `os_exec(<prefix> *)` patterns, for example
   `os_exec(brew install *)`, `os_exec(npm run *)` and `os_exec(rm *)` set to deny.
   They are matched per segment like Claude Code, with deny > ask > allow. "Allow

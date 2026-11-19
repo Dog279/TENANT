@@ -13,10 +13,14 @@ Releases page.
     `  [DANGER: ` was judged only up to that text and then run whole:
     `echo hi  [DANGER: x]; <any command>` passed as `echo hi`. An allow rule for the first part
     covered the rest, and a deny rule for the rest never saw it. The whole command is judged now.
+    A command rule also reads the statement after a lone carriage return, where PowerShell starts
+    a new one: an allow rule for the first statement no longer covers it.
   - **Commands that act.** `env <any command>`; on Windows a PowerShell method call or assignment
     such as `(Get-Item C:\x).Delete()`, a script block, `& (…)`, a second statement behind a lone
-    carriage return, and a double quote inside a single-quoted argument, which PowerShell passes
-    on so that `git log '--out"put=FILE'` writes FILE; `$(…)` or backticks in place of the command
+    carriage return, and a quote inside a quoted argument, which PowerShell passes on unescaped
+    so that the program's own parser drops it (`git log '--out"put=FILE'` writes FILE);
+    `-p`, which is `-PipelineVariable` for `Get-Date` and `echo`; `$(…)` or backticks in place of
+    the command
     (`$(echo rm -rf x)`); an option that a substitution or a variable supplies or that quotes hide
     (`find . $(echo -delete)`, `find . '-delete'`); a `VAR=value` before the command
     (`PATH=… ls`); a path to a file with a read-only name (`./ls`); a word in other letters than
@@ -24,15 +28,23 @@ Releases page.
     program with some arguments: `sort -o` and `-T`, `uniq IN OUT`, `tree -o`, `find -fprint0`,
     `rg --pre` and `-z`, `file -C`, `-p` and `-z`, `git log|diff|show --output=FILE`,
     `git <command> --help` (man, or a browser on Windows), `git log --show-signature` and `%G`
-    formats (gpg), `git branch NAME` and `-f`, `git remote -v add`, `brew info --github`,
+    formats (gpg), `%(describe)` formats and `git describe --broken` (more git processes),
+    `git branch --sort=signature` and `--sort=describe` (gpg, git describe), `git branch NAME`
+    and `-f`, `git remote -v add`, `brew info --github`, `brew info` of a path, URL or
+    `user/tap/formula` (brew runs the formula's Ruby, or fetches it), `brew deps --brewfile`,
     `date -s`, `hostname NAME`.
   - **Reads that go to another machine.** A network path (`\\host\share\file`, `//host/share`)
     sends your Windows sign-in to that host. It asks now wherever it is written, and so does a line
     in which one command prints a path for another to read: `$(…)` as the argument of anything but
     `echo` and `Write-Output`, a pipe into `Get-ChildItem`, `dir`, `ls` or `Get-Item`, and
-    `-OutVariable` and its kin. `git remote show NAME` (it connects; `-n` does not),
-    `Get-Process -ComputerName`, bash's `/dev/tcp/…`, and `os_exec` with a network share as its
-    working directory (refused: `cd` there inside the command) are covered too.
+    `-OutVariable` and its kin. So do the spellings that hide one from a plain reading on
+    Windows: a quoted start with text after it (`cat 'x'//host/share/f` is `x` and
+    `//host/share/f` to PowerShell), a quote inside a quoted argument of a program
+    (`head '/"/host/share/f'`), and `@FILE`, a file of arguments to Git for Windows' Unix tools.
+    `git remote show NAME` (it connects; `-n` does not), `Get-Process -ComputerName`, bash's
+    `/dev/tcp/…` also behind quotes, a backslash or a variable (`/dev/t'c'p/…`), and `os_exec`
+    with a network share as its working directory (refused: `cd` there inside the command) are
+    covered too.
 
   The check reads a line as sh and as PowerShell at once, and whatever it cannot tell asks. The
   plain forms run unasked as before: `env`, `env VAR=value`, `printenv`, `date`, `date +FORMAT`,
@@ -42,8 +54,10 @@ Releases page.
   `Get-ChildItem` are taken in any case); `date -d`; `$(…)` after any word but `echo`
   (`wc -l $(git ls-files)`); `find`, `sort`, `git` and the other words above with a variable or an
   unquoted glob among their arguments (`find . -name *.go`: quote the pattern); a quote inside a
-  quoted argument of those words; a subshell `(ls)`, backticks, `${HOME}` and anything else in
-  braces, `::` anywhere, and characters outside ASCII that are not letters. A command rule
+  quoted argument of any word but a PowerShell cmdlet (`grep "it's" f`); a quoted start with text
+  after it (`cat 'a'b`); an argument that begins with `@`; a variable in what `<` reads;
+  `git branch --sort=contents:signature`; a subshell `(ls)`, backticks, `${HOME}` and anything
+  else in braces, `::` anywhere, and characters outside ASCII that are not letters. A command rule
   (`/permissions add os_exec(date -d *) allow`) lets a form you use run unasked again.
 - **Fixed: a power cut could leave more files than `config.json` unreadable.** The fix that
   flushes a saved file to the disk before it replaces the old one now covers every file Tenant
