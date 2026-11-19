@@ -211,6 +211,7 @@ var readOnlyRefused = []struct{ name, cmd string }{
 	{"a backslash before a tab", "sort in\\\tx"},
 	{"a backslash before a double quote", `echo \"a`},
 	{"a backslash before a parenthesis", `echo \(ls)`},
+	{"a backslash before the last newline", "ls \\\n"},
 	{"a read-only word after a substitution", "echo $(pwd) ls"},
 	{"delete character", "ls\x7f"},
 	{"find with an unknown primary", "find . -newerXY x"},
@@ -342,7 +343,7 @@ func readOnlyViolation(c string) string {
 			return "contains a control character"
 		}
 	}
-	t := strings.TrimSpace(lf)
+	t := lf
 	switch {
 	case roGluedParen.MatchString(t):
 		return "a parenthesis glued to a word (a method call or a function)"
@@ -437,7 +438,7 @@ func readOnlyViolation(c string) string {
 			}
 		case "rg":
 			for _, a := range args {
-				if a == "--pre" || strings.HasPrefix(a, "--pre=") || strings.HasPrefix(a, "--hostname-bin") {
+				if a == "--pre" || strings.HasPrefix(a, "--pre=") || a == "--hostname-bin" || strings.HasPrefix(a, "--hostname-bin=") {
 					return "rg runs a program: " + a
 				}
 			}
@@ -474,8 +475,11 @@ func readOnlyViolation(c string) string {
 	if !ReadOnly(c + " ; " + c) {
 		return "not read-only twice in a row"
 	}
-	if !ReadOnly(" \t" + c + "\n ") {
+	if !ReadOnly("\n \t" + c + " \t") {
 		return "outer blanks change the answer"
+	}
+	if !strings.HasSuffix(c, `\`) && !ReadOnly(c+"\n") {
+		return "a final newline changes the answer"
 	}
 	if !strings.Contains(c, "\r") && !ReadOnly(strings.ReplaceAll(c, "\n", "\r\n")) {
 		return "Windows line ends change the answer"
