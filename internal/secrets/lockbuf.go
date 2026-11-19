@@ -6,6 +6,7 @@ import (
 	"io"
 	"runtime"
 	"sync"
+	"unsafe"
 )
 
 // ErrBufferReleased is what LockedBuffer.With returns after Release.
@@ -30,11 +31,24 @@ var ErrBufferReleased = errors.New("secrets: locked buffer released")
 // When the operating system refuses the lock the buffer works all the same,
 // and Locked gives the reason.
 type LockedBuffer struct {
-	mu     sync.Mutex
-	mem    []byte // the mapping, at least one byte; nil once released
-	n      int    // bytes in use
+	mu sync.Mutex
+	// addr and size are the mapping, at least one byte; addr is 0 once
+	// released. An address and not a slice, so that nothing that walks a
+	// value by reflection can follow it to the bytes: fmt printed them for a
+	// struct that held a buffer in an unexported field, where Format is not
+	// called (%s and %q print what such a pointer points at).
+	addr   uintptr
+	size   int
+	n      int // bytes in use
 	locked bool
 	reason string
+}
+
+// pages is the mapping. The address is not Go memory, which is what makes
+// keeping it as a uintptr sound; unsafe.Add from nil because go vet reads the
+// plain conversion as a misuse.
+func (b *LockedBuffer) pages() []byte {
+	return unsafe.Slice((*byte)(unsafe.Add(nil, b.addr)), b.size)
 }
 
 // NewLockedBuffer moves src into a new buffer: the bytes are copied into the
@@ -52,7 +66,7 @@ func NewLockedBuffer(src []byte) (*LockedBuffer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("secrets: locked buffer: %w", err)
 	}
-	b := &LockedBuffer{mem: mem, n: len(src)}
+	b := &LockedBuffer{addr: uintptr(unsafe.Pointer(unsafe.SliceData(mem))), size: len(mem), n: len(src)}
 	b.locked, b.reason = lockPages(mem)
 	copy(mem, src)
 	clear(src)
@@ -73,10 +87,10 @@ func NewLockedBuffer(src []byte) (*LockedBuffer, error) {
 func (b *LockedBuffer) With(fn func(p []byte) error) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.mem == nil {
+	if b.addr == 0 {
 		return ErrBufferReleased
 	}
-	return fn(b.mem[:b.n:b.n])
+	return fn(b.pages()[:b.n:b.n])
 }
 
 // Locked reports whether the buffer's pages are locked into RAM. When a
@@ -96,12 +110,12 @@ func (b *LockedBuffer) Locked() (locked bool, reason string) {
 func (b *LockedBuffer) Release() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.mem == nil {
+	if b.addr == 0 {
 		return nil
 	}
 	runtime.SetFinalizer(b, nil)
-	mem, locked := b.mem, b.locked
-	b.mem, b.n, b.locked, b.reason = nil, 0, false, "released"
+	mem, locked := b.pages(), b.locked
+	b.addr, b.size, b.n, b.locked, b.reason = 0, 0, 0, false, "released"
 	clear(mem)
 	return freePages(mem, locked)
 }

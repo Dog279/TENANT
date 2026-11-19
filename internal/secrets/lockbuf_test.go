@@ -222,6 +222,38 @@ func TestLockedBufferDoesNotPrintItsBytes(t *testing.T) {
 	}
 }
 
+// A buffer is usually a field of something else: a key, a store that holds
+// the key. fmt prints such a field by reflection and does not call the
+// buffer's own Format, and with a verb a pointer has no form for (%s, %q) it
+// prints what the pointer points at. That must not reach the bytes.
+func TestLockedBufferInsideAStructDoesNotPrintItsBytes(t *testing.T) {
+	secret := []byte("hunter2-swordfish")
+	b, err := NewLockedBuffer(bytes.Clone(secret))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Release()
+	type key struct{ buf *LockedBuffer }
+	type store struct{ key *key }
+	k := &key{buf: b}
+	// Each way fmt can write a byte slice, as it would write this secret.
+	var forms []string
+	for _, verb := range []string{"%s", "%x", "%d", "%c", "%U", "%b", "%o", "%#v"} {
+		forms = append(forms, strings.ToLower(strings.Trim(fmt.Sprintf(verb, secret), "[]")))
+	}
+	forms = append(forms, strings.ToLower(strings.Trim(strings.TrimPrefix(fmt.Sprintf("%#v", secret), "[]byte"), "{}")))
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%X", "%d", "%c", "%U", "%b", "%o", "%e", "%t", "%p"} {
+		for _, v := range []any{k, *k, &k, &store{key: k}, []*key{k}, map[string]key{"k": *k}} {
+			got := strings.ToLower(fmt.Sprintf(verb, v))
+			for _, form := range forms {
+				if strings.Contains(got, form) {
+					t.Fatalf("%s of a %T prints the buffer's bytes: %s", verb, v, got)
+				}
+			}
+		}
+	}
+}
+
 // FuzzLockedBuffer runs a script of operations over up to eight buffers and
 // compares every read with a plain copy kept beside them. Each step is an
 // opcode byte followed by its arguments; a script that runs out of bytes reads
