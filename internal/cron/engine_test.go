@@ -514,3 +514,55 @@ func TestCronInterruptedLabelForAKilledCommand(t *testing.T) {
 		t.Errorf("a failed command reads %q, want its own error", rec.Err)
 	}
 }
+
+// A job reaches no fleet machine until SetFleet names some; the list is kept
+// sorted and without repeats, persisted, and handed to the runner with the job.
+func TestEngineSetFleet(t *testing.T) {
+	var saved []JobDef
+	var ran Job
+	e, _ := newTestEngine(func(_ context.Context, job Job) (string, string, error) {
+		ran = job
+		return "ok", "", nil
+	}, func(defs []JobDef) error {
+		saved = append([]JobDef{}, defs...)
+		return nil
+	})
+	j, err := e.Add(AddSpec{Spec: "@every 1h", Prompt: "look", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(j.Fleet) != 0 || len(saved[0].Fleet) != 0 {
+		t.Fatalf("a new job reaches fleet machines: %v", j.Fleet)
+	}
+	got, err := e.SetFleet(j.ID, []string{"m2", "m1", "m2"})
+	if err != nil || len(got.Fleet) != 2 || got.Fleet[0] != "m1" || got.Fleet[1] != "m2" {
+		t.Fatalf("SetFleet: %v %v", got.Fleet, err)
+	}
+	if len(saved) != 1 || len(saved[0].Fleet) != 2 {
+		t.Fatalf("the list was not persisted: %+v", saved)
+	}
+	if _, err := e.RunNow(context.Background(), j.ID); err != nil || len(ran.Fleet) != 2 {
+		t.Fatalf("the runner got %v (%v)", ran.Fleet, err)
+	}
+	for _, bad := range [][]string{{"m1", ""}, make([]string, maxJobFleet+1)} {
+		for i := range bad {
+			if len(bad) > 2 {
+				bad[i] = "m" + string(rune(0x61+i%26)) + string(rune(0x61+i/26))
+			}
+		}
+		if _, err := e.SetFleet(j.ID, bad); err == nil {
+			t.Errorf("SetFleet took %d ids, one of them %q", len(bad), bad[len(bad)-1])
+		}
+	}
+	if _, err := e.SetFleet("nope", []string{"m1"}); err == nil {
+		t.Error("SetFleet took a job that is not there")
+	}
+	if got, err := e.SetFleet(j.ID, nil); err != nil || len(got.Fleet) != 0 || len(saved[0].Fleet) != 0 {
+		t.Fatalf("clearing the list: %v %v", got.Fleet, err)
+	}
+	// A list that cannot be saved is not kept.
+	e.persist = func([]JobDef) error { return errors.New("disk full") }
+	if _, err := e.SetFleet(j.ID, []string{"m9"}); err == nil || len(e.List()[0].Fleet) != 0 {
+		t.Fatalf("a list that was not saved was kept: %v %v", e.List()[0].Fleet, err)
+	}
+}
