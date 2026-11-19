@@ -12,6 +12,7 @@
 package osys
 
 import (
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -347,14 +348,19 @@ var readOnlySeps = regexp.MustCompile(`&&|\|\||\$\(|[;&|\n()]`)
 //   - every argument is split and spelled alike by sh, by PowerShell 5.1, and
 //     by a program that parses the command line PowerShell builds for it
 //     (readOnlyArgs: no quoted start with text after it, no @ or --% for any
-//     word, no quote inside a quoted argument nor a backslash before a closing
-//     quote for any word but a cmdlet);
+//     word, no doubled quote inside a quoted part, no quote inside a quoted
+//     argument nor a backslash before a closing quote for any word but a
+//     cmdlet), and an option is ASCII (PowerShell ignores some characters
+//     inside a parameter's name);
+//   - no argument holds a variable, except for echo and Write-Output, which
+//     print it (readOnlyVariable): its value is not in the line;
 //   - a word with a rule (readOnlyWords) is given only arguments whose value
 //     is the text itself, and the rule passes on them as each shell hands
 //     them to the program;
-//   - no argument is a network path (readOnlyReach), no `<` opens bash's
-//     /dev/tcp or /dev/udp or a name with a variable in it (readOnlyRedirect),
-//     and what one command prints is no other command's argument or path: a
+//   - no argument is a network path or /net/HOST (readOnlyReach,
+//     networkPath), nor PowerShell's WSMan: drive; no `<` opens bash's
+//     /dev/tcp or /dev/udp, a name with a variable in it or a ~ other than the
+//     home (readOnlyRedirect); and what one command prints is no other command's argument or path: a
 //     bracket is an argument of echo and Write-Output only (`echo $(whoami)`),
 //     no cmdlet sets a variable (psVariable), and the cmdlets that read a
 //     piped string as a path take no pipe;
@@ -364,8 +370,8 @@ var readOnlySeps = regexp.MustCompile(`&&|\|\||\$\(|[;&|\n()]`)
 // Anything it cannot tell is not read-only: that costs one approval card, and
 // the opposite mistake runs a command unasked.
 //
-// So what runs unasked is: the words of readOnlyWords with no rule, with any
-// literal arguments (ls, cat, head, tail, wc, stat, grep, egrep, fgrep,
+// So what runs unasked is: the words of readOnlyWords with no rule, with
+// literal arguments that pass the checks above (ls, cat, head, tail, wc, stat, grep, egrep, fgrep,
 // which, pwd, echo, printenv, uname, whoami, id, df, du, ps, realpath,
 // basename, dirname, type, cut, tr, true; dir, gci and the Get-ChildItem,
 // Get-Content, Get-Location, Get-Process, Get-Item, Get-Date, Select-String
@@ -390,9 +396,17 @@ var readOnlySeps = regexp.MustCompile(`&&|\|\||\$\(|[;&|\n()]`)
 //     system's temporary directory when it is stopped. hostname -f, id and
 //     ls -l ask the name services the machine is set up with.
 //   - Where a local path leads: a device, a pipe, a mounted or mapped network
-//     folder, a path an environment variable already holds. A host with no
-//     share (//name) stays the pattern of grep, egrep, fgrep and rg when it is
-//     their first operand.
+//     folder (/afs/CELL, an NFS or SMB mount, a folder redirected to a share),
+//     a symbolic link. A host with no share (//name) stays the pattern of
+//     grep, egrep, fgrep and rg when it is their first operand.
+//   - The working directory, which is not in the line. os_exec refuses a
+//     network path or /net/HOST as the workdir (networkPath); `<` refuses
+//     ~+ and ~-, which spell it. What stays: a relative path is read from
+//     there (../../net/HOST is refused, but a path that reaches an automount
+//     only from where the workdir is is not); git finds the repository there
+//     or above it and runs what its config names; a `.` or empty entry on
+//     PATH makes sh find a program there (PowerShell never looks in the
+//     current directory for a command); rg reads .ignore and .rgignore there.
 //   - What a read tells the model: `env`, `cat ~/.ssh/id_ed25519`.
 //   - Which program a word names. The table is the same on every system and
 //     does not know which one it runs on. The shell finds the word on PATH, so
@@ -551,7 +565,33 @@ func readOnlyRedirect(text string) bool {
 			}
 		}
 		f := file.String()
-		if strings.Contains(f, "$") || strings.Contains(f, "/dev/tcp/") || strings.Contains(f, "/dev/udp/") {
+		// bash expands ~+ and ~- (the working directory, the previous one), ~N,
+		// ~+N, ~-N (the directory stack) and ~user there: with workdir /dev,
+		// `cat < ~+/tcp/h/80` connects. Only ~ and ~/… are the home.
+		tilde := strings.HasPrefix(f, "~") && f != "~" && !strings.HasPrefix(f, "~/")
+		if tilde || strings.Contains(f, "$") || strings.Contains(f, "/dev/tcp/") || strings.Contains(f, "/dev/udp/") {
+			return true
+		}
+	}
+	return false
+}
+
+// readOnlyVariable reports a variable reference: a $ outside single quotes,
+// where both shells expand it (sh: $name, $1, $?; PowerShell: $name,
+// $scope:name, $env:NAME, $drive:path, the automatic variables). What it holds
+// is not in the line: an empty one glues the text around it together
+// (\$null\h\s is \\h\s to PowerShell 5.1, /$unset/h/s is //h/s), and one that
+// holds a host (LOGONSERVER) or a path (an $Error record) takes a read there.
+// So only echo and Write-Output, which print it, take one.
+func readOnlyVariable(text string) bool {
+	quote := byte(0)
+	for i := 0; i < len(text); i++ {
+		switch ch := text[i]; {
+		case ch == quote:
+			quote = 0
+		case quote == 0 && (ch == '\'' || ch == '"'):
+			quote = ch
+		case ch == '$' && quote != '\'':
 			return true
 		}
 	}
@@ -581,8 +621,17 @@ func readOnlyCommand(text string, piped bool) (ok, prints bool) {
 	// parsed; any other is a program that parses the command line PowerShell
 	// builds for it itself, and reread says it would find other arguments there.
 	takesPipe, isCmdlet := psWords[name]
+	printer := name == "echo" || name == "write-output"
+	nonASCII := func(s string) bool {
+		return strings.IndexFunc(s, func(r rune) bool { return r > unicode.MaxASCII }) >= 0
+	}
+	// PowerShell 5.1 matches a parameter name ignoring some characters outside
+	// ASCII (-Out<U+0640>Variable binds -OutVariable), so an option is ASCII.
+	option := func(a string) bool { return strings.HasPrefix(a, "-") && nonASCII(a) }
 	// ToLower turns two letters outside ASCII (İ, the Kelvin sign) into i and k.
-	if !known || !agreed || (!reread && !isCmdlet) || strings.IndexFunc(word, func(r rune) bool { return r > unicode.MaxASCII }) >= 0 ||
+	if !known || !agreed || (!reread && !isCmdlet) || nonASCII(word) ||
+		slices.ContainsFunc(sh, option) || slices.ContainsFunc(ps, option) ||
+		(!printer && readOnlyVariable(rest)) ||
 		readOnlyReach(name, sh) || readOnlyReach(name, ps) || readOnlyRedirect(rest) {
 		return false, false
 	}
@@ -596,35 +645,67 @@ func readOnlyCommand(text string, piped bool) (ok, prints bool) {
 		return false, false
 	}
 	if rule == nil {
-		return true, name == "echo" || name == "write-output"
+		return true, printer
 	}
 	// The rule must pass on what each shell hands the program.
 	return fixed && rule(sh) && rule(ps), false
 }
 
 // uncHost finds a network path in an argument, where a path can begin: at its
-// start, after an option's name (-Path:\\h, -O//h, --file=//h) and after a
-// comma or "=". The path is two or more separators (or the \??\ of the NT
+// start, after an option's name and the letters and digits glued to it
+// (-Path:\\h, -O//h, -1f//h, getopt's value after a cluster), after "=" and
+// after a comma. The path is two or more separators (or the \??\ of the NT
 // namespace) and a host; the group is the separator after the host.
 // C:\\Users\\me, http://h/x and src//pkg are not such paths.
-var uncHost = regexp.MustCompile(`(?:^|[,=]|^-[A-Za-z-]*:?)(?:[\\/]{2,}|[\\/]\?\?[\\/])[^\\/\s]+([\\/])?`)
+var uncHost = regexp.MustCompile(`(?:^|[,=]|^-[A-Za-z0-9-]*:?)(?:[\\/]{2,}|[\\/]\?\?[\\/])[^\\/\s]+([\\/])?`)
+
+// networkPath reports a path that opens a connection to a host it names: a
+// network share (uncHost), or a path that cleans to /net/HOST, the automount
+// of macOS (auto_master's -hosts map) and of Linux autofs set up the same way.
+// A relative path that climbs there (../../net/h) counts too; one that gets
+// there only from where the working directory is does not, and is a declared
+// limit. It also vets os_exec's working directory.
+func networkPath(a string) bool {
+	return uncHost.MatchString(a) || netMount(a)
+}
+
+// netMount reports a path that cleans to /net/HOST (see networkPath).
+func netMount(a string) bool {
+	if !strings.HasPrefix(a, "/") && !strings.HasPrefix(a, "..") {
+		return false
+	}
+	c := path.Clean(a)
+	return strings.HasPrefix(c, "/net/") || strings.HasPrefix(strings.TrimLeft(c, "./"), "net/")
+}
 
 // readOnlyReach reports an argument that takes the command to another
 // machine. A read of \\host\share (Windows also takes //host/share) opens a
-// session with that host and offers it the user's credentials, and Get-Process
-// -ComputerName asks another machine. The host alone (\\host, //host) is
-// refused too, except as the first operand of the words that search for a
-// pattern (//go:build), where only a host with a share is.
+// session with that host and offers it the user's credentials, /net/HOST
+// mounts from that host, PowerShell's WSMan: drive talks to WinRM, and
+// Get-Process -ComputerName asks another machine. The host alone (\\host,
+// //host) is refused too, except as the first operand of the words that
+// search for a pattern (//go:build), where only a host with a share is; after
+// an option that takes a file (grep -f, --file; rg --ignore-file), the
+// operand is that file.
 func readOnlyReach(word string, args []string) bool {
 	pattern := word == "grep" || word == "egrep" || word == "fgrep" || word == "rg" // the next operand is the pattern
+	file := false                                                                   // the option before takes a file
 	for _, a := range args {
 		operand := !strings.HasPrefix(a, "-")
+		_, value, _ := strings.Cut(a, "=")
+		if strings.Contains(strings.ToLower(a), "wsman:") || netMount(a) || netMount(value) {
+			return true
+		}
 		for _, m := range uncHost.FindAllStringSubmatchIndex(a, -1) {
-			if m[2] >= 0 || !pattern || !operand {
+			if m[2] >= 0 || !pattern || !operand || file {
 				return true
 			}
 		}
 		pattern = pattern && !operand
+		long, isLong := strings.CutPrefix(a, "--")
+		file = pattern && ((!isLong && !operand && strings.HasSuffix(a, "f")) ||
+			(isLong && long != "" && (strings.HasPrefix("file", long) || strings.HasPrefix("ignore-file", long) ||
+				strings.HasPrefix("exclude-from", long))))
 		if word == "ps" || word == "get-process" {
 			// PowerShell takes any unambiguous start of a parameter's name, in
 			// any case, with the value after a colon; -c is one for -ComputerName.
@@ -698,6 +779,10 @@ func readOnlyArgs(s string) (sh, ps []string, fixed, agreed, reread bool) {
 			ends := next == 0 || next == ' ' || next == '\t'
 			fixed = fixed && ends && s[i-1] != '\\'
 			agreed = agreed && (ends || !started) // a bare start and a quoted rest stay one argument in both
+			// '' inside single quotes and "" inside double quotes are one quote
+			// character to PowerShell (q"a"" //h/s"" b" reaches a program as qa
+			// and //h/s b); sh closes and opens again.
+			agreed = agreed && next != quote
 			reread = reread && s[i-1] != '\\'
 			quote = 0
 		case quote == '"' && ch == '\\' && next == '"': // sh: a quote character; PowerShell: the closing quote

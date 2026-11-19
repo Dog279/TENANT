@@ -50,6 +50,10 @@ func TestReadOnlyExec_PowerShell(t *testing.T) {
 		`cat 'x'//localhost/c$/Windows/win.ini`,
 		`git diff --no-index --stat '/"/localhost/c$/Windows/win.ini' '` + file + `'`,
 		"Get-Date -p v | Write-Output",
+		// Round three: an empty variable joins \ and \h into \\h, and 5.1
+		// ignores U+0640 inside a parameter name.
+		`Get-Content \$null\localhost\c$\Windows\win.ini -TotalCount 1`,
+		"Get-Date -OutـVariable zz; Write-Output $zz",
 	} {
 		before := *asked
 		out, isErr := run(cmd, dir)

@@ -40,6 +40,8 @@ func TestReadOnlyExec_Sh(t *testing.T) {
 		// bash (sh on macOS) connects for /dev/tcp after quote removal.
 		"cat < /dev/t'c'p/127.0.0.1/9",
 		"git branch --sort=signature",
+		// Round three: bash expands ~+ to the working directory in what < opens.
+		"cat < ~+/tcp/127.0.0.1/9",
 	} {
 		before := *asked
 		out, isErr := run(cmd, dir)
