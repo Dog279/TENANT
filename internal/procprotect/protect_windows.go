@@ -43,7 +43,7 @@ const tokenSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x000a;;;OW)"
 // closed: the handle keeps the rights it was opened with.
 var ownToken windows.Token
 
-const leavesThreads ="another program running as the same user can open one of Tenant's threads and redirect it (SetThreadContext, QueueUserAPC), which runs code inside Tenant and so reads its memory"
+const leavesThreads = "another program running as the same user can open one of Tenant's threads and redirect it (SetThreadContext, QueueUserAPC), which runs code inside Tenant and so reads its memory"
 
 func protect() []Control {
 	sd, err := windows.SecurityDescriptorFromString(restrictedSDDL)
