@@ -564,10 +564,15 @@ func TestFleetIdleSpike(t *testing.T) {
 }
 
 // Acceptance: the idle budget. Three machines hold their links to a master
-// for a little over a minute (two pings), as real processes on the shipped intervals, and
-// what that costs stays inside limits set from the spike's numbers: about
-// three times what was measured, so a busy runner does not fail it and a
-// link that started to poll, or a child that grew a second ping, does.
+// for a little over a minute (two pings), as real processes on the shipped
+// intervals, and what that costs stays inside limits set from the spike's
+// numbers (TestFleetIdleSpike; docs/ARCHITECTURE.md has the table).
+//
+// What is counted is held to about three times what was measured: bytes on
+// the wire, goroutines, resident memory. A link that started to poll, a child
+// that grew a second ping or a goroutine per call left behind fails it. CPU
+// seconds depend on the runner, so that limit is looser: it catches a child
+// that spins, not one that got a little slower.
 func TestFleetIdleBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("starts a master and three machines as processes, and waits")
@@ -579,36 +584,55 @@ func TestFleetIdleBudget(t *testing.T) {
 	time.Sleep(15 * time.Second) // past the connect, the hello and the first address push
 	idle := f.measure(65 * time.Second)
 	t.Logf("%s (the master alone: %d goroutines)", idle, base)
-	budget := idleBudget[runtime.GOOS]
-	if budget == (idleLimits{}) {
-		t.Skipf("no idle budget was measured on %s", runtime.GOOS)
+
+	if got := idle.BytesPerMinute; got > idleBytesPerMinute {
+		t.Errorf("an idle machine's link carried %.0f bytes a minute, over the budget of %d", got, idleBytesPerMinute)
 	}
-	if got := idle.BytesPerMinute; got > budget.bytesPerMinute {
-		t.Errorf("an idle machine's link carried %.0f bytes a minute, over the budget of %.0f", got, budget.bytesPerMinute)
+	if got := idle.BytesPerMinute; got == 0 {
+		t.Error("nothing crossed an idle link in two ping intervals: the link is not kept alive, or the wire did not count")
 	}
-	if got := idle.ChildCPUMax; got > budget.childCPU {
-		t.Errorf("an idle child used %s of CPU in %s, over the budget of %s", got, idle.Window.Round(time.Second), budget.childCPU)
+	if got := idle.ChildGoroutines; got > idleChildGoroutines {
+		t.Errorf("an idle child runs %d goroutines, over the budget of %d", got, idleChildGoroutines)
 	}
-	if got := idle.ChildRSSMax; got > budget.childRSS {
-		t.Errorf("an idle child holds %d MB resident, over the budget of %d MB", got>>20, budget.childRSS>>20)
+	if got := float64(idle.MasterGoroutines-base) / float64(idle.Children); got > idleMasterGoroutinesPerChild {
+		t.Errorf("the master runs %.1f goroutines per idle machine, over the budget of %.1f", got, idleMasterGoroutinesPerChild)
 	}
-	if got := idle.ChildGoroutines; got > budget.childGoroutines {
-		t.Errorf("an idle child runs %d goroutines, over the budget of %d", got, budget.childGoroutines)
+	limits, measured := idleBudget[runtime.GOOS]
+	if !measured {
+		t.Logf("no CPU or memory budget was measured on %s: only the wire and the goroutines are held to one", runtime.GOOS)
+		return
 	}
-	if got := (idle.MasterGoroutines - base) / idle.Children; got > budget.masterGoroutinesPerChild {
-		t.Errorf("the master runs %d goroutines per idle machine, over the budget of %d", got, budget.masterGoroutinesPerChild)
+	if got := idle.ChildCPUMax; got > limits.childCPU {
+		t.Errorf("an idle child used %s of CPU in %s, over the budget of %s", got, idle.Window.Round(time.Second), limits.childCPU)
+	}
+	if got := idle.ChildRSSMax; got > limits.childRSS {
+		t.Errorf("an idle child holds %d MB resident, over the budget of %d MB", got>>20, limits.childRSS>>20)
 	}
 }
 
-// idleLimits is the idle budget on one operating system.
+// The idle budget, from the spike (real processes, the test binary, the
+// shipped intervals). Measured on Windows 11 and on Linux (WSL2), with 1, 10
+// and 100 machines:
+//
+//   - the wire: 104 bytes a minute per machine, both directions together (one
+//     ping and its pong every 30 s), the same at 1, 10 and 100;
+//   - a child: 7 goroutines in the test's helper process;
+//   - the master: 1 goroutine per connected machine.
+const (
+	idleBytesPerMinute           = 300 // measured 104
+	idleChildGoroutines          = 10  // measured 7
+	idleMasterGoroutinesPerChild = 2.5 // measured 1
+)
+
+// idleLimits is what depends on the operating system.
 type idleLimits struct {
-	bytesPerMinute           float64       // on the wire, both directions, per machine
-	childCPU                 time.Duration // one child, over the budget test's 65 s
-	childRSS                 int64         // one child, resident
-	childGoroutines          int
-	masterGoroutinesPerChild int
+	childCPU time.Duration // the worst child, over the budget test's 65 s
+	childRSS int64         // the worst child, resident
 }
 
-// idleBudget is set from TestFleetIdleSpike's numbers (docs/FLEET.md has the
-// table). A zero entry skips the test on that system.
-var idleBudget = map[string]idleLimits{}
+// idleBudget has an entry for each system the spike ran on.
+var idleBudget = map[string]idleLimits{
+	// Windows 11: a child used 0.13 s of CPU in ten minutes on average (the
+	// worst of 100: 0.36 s), which is 0.014 s (0.04 s) in 65 s, and held 34 MB.
+	"windows": {childCPU: 250 * time.Millisecond, childRSS: 100 << 20},
+}

@@ -1424,3 +1424,37 @@ func TestFleet_AskRulesOnAMachine(t *testing.T) {
 		t.Fatalf("the master gained rules: %v", got)
 	}
 }
+
+// An origin that asks where the machine's scheme would allow says why, and
+// the card carries the reason after the machine's name. It is said only on a
+// prompt the origin caused: an origin whose own check allows adds nothing to
+// a card the machine's scheme raised.
+func TestFleet_TheOriginsReasonIsOnTheCard(t *testing.T) {
+	r := newFleetRig(t)
+	if err := r.fleet.Put("aaaa", Scheme{Permissions: map[string]string{CatExec: "allow"}}); err != nil {
+		t.Fatal(err)
+	}
+	r.answer = control.ApproveOnce
+	asks := r.attended()
+	asks.Verdict = func(string, string) Mode { return ModeAsk }
+	asks.Why = "this turn has read from [db1]\nand more"
+	if ok, n := r.confirm(asks, "aaaa", "os_exec", "uptime"); !ok || n != 1 {
+		t.Fatalf("ok %v, %d prompt(s)", ok, n)
+	}
+	if got, want := r.shown[len(r.shown)-1].Detail, `[host aaaa "box-aaaa"] [asked because this turn has read from \x5bdb1\x5d\nand more] uptime`; got != want {
+		t.Fatalf("the card reads %q, want %q", got, want)
+	}
+
+	if err := r.fleet.Put("bbbb", Scheme{}); err != nil { // asks by its own scheme
+		t.Fatal(err)
+	}
+	allows := r.attended()
+	allows.Verdict = func(string, string) Mode { return ModeAllow }
+	allows.Why = "never said"
+	if ok, n := r.confirm(allows, "bbbb", "os_exec", "uptime"); !ok || n != 1 {
+		t.Fatalf("ok %v, %d prompt(s)", ok, n)
+	}
+	if got, want := r.shown[len(r.shown)-1].Detail, `[host bbbb "box-bbbb"] uptime`; got != want {
+		t.Fatalf("the card reads %q, want %q", got, want)
+	}
+}
