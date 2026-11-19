@@ -13,7 +13,9 @@ package osys
 
 import (
 	"regexp"
+	"slices"
 	"strings"
+	"unicode"
 )
 
 // dangerPattern pairs a matcher with why it's dangerous.
@@ -77,79 +79,350 @@ func Classify(command string) (dangerous bool, reason string) {
 // segmentSplit separates the commands of a compound line.
 var segmentSplit = regexp.MustCompile("&&|\\|\\||[;&|\n`(]|\\$\\(")
 
-// readOnlyWords are the commands that only look (TEN-491): run without a
-// prompt when every segment of a command is one of them and nothing
-// redirects. Case-insensitive, so PowerShell's verbs are listed once.
-// ponytail: a flat set; `git` and `brew` get their read subcommands below,
-// `find` loses its acting flags. Add a word when a model keeps asking for it.
-var readOnlyWords = map[string]bool{
-	"ls": true, "cat": true, "head": true, "tail": true, "wc": true, "file": true, "stat": true, "find": true,
-	"rg": true, "grep": true, "egrep": true, "fgrep": true, "which": true, "pwd": true, "echo": true, "date": true,
-	"env": true, "printenv": true, "uname": true, "whoami": true, "id": true, "hostname": true, "df": true, "du": true,
-	"ps": true, "tree": true, "realpath": true, "basename": true, "dirname": true, "type": true, "sort": true,
-	"uniq": true, "cut": true, "tr": true, "true": true, "git": true, "brew": true,
-	"dir": true, "gci": true, "get-childitem": true, "get-content": true, "get-location": true, "get-process": true,
-	"get-item": true, "get-date": true, "select-string": true, "write-output": true,
+// readOnlyWords are the commands that only look (TEN-491): a line runs without
+// a prompt when every command in it is one of them. The value is the word's
+// argument rule (TEN-534): nil for a word that only looks whatever it is
+// given, otherwise a function that reports whether these arguments only look.
+// Case-insensitive, so PowerShell's verbs are listed once.
+// ponytail: one table. Add a word when a model keeps asking for it, with a
+// rule if any option or operand of it, in any implementation (GNU, BSD,
+// PowerShell's alias), writes a file, changes a setting or runs a program.
+var readOnlyWords = map[string]func(args []string) bool{
+	"ls": nil, "cat": nil, "head": nil, "tail": nil, "wc": nil, "stat": nil, "grep": nil, "egrep": nil, "fgrep": nil,
+	"which": nil, "pwd": nil, "echo": nil, "printenv": nil, "uname": nil, "whoami": nil, "id": nil, "df": nil,
+	"du": nil, "ps": nil, "realpath": nil, "basename": nil, "dirname": nil, "type": nil, "cut": nil, "tr": nil,
+	"true": nil,
+	"dir":  nil, "gci": nil, "get-childitem": nil, "get-content": nil, "get-location": nil, "get-process": nil,
+	"get-item": nil, "get-date": nil, "select-string": nil, "write-output": nil,
+
+	// env runs the command it is given; VAR=value alone only prints.
+	"env": only(envAssignment.MatchString),
+	// date -s, --set and MMDDhhmm set the clock; only +FORMAT is the same everywhere.
+	"date": only(func(a string) bool { return strings.HasPrefix(a, "+") }),
+	// hostname NAME, -F and -b set the name.
+	"hostname": only(func(string) bool { return false }),
+	// find acts with -delete, -exec, -fprint and their kin: only the tests and
+	// printers of findLooks, and the numbers they take (-mtime -7).
+	"find": only(func(a string) bool {
+		return !strings.HasPrefix(a, "-") || findLooks[a] || (len(a) > 1 && a[1] >= '0' && a[1] <= '9')
+	}),
+	"sort": without("o", "output", "compress-program"), // write FILE; run PROG
+	"tree": without("oR", "output"),                    // write FILE; -R writes 00Tree.html files
+	"file": without("C", "compile"),                    // write a .mgc file
+	"rg":   without("", "pre", "hostname-bin"),         // run a program
+	"uniq": uniqLooks,
+	"git":  gitLooks,
+	"brew": func(args []string) bool { return len(args) > 0 && brewLooks[args[0]] },
 }
 
-var gitReadVerbs = map[string]bool{"status": true, "log": true, "diff": true, "show": true, "rev-parse": true,
-	"ls-files": true, "blame": true, "describe": true, "branch": true, "remote": true}
+var (
+	envAssignment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
+	gitRemoteName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
-// ReadOnly reports whether a command only looks at the machine: every segment
-// of it (split at && || ; | and subshells) starts with a read-only word, no
-// segment redirects its output, and nothing escalates (sudo). `git` and `brew`
-// count only with a read subcommand; `find` not when it acts (-delete, -exec).
-// The brokers skip the prompt for such a command (TEN-491, D4); iMessage does
-// not use it. It is a convenience judgement, not the safety boundary.
-func ReadOnly(command string) bool {
-	c := strings.TrimSpace(command)
-	if c == "" || strings.ContainsAny(c, ">") {
+	brewLooks = map[string]bool{"list": true, "info": true, "--version": true, "deps": true, "outdated": true}
+
+	findLooks = map[string]bool{
+		"-name": true, "-iname": true, "-path": true, "-ipath": true, "-wholename": true, "-iwholename": true,
+		"-regex": true, "-iregex": true, "-regextype": true, "-lname": true, "-ilname": true,
+		"-type": true, "-xtype": true, "-size": true, "-empty": true, "-links": true, "-inum": true, "-samefile": true,
+		"-perm": true, "-user": true, "-group": true, "-uid": true, "-gid": true, "-nouser": true, "-nogroup": true,
+		"-readable": true, "-writable": true, "-executable": true, "-fstype": true,
+		"-newer": true, "-anewer": true, "-cnewer": true, "-newermt": true, "-mtime": true, "-atime": true,
+		"-ctime": true, "-mmin": true, "-amin": true, "-cmin": true, "-daystart": true, "-used": true,
+		"-maxdepth": true, "-mindepth": true, "-depth": true, "-mount": true, "-xdev": true, "-prune": true,
+		"-follow": true, "-noleaf": true, "-print": true, "-print0": true, "-printf": true, "-ls": true, "-quit": true,
+		"-not": true, "-a": true, "-and": true, "-o": true, "-or": true, "-true": true, "-false": true,
+		"-H": true, "-L": true, "-P": true, "-E": true,
+	}
+
+	// gitBranchOpts are the options of `git branch` that only list, an option
+	// with a value spelled up to its "=". true marks those that make a name a
+	// pattern to list; without one, a name is a branch to create. None of the
+	// others takes the next argument as its value: `--sort --list NAME` would
+	// sort by "--list" and create NAME, so --sort and --format are here only
+	// as --sort= and --format=.
+	gitBranchOpts = map[string]bool{
+		"--list": true, "--contains": true, "--no-contains": true, "--merged": true, "--no-merged": true, "--points-at": true,
+		"-a": false, "--all": false, "-r": false, "--remotes": false, "-v": false, "-vv": false, "--verbose": false,
+		"-l": false, "--show-current": false, "--sort=": false, "--format=": false, "--color": false, "--color=": false,
+		"--no-color": false, "--column": false, "--column=": false, "--no-column": false, "--abbrev": false,
+		"--abbrev=": false, "--no-abbrev": false, "-i": false, "--ignore-case": false,
+	}
+)
+
+// only is the rule of a word whose every argument must pass ok.
+func only(ok func(arg string) bool) func([]string) bool {
+	return func(args []string) bool {
+		return !slices.ContainsFunc(args, func(a string) bool { return !ok(a) })
+	}
+}
+
+// without is the rule of a word that only looks unless it is given one of its
+// acting options: a letter of short in a -xyz cluster, or one of long as
+// --name, --name=value or a shorter spelling of it (GNU tools and git take an
+// unambiguous abbreviation).
+func without(short string, long ...string) func([]string) bool {
+	return only(func(a string) bool {
+		name, isLong := strings.CutPrefix(a, "--")
+		if !isLong {
+			return !strings.HasPrefix(a, "-") || !strings.ContainsAny(a, short)
+		}
+		name, _, _ = strings.Cut(name, "=")
+		return name == "" || !slices.ContainsFunc(long, func(l string) bool { return strings.HasPrefix(l, name) })
+	})
+}
+
+// uniqLooks is uniq's rule. `uniq IN OUT` writes OUT, so there is at most one
+// operand, and it comes last: BSD uniq reads an option after IN as OUT.
+func uniqLooks(args []string) bool {
+	for i, a := range args {
+		if a == "--" {
+			return len(args)-i-1 <= 1
+		}
+		if a == "-" || !strings.HasPrefix(a, "-") {
+			return i == len(args)-1
+		}
+	}
+	return true
+}
+
+// gitLooks is git's rule: a subcommand that reads, without what makes it
+// write. A global option before the subcommand (`git -c k=v status`) is
+// refused with everything else.
+func gitLooks(args []string) bool {
+	if len(args) == 0 {
 		return false
 	}
-	segments := segmentSplit.Split(c, -1)
-	judged := 0
-	for _, seg := range segments {
-		f := strings.Fields(strings.TrimRight(seg, ")"))
-		for len(f) > 0 && strings.Contains(f[0], "=") && !strings.HasPrefix(f[0], "=") { // VAR=x prefixes
-			f = f[1:]
-		}
-		if len(f) == 0 {
-			continue
-		}
-		name := strings.ToLower(f[0][strings.LastIndex(f[0], "/")+1:])
-		if !readOnlyWords[name] {
-			return false
-		}
-		args := f[1:]
-		switch name {
-		case "git":
-			if len(args) == 0 || !gitReadVerbs[args[0]] || (args[0] == "branch" && hasActingFlag(args[1:], "-d", "-D", "-m", "-M", "--delete", "--move", "-c", "-C", "--copy", "-u", "--set-upstream-to", "--unset-upstream")) ||
-				(args[0] == "remote" && len(args) > 1 && args[1] != "-v" && args[1] != "show" && args[1] != "get-url") {
-				return false
+	rest := args[1:]
+	switch args[0] {
+	case "status", "log", "diff", "show", "rev-parse", "ls-files", "blame", "describe":
+		return without("", "output")(rest) // --output=FILE writes the diff to FILE
+	case "branch":
+		option := func(a string) string { // --sort=x is looked up as --sort=
+			if i := strings.Index(a, "="); i >= 0 {
+				return a[:i+1]
 			}
-		case "brew":
-			if len(args) == 0 || (args[0] != "list" && args[0] != "info" && args[0] != "--version" && args[0] != "deps" && args[0] != "outdated") {
-				return false
-			}
-		case "find":
-			if hasActingFlag(args, "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls") {
-				return false
-			}
+			return a
 		}
-		judged++
-	}
-	return judged > 0
-}
-
-func hasActingFlag(args []string, flags ...string) bool {
-	for _, a := range args {
-		for _, f := range flags {
-			if a == f || strings.HasPrefix(a, f+"=") {
-				return true
+		lists := slices.ContainsFunc(rest, func(a string) bool { return gitBranchOpts[option(a)] })
+		return only(func(a string) bool {
+			if !strings.HasPrefix(a, "-") {
+				return lists
 			}
+			_, known := gitBranchOpts[option(a)]
+			return known
+		})(rest)
+	case "remote":
+		if len(rest) == 0 || (len(rest) == 1 && (rest[0] == "-v" || rest[0] == "--verbose")) {
+			return true
 		}
+		// show and get-url, of a remote in the config by its name: given a URL
+		// or host:path, show connects to it.
+		return (rest[0] == "show" || rest[0] == "get-url") && only(func(a string) bool {
+			return a == "-n" || a == "--push" || a == "--all" || gitRemoteName.MatchString(a)
+		})(rest[1:])
 	}
 	return false
+}
+
+// readOnlySeps is where one command of a line ends and the next begins: the
+// operators, a newline, and the brackets of a substitution or a subshell.
+var readOnlySeps = regexp.MustCompile(`&&|\|\||\$\(|[;&|\n()]`)
+
+// ReadOnly reports whether a command line only looks at the machine. The
+// brokers run such a line without a prompt (TEN-491, D4; iMessage does not use
+// it), so with exec on ask this is the one check between the model and a
+// command nobody approved (TEN-534). It reads the line as sh and as PowerShell
+// at once, and says yes only when:
+//
+//   - every command in it is a read-only word standing bare: no path before
+//     it, no VAR=value before it, no quotes in it;
+//   - a word with a rule (readOnlyWords) is given only arguments whose value
+//     is the text itself and that the rule passes;
+//   - a bracket appears only as an argument of a word that has no rule, and
+//     what it holds is read-only too (`echo $(whoami)`);
+//   - nothing in it is read differently by the two shells, or is something no
+//     read-only command needs (readOnlyText).
+//
+// Anything it cannot tell is not read-only: that costs one approval card, and
+// the opposite mistake runs a command unasked. It judges what the line asks
+// the shell to do, not what a program then does of its own accord: git runs
+// the fsmonitor, external diff and textconv programs a repository's config
+// names, and a read reaches wherever its path points (a network share).
+func ReadOnly(command string) bool {
+	// Nothing is trimmed: sh makes a space outside ASCII part of a word, and a
+	// backslash before the last newline still continues the line.
+	c := strings.ReplaceAll(command, "\r\n", "\n")
+	if !readOnlyText(c) {
+		return false
+	}
+	// One frame per open bracket. cmd: a command has begun in it. free: that
+	// command takes any argument, so a bracket may follow. closed: a bracket
+	// has closed inside it, so only blanks may follow. n: commands judged.
+	type frame struct {
+		cmd, free, closed bool
+		n                 int
+	}
+	stack := []frame{{}}
+	pos := 0
+	for _, m := range append(readOnlySeps.FindAllStringIndex(c, -1), []int{len(c), len(c)}) {
+		text, sep := c[pos:m[0]], c[m[0]:m[1]]
+		pos = m[1]
+		top := &stack[len(stack)-1]
+		if strings.Trim(text, " \t") != "" {
+			ok, free := readOnlyCommand(text)
+			if !ok || top.closed {
+				return false
+			}
+			top.cmd, top.free = true, free
+			top.n++
+		}
+		// sh reads a separator after a backslash as text; PowerShell does not.
+		if sep != "" && strings.HasSuffix(text, `\`) {
+			return false
+		}
+		switch sep {
+		case "(", "$(":
+			// In the command position a bracket runs what it prints
+			// (`$(echo rm x)`, `& (…)`); after a word with a rule it can print
+			// the option the rule forbids; glued to a word it is a call
+			// (`$f.Delete()`, `f()`).
+			if !top.cmd || !top.free || (sep == "(" && !strings.HasSuffix(text, " ") && !strings.HasSuffix(text, "\t")) {
+				return false
+			}
+			stack = append(stack, frame{})
+		case ")":
+			if len(stack) == 1 || top.n == 0 { // unbalanced; or empty, and `f ()` begins a function in sh
+				return false
+			}
+			stack = stack[:len(stack)-1]
+			stack[len(stack)-1].closed = true
+		default: // an operator, a newline or the end: the next command begins
+			*top = frame{n: top.n}
+		}
+	}
+	return len(stack) == 1 && stack[0].n > 0
+}
+
+// readOnlyText refuses what no read-only command needs and the reading above
+// cannot follow: redirection (>), script blocks and brace expansion ({ }),
+// backticks, PowerShell's static call (::), control characters (PowerShell
+// ends a statement at a lone carriage return, sh does not), and anything
+// outside ASCII but letters, marks and digits (PowerShell reads typographic
+// quotes, dashes and spaces as their ASCII twins).
+func readOnlyText(c string) bool {
+	if c == "" || strings.ContainsAny(c, ">{}`") || strings.Contains(c, "::") {
+		return false
+	}
+	for _, r := range c {
+		switch {
+		case r == '\n' || r == '\t':
+		case r < ' ' || r == 0x7f:
+			return false
+		case r > unicode.MaxASCII && !unicode.In(r, unicode.L, unicode.M, unicode.Nd):
+			return false // an invalid byte arrives here as U+FFFD, a symbol
+		}
+	}
+	return true
+}
+
+// readOnlyCommand judges one command of the line: its word must be a
+// read-only word, and its arguments must pass the word's rule. free reports a
+// word without a rule.
+func readOnlyCommand(text string) (ok, free bool) {
+	text = strings.TrimLeft(text, " \t")
+	word, rest := text, ""
+	if i := strings.IndexAny(text, " \t"); i >= 0 {
+		word, rest = text[:i], text[i:]
+	}
+	rule, known := readOnlyWords[strings.ToLower(word)]
+	args, fixed, agreed := readOnlyArgs(rest)
+	// ToLower turns two letters outside ASCII (İ, the Kelvin sign) into i and k.
+	if !known || !agreed || strings.IndexFunc(word, func(r rune) bool { return r > unicode.MaxASCII }) >= 0 {
+		return false, false
+	}
+	if rule == nil {
+		return true, true
+	}
+	return fixed && rule(args), false
+}
+
+// readOnlyArgs splits a command's arguments and returns their values, quotes
+// removed. agreed is false where sh and PowerShell would not pair the quotes
+// alike: an open quote, or a backslash before a quote. fixed is false when
+// the arguments a program receives are not, one for one, the values returned,
+// so no rule can vet them: a variable, a glob, a comment, a redirection, or
+// one of the places where the two shells split or spell an argument
+// differently (each seen on dash and on PowerShell 5.1).
+func readOnlyArgs(s string) (args []string, fixed, agreed bool) {
+	var b strings.Builder
+	fixed = true
+	quote, in := byte(0), false // the open quote; inside an argument
+	end := func() {
+		if in {
+			// PowerShell hands what follows --% to the program unparsed, %VAR% expanded.
+			fixed = fixed && b.String() != "--%"
+			args = append(args, b.String())
+		}
+		b.Reset()
+		in = false
+	}
+	for i := 0; i < len(s); i++ {
+		ch, next := s[i], byte(0)
+		if i+1 < len(s) {
+			next = s[i+1]
+		}
+		switch {
+		case quote != 0 && ch == quote:
+			// PowerShell ends the argument at the quote that began it ('x'-o is
+			// x and -o); sh goes on. Alike only when the argument ends here.
+			fixed = fixed && (next == 0 || next == ' ' || next == '\t')
+			quote = 0
+		case quote == '\'':
+			b.WriteByte(ch)
+		case quote == '"':
+			if ch == '\\' && next == '"' { // sh: a quote character; PowerShell: the closing quote
+				return nil, false, false
+			}
+			fixed = fixed && ch != '$'
+			b.WriteByte(ch)
+		case ch == '\'' || ch == '"':
+			quote, in = ch, true
+		case ch == ' ' || ch == '\t':
+			end()
+		case ch == '\\':
+			if next == '\'' || next == '"' { // sh: a quote character; PowerShell: an opening quote
+				return nil, false, false
+			}
+			// sh drops the backslash and PowerShell keeps it. That changes what
+			// the argument is when it leads (\-o) or ends it (a\ b).
+			fixed = fixed && b.Len() > 0 && next != 0 && next != ' ' && next != '\t'
+			in = true
+		default:
+			switch ch {
+			case '$', '<': // a variable; a redirection
+				fixed = false
+			case ',':
+				// Inside an argument both shells keep a comma. Beside a blank,
+				// PowerShell makes `a ,b` the arguments a and b, and sh passes
+				// the comma itself (`uniq in ,` writes a file named ",").
+				fixed = fixed && in && next != 0 && next != ' ' && next != '\t' && next != ','
+			case '*', '?', '[': // sh turns a glob into file names: an option, or two operands
+				fixed = false
+			case '#', '@': // leading: a comment; PowerShell's splat
+				fixed = fixed && in
+			case '.': // PowerShell splits -c.a into -c and .a
+				fixed = fixed && (b.Len() == 0 || b.String()[0] != '-' || strings.HasPrefix(b.String(), "--"))
+			}
+			b.WriteByte(ch)
+			in = true
+		}
+	}
+	if quote != 0 {
+		return nil, false, false
+	}
+	end()
+	return args, fixed, true
 }
 
 // destructiveTarget flags a recursive rm, chmod or chown whose target is the
