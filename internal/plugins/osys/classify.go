@@ -83,10 +83,13 @@ var segmentSplit = regexp.MustCompile("&&|\\|\\||[;&|\n`(]|\\$\\(")
 // a prompt when every command in it is one of them. The value is the word's
 // argument rule (TEN-534): nil for a word that only looks whatever it is
 // given, otherwise a function that reports whether these arguments only look.
-// Case-insensitive, so PowerShell's verbs are listed once.
-// ponytail: one table. Add a word when a model keeps asking for it, with a
-// rule if any option or operand of it, in any implementation (GNU, BSD,
-// PowerShell's alias), writes a file, changes a setting or runs a program.
+// A word is taken as written here, in lower case: sh runs HEAD, a different
+// program from head. Only the names PowerShell alone has (its cmdlets, gci)
+// are taken in any case, as PowerShell takes them.
+// ponytail: one table for every system. Add a word when a model keeps asking
+// for it, with a rule if any option or operand of it, in any implementation
+// (GNU, BSD, Git for Windows, the PowerShell cmdlet behind an alias), writes
+// anything, changes a setting, starts another program or opens a connection.
 var readOnlyWords = map[string]func(args []string) bool{
 	"ls": nil, "cat": nil, "head": nil, "tail": nil, "wc": nil, "stat": nil, "grep": nil, "egrep": nil, "fgrep": nil,
 	"which": nil, "pwd": nil, "echo": nil, "printenv": nil, "uname": nil, "whoami": nil, "id": nil, "df": nil,
@@ -96,30 +99,50 @@ var readOnlyWords = map[string]func(args []string) bool{
 	"get-item": nil, "get-date": nil, "select-string": nil, "write-output": nil,
 
 	// env runs the command it is given; VAR=value alone only prints.
-	"env": only(envAssignment.MatchString),
-	// date -s, --set and MMDDhhmm set the clock; only +FORMAT is the same everywhere.
-	"date": only(func(a string) bool { return strings.HasPrefix(a, "+") }),
-	// hostname NAME, -F and -b set the name.
-	"hostname": only(func(string) bool { return false }),
+	"env":  only(envAssignment.MatchString),
+	"date": dateLooks,
+	// hostname NAME, -F FILE and -b set the name. The options of hostnameShows
+	// print, or are an error, in every hostname of Linux, macOS and Windows.
+	"hostname": only(func(a string) bool { return hostnameShows[a] }),
 	// find acts with -delete, -exec, -fprint and their kin: only the tests and
 	// printers of findLooks, and the numbers they take (-mtime -7).
 	"find": only(func(a string) bool {
 		return !strings.HasPrefix(a, "-") || findLooks[a] || (len(a) > 1 && a[1] >= '0' && a[1] <= '9')
 	}),
-	"sort": without("o", "output", "compress-program"), // write FILE; run PROG
-	"tree": without("oR", "output"),                    // write FILE; -R writes 00Tree.html files
-	"file": without("C", "compile"),                    // write a .mgc file
-	"rg":   without("", "pre", "hostname-bin"),         // run a program
+	"sort": sortLooks,
+	// tree -o FILE writes FILE; -R writes a 00Tree.html into every directory.
+	"tree": without("oR", "output"),
+	// file -C writes a .mgc file, -p writes the file's times back, -z and -Z
+	// start the decompression programs.
+	"file": without("CpzZ", "compile", "preserve-date", "uncompress", "uncompress-noreport"),
+	// rg --pre and --hostname-bin run a program of the caller's choosing, -z
+	// the decompression programs.
+	"rg":   without("z", "pre", "hostname-bin", "search-zip"),
 	"uniq": uniqLooks,
 	"git":  gitLooks,
-	"brew": func(args []string) bool { return len(args) > 0 && brewLooks[args[0]] },
+	// brew info --github opens a browser; outdated --fetch-HEAD fetches.
+	"brew": func(args []string) bool {
+		return len(args) > 0 && brewLooks[args[0]] && without("", "github", "fetch-HEAD")(args[1:])
+	},
 }
 
 var (
 	envAssignment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 	gitRemoteName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	uniqCount     = regexp.MustCompile(`^[0-9]+$`)
 
 	brewLooks = map[string]bool{"list": true, "info": true, "--version": true, "deps": true, "outdated": true}
+
+	// dateShows are the options of date that choose what it prints, in GNU,
+	// BSD and busybox date alike (or are an error there): UTC, RFC 5322 and
+	// ISO 8601 output. -I and --iso-8601 also come with a precision attached.
+	dateShows = map[string]bool{"-u": true, "--utc": true, "--universal": true, "-R": true, "--rfc-email": true,
+		"--rfc-2822": true, "--iso-8601": true, "-I": true, "-Idate": true, "-Ihours": true, "-Iminutes": true,
+		"-Iseconds": true, "-Ins": true}
+
+	hostnameShows = map[string]bool{"-f": true, "-s": true, "-i": true, "-I": true, "-A": true, "-d": true,
+		"--fqdn": true, "--long": true, "--short": true, "--ip-address": true, "--all-ip-addresses": true,
+		"--all-fqdns": true, "--domain": true}
 
 	findLooks = map[string]bool{
 		"-name": true, "-iname": true, "-path": true, "-ipath": true, "-wholename": true, "-iwholename": true,
@@ -172,23 +195,60 @@ func without(short string, long ...string) func([]string) bool {
 	})
 }
 
-// uniqLooks is uniq's rule. `uniq IN OUT` writes OUT, so there is at most one
-// operand, and it comes last: BSD uniq reads an option after IN as OUT.
-func uniqLooks(args []string) bool {
-	for i, a := range args {
-		if a == "--" {
-			return len(args)-i-1 <= 1
+// dateLooks is date's rule. An operand is a time to set, and so are -s and
+// --set; -d sets the kernel's daylight-saving flag on some BSDs. What only
+// prints, in GNU, BSD and busybox date alike: +FORMAT, the options of
+// dateShows, and the time to print instead of now, as -r FILE (or seconds) or
+// --reference=FILE.
+func dateLooks(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case strings.HasPrefix(a, "+"), dateShows[a], strings.HasPrefix(a, "--iso-8601="),
+			strings.HasPrefix(a, "--rfc-3339="), strings.HasPrefix(a, "--reference="):
+		case a == "-r" && i+1 < len(args):
+			i++ // its value, whatever it looks like
+		default:
+			return false
 		}
-		if a == "-" || !strings.HasPrefix(a, "-") {
-			return i == len(args)-1
+	}
+	return true
+}
+
+// sortLooks is sort's rule: -o FILE and --output write FILE, -T DIR and
+// --temporary-directory choose where its temporary files go (and stay, when
+// it is stopped), --compress-program runs PROG. -Property is Sort-Object's
+// parameter, which PowerShell's sort alias takes; a sort program stops at it,
+// because no sort has an option P or p.
+func sortLooks(args []string) bool {
+	return without("oT", "output", "compress-program", "temporary-directory")(
+		slices.DeleteFunc(slices.Clone(args), func(a string) bool { return strings.EqualFold(a, "-Property") }))
+}
+
+// uniqLooks is uniq's rule. `uniq IN OUT` writes OUT, so there is at most one
+// operand, and it comes last: BSD uniq reads an option after IN as OUT. The
+// operand holds no glob, even quoted: Git for Windows' uniq expands one
+// itself, into IN and OUT. -f and -s (POSIX) take the number after them.
+func uniqLooks(args []string) bool {
+	one := func(operands []string) bool {
+		return len(operands) == 0 || (len(operands) == 1 && !strings.ContainsAny(operands[0], "*?["))
+	}
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case (a == "-f" || a == "-s") && i+1 < len(args) && uniqCount.MatchString(args[i+1]):
+			i++
+		case a == "--":
+			return one(args[i+1:])
+		case a == "-" || !strings.HasPrefix(a, "-"):
+			return one(args[i:])
 		}
 	}
 	return true
 }
 
 // gitLooks is git's rule: a subcommand that reads, without what makes it
-// write. A global option before the subcommand (`git -c k=v status`) is
-// refused with everything else.
+// write, start another program or connect. A global option before the
+// subcommand (`git -c k=v status`) is refused with everything else.
 func gitLooks(args []string) bool {
 	if len(args) == 0 {
 		return false
@@ -196,7 +256,11 @@ func gitLooks(args []string) bool {
 	rest := args[1:]
 	switch args[0] {
 	case "status", "log", "diff", "show", "rev-parse", "ls-files", "blame", "describe":
-		return without("", "output")(rest) // --output=FILE writes the diff to FILE
+		// --output=FILE writes the diff to FILE; --help starts man, or a browser
+		// on Windows; --show-signature and a %G placeholder of --format or
+		// --pretty start gpg.
+		return without("", "output", "help", "show-signature")(rest) &&
+			!slices.ContainsFunc(rest, func(a string) bool { return strings.Contains(a, "%G") })
 	case "branch":
 		option := func(a string) string { // --sort=x is looked up as --sort=
 			if i := strings.Index(a, "="); i >= 0 {
@@ -216,11 +280,13 @@ func gitLooks(args []string) bool {
 		if len(rest) == 0 || (len(rest) == 1 && (rest[0] == "-v" || rest[0] == "--verbose")) {
 			return true
 		}
-		// show and get-url, of a remote in the config by its name: given a URL
-		// or host:path, show connects to it.
-		return (rest[0] == "show" || rest[0] == "get-url") && only(func(a string) bool {
+		// get-url, and show -n, of a remote in the config by its name. Without
+		// -n, show connects to the remote (ssh, a credential helper), and given
+		// a URL or host:path it connects to that.
+		names := only(func(a string) bool {
 			return a == "-n" || a == "--push" || a == "--all" || gitRemoteName.MatchString(a)
 		})(rest[1:])
+		return names && (rest[0] == "get-url" || (rest[0] == "show" && slices.Contains(rest[1:], "-n")))
 	}
 	return false
 }
@@ -232,23 +298,48 @@ var readOnlySeps = regexp.MustCompile(`&&|\|\||\$\(|[;&|\n()]`)
 // ReadOnly reports whether a command line only looks at the machine. The
 // brokers run such a line without a prompt (TEN-491, D4; iMessage does not use
 // it), so with exec on ask this is the one check between the model and a
-// command nobody approved (TEN-534). It reads the line as sh and as PowerShell
-// at once, and says yes only when:
+// command nobody approved (TEN-534). It reads the line as sh and as Windows
+// PowerShell 5.1 at once, the two shells os_exec uses, gives the same answer
+// on every system, and says yes only when:
 //
 //   - every command in it is a read-only word standing bare: no path before
 //     it, no VAR=value before it, no quotes in it;
 //   - a word with a rule (readOnlyWords) is given only arguments whose value
-//     is the text itself and that the rule passes;
-//   - a bracket appears only as an argument of a word that has no rule, and
-//     what it holds is read-only too (`echo $(whoami)`);
+//     is the text itself, and the rule passes on them as each shell hands
+//     them to the program;
+//   - no argument is a network path (readOnlyReach), and what one command
+//     prints is no other command's argument or path: a bracket is an argument
+//     of echo and Write-Output only (`echo $(whoami)`), no cmdlet sets a
+//     variable, and the cmdlets that read a piped string as a path take no
+//     pipe;
 //   - nothing in it is read differently by the two shells, or is something no
 //     read-only command needs (readOnlyText).
 //
 // Anything it cannot tell is not read-only: that costs one approval card, and
-// the opposite mistake runs a command unasked. It judges what the line asks
-// the shell to do, not what a program then does of its own accord: git runs
-// the fsmonitor, external diff and textconv programs a repository's config
-// names, and a read reaches wherever its path points (a network share).
+// the opposite mistake runs a command unasked.
+//
+// What still runs unasked, because the line does not show it:
+//
+//   - What a program does of its own accord. git runs the programs that a
+//     repository's config, attributes and hooks name (fsmonitor, an external
+//     diff, textconv, a signature check, post-index-change), in whatever
+//     directory the model gives as workdir; it rewrites .git/index, and in a
+//     partial clone it fetches what is missing from the configured remote.
+//     brew reads the network and writes its cache. sort leaves temporary
+//     files in the system's temporary directory when it is stopped. hostname
+//     -f, id and ls -l ask the name services the machine is set up with.
+//   - Where a local path leads: a device, a pipe, a mounted or mapped network
+//     folder, a path an environment variable already holds. A host with no
+//     share (//name) stays the pattern of grep, egrep, fgrep and rg when it is
+//     their first operand.
+//   - What a read tells the model: `env`, `cat ~/.ssh/id_ed25519`.
+//   - Which program a word names. The shell finds it on PATH, so on Windows a
+//     word that is no Windows command (true, head, grep, env, uniq, file …)
+//     runs a file of that name someone put in a PATH folder, or Git for
+//     Windows' Unix tool of that name, which expands a quoted glob itself
+//     (`find . -name '-d*'` beside a file named -delete).
+//   - A command that does not end (`tail -f`), until its timeout moves it to
+//     the background.
 func ReadOnly(command string) bool {
 	// Nothing is trimmed: sh makes a space outside ASCII part of a word, and a
 	// backslash before the last newline still continues the line.
@@ -256,12 +347,13 @@ func ReadOnly(command string) bool {
 	if !readOnlyText(c) {
 		return false
 	}
-	// One frame per open bracket. cmd: a command has begun in it. free: that
-	// command takes any argument, so a bracket may follow. closed: a bracket
-	// has closed inside it, so only blanks may follow. n: commands judged.
+	// One frame per open bracket. cmd: a command has begun in it. prints: that
+	// command only prints its arguments, so a bracket may be one. closed: a
+	// bracket has closed inside it, so only blanks may follow. piped: a pipe
+	// feeds the command that comes next. n: commands judged.
 	type frame struct {
-		cmd, free, closed bool
-		n                 int
+		cmd, prints, closed, piped bool
+		n                          int
 	}
 	stack := []frame{{}}
 	pos := 0
@@ -270,11 +362,11 @@ func ReadOnly(command string) bool {
 		pos = m[1]
 		top := &stack[len(stack)-1]
 		if strings.Trim(text, " \t") != "" {
-			ok, free := readOnlyCommand(text)
+			ok, prints := readOnlyCommand(text, top.piped)
 			if !ok || top.closed {
 				return false
 			}
-			top.cmd, top.free = true, free
+			top.cmd, top.prints = true, prints
 			top.n++
 		}
 		// sh reads a separator after a backslash as text; PowerShell does not.
@@ -284,10 +376,11 @@ func ReadOnly(command string) bool {
 		switch sep {
 		case "(", "$(":
 			// In the command position a bracket runs what it prints
-			// (`$(echo rm x)`, `& (…)`); after a word with a rule it can print
-			// the option the rule forbids; glued to a word it is a call
-			// (`$f.Delete()`, `f()`).
-			if !top.cmd || !top.free || (sep == "(" && !strings.HasSuffix(text, " ") && !strings.HasSuffix(text, "\t")) {
+			// (`$(echo rm x)`, `& (…)`). As an argument, what it prints becomes
+			// an option, or a path nobody wrote in the line (a network share),
+			// of any word but the two that only print. Glued to a word it is a
+			// call (`$f.Delete()`, `f()`).
+			if !top.cmd || !top.prints || (sep == "(" && !strings.HasSuffix(text, " ") && !strings.HasSuffix(text, "\t")) {
 				return false
 			}
 			stack = append(stack, frame{})
@@ -298,7 +391,8 @@ func ReadOnly(command string) bool {
 			stack = stack[:len(stack)-1]
 			stack[len(stack)-1].closed = true
 		default: // an operator, a newline or the end: the next command begins
-			*top = frame{n: top.n}
+			// A pipe feeds the next command, also across the end of the line.
+			*top = frame{n: top.n, piped: sep == "|" || (sep == "\n" && top.piped && !top.cmd)}
 		}
 	}
 	return len(stack) == 1 && stack[0].n > 0
@@ -306,12 +400,14 @@ func ReadOnly(command string) bool {
 
 // readOnlyText refuses what no read-only command needs and the reading above
 // cannot follow: redirection (>), script blocks and brace expansion ({ }),
-// backticks, PowerShell's static call (::), control characters (PowerShell
-// ends a statement at a lone carriage return, sh does not), and anything
-// outside ASCII but letters, marks and digits (PowerShell reads typographic
-// quotes, dashes and spaces as their ASCII twins).
+// backticks, PowerShell's static call (::), bash's network paths (a
+// redirection from /dev/tcp/HOST/PORT opens a connection), control characters
+// (PowerShell ends a statement at a lone carriage return, sh does not), and
+// anything outside ASCII but letters, marks and digits (PowerShell reads
+// typographic quotes, dashes and spaces as their ASCII twins).
 func readOnlyText(c string) bool {
-	if c == "" || strings.ContainsAny(c, ">{}`") || strings.Contains(c, "::") {
+	if c == "" || strings.ContainsAny(c, ">{}`") || strings.Contains(c, "::") ||
+		strings.Contains(c, "/dev/tcp/") || strings.Contains(c, "/dev/udp/") {
 		return false
 	}
 	for _, r := range c {
@@ -326,46 +422,145 @@ func readOnlyText(c string) bool {
 	return true
 }
 
+// psWords are the words PowerShell resolves to a cmdlet, by name or by alias.
+// true marks those that take a string from a pipe as the path to read.
+var psWords = map[string]bool{
+	"get-childitem": true, "gci": true, "dir": true, "ls": true, "get-item": true,
+	"get-content": false, "cat": false, "type": false, "get-location": false, "pwd": false, "get-process": false,
+	"ps": false, "get-date": false, "select-string": false, "write-output": false, "echo": false, "sort": false,
+}
+
+// psVariables are the common parameters that make a cmdlet keep what it
+// prints, or its errors, in a variable, each with the shortest start of its
+// name that PowerShell takes for it.
+var psVariables = map[string]string{"-outvariable": "-outv", "-errorvariable": "-errorv",
+	"-warningvariable": "-warningv", "-informationvariable": "-informationv", "-pipelinevariable": "-pi"}
+
+// psVariable reports one of psVariables, by its alias or by any start of its
+// name that PowerShell takes for it, in any case, the value after a blank or
+// a colon.
+func psVariable(a string) bool {
+	p, _, _ := strings.Cut(strings.ToLower(a), ":")
+	for full, least := range psVariables {
+		if strings.HasPrefix(p, least) && strings.HasPrefix(full, p) {
+			return true
+		}
+	}
+	return p == "-ov" || p == "-ev" || p == "-wv" || p == "-iv" || p == "-pv"
+}
+
 // readOnlyCommand judges one command of the line: its word must be a
-// read-only word, and its arguments must pass the word's rule. free reports a
-// word without a rule.
-func readOnlyCommand(text string) (ok, free bool) {
+// read-only word, and its arguments must pass the word's rule. piped says a
+// pipe feeds the command. prints reports a word that only prints its
+// arguments.
+func readOnlyCommand(text string, piped bool) (ok, prints bool) {
 	text = strings.TrimLeft(text, " \t")
 	word, rest := text, ""
 	if i := strings.IndexAny(text, " \t"); i >= 0 {
 		word, rest = text[:i], text[i:]
 	}
-	rule, known := readOnlyWords[strings.ToLower(word)]
-	args, fixed, agreed := readOnlyArgs(rest)
+	// sh runs a word as it is written, so the table is matched as written. Only
+	// the names PowerShell alone has are folded: PowerShell takes them in any
+	// case, and no POSIX system has a program by such a name.
+	name := word
+	if lower := strings.ToLower(word); strings.Contains(lower, "-") || lower == "gci" {
+		name = lower
+	}
+	rule, known := readOnlyWords[name]
+	sh, ps, fixed, agreed := readOnlyArgs(rest)
 	// ToLower turns two letters outside ASCII (İ, the Kelvin sign) into i and k.
-	if !known || !agreed || strings.IndexFunc(word, func(r rune) bool { return r > unicode.MaxASCII }) >= 0 {
+	if !known || !agreed || strings.IndexFunc(word, func(r rune) bool { return r > unicode.MaxASCII }) >= 0 ||
+		readOnlyReach(name, sh) || readOnlyReach(name, ps) {
+		return false, false
+	}
+	// What one command prints must not become another's path: PowerShell hands
+	// a piped string to these cmdlets as the path to read, and a variable a
+	// cmdlet sets is an argument further on. Neither is in the line to judge
+	// (`git log --format=%x2f%x2fhost%x2fshare | dir` reads a network share).
+	if takesPipe, isCmdlet := psWords[name]; (piped && takesPipe) ||
+		(isCmdlet && (slices.ContainsFunc(sh, psVariable) || slices.ContainsFunc(ps, psVariable))) {
 		return false, false
 	}
 	if rule == nil {
-		return true, true
+		return true, name == "echo" || name == "write-output"
 	}
-	return fixed && rule(args), false
+	// The rule must pass on what each shell hands the program.
+	return fixed && rule(sh) && rule(ps), false
 }
 
-// readOnlyArgs splits a command's arguments and returns their values, quotes
-// removed. agreed is false where sh and PowerShell would not pair the quotes
-// alike: an open quote, or a backslash before a quote. fixed is false when
-// the arguments a program receives are not, one for one, the values returned,
-// so no rule can vet them: a variable, a glob, a comment, a redirection, or
-// one of the places where the two shells split or spell an argument
-// differently (each seen on dash and on PowerShell 5.1).
-func readOnlyArgs(s string) (args []string, fixed, agreed bool) {
-	var b strings.Builder
+// uncHost finds a network path in an argument, where a path can begin: at its
+// start, after an option's name (-Path:\\h, -O//h, --file=//h) and after a
+// comma or "=". The path is two or more separators (or the \??\ of the NT
+// namespace) and a host; the group is the separator after the host.
+// C:\\Users\\me, http://h/x and src//pkg are not such paths.
+var uncHost = regexp.MustCompile(`(?:^|[,=]|^-[A-Za-z-]*:?)(?:[\\/]{2,}|[\\/]\?\?[\\/])[^\\/\s]+([\\/])?`)
+
+// readOnlyReach reports an argument that takes the command to another
+// machine. A read of \\host\share (Windows also takes //host/share) opens a
+// session with that host and offers it the user's credentials, and Get-Process
+// -ComputerName asks another machine. The host alone (\\host, //host) is
+// refused too, except as the first operand of the words that search for a
+// pattern (//go:build), where only a host with a share is.
+func readOnlyReach(word string, args []string) bool {
+	pattern := word == "grep" || word == "egrep" || word == "fgrep" || word == "rg" // the next operand is the pattern
+	for _, a := range args {
+		operand := !strings.HasPrefix(a, "-")
+		for _, m := range uncHost.FindAllStringSubmatchIndex(a, -1) {
+			if m[2] >= 0 || !pattern || !operand {
+				return true
+			}
+		}
+		pattern = pattern && !operand
+		if word == "ps" || word == "get-process" {
+			// PowerShell takes any unambiguous start of a parameter's name, in
+			// any case, with the value after a colon; -c is one for -ComputerName.
+			p, _, _ := strings.Cut(strings.ToLower(a), ":")
+			if p == "-cn" || (len(p) > 1 && strings.HasPrefix("-computername", p)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// readOnlyArgs splits a command's arguments and returns them twice, quotes
+// removed: as sh hands them to a program, and as PowerShell 5.1 does. The two
+// differ where a rule can vet both: sh drops a backslash outside quotes and
+// PowerShell keeps it; PowerShell drops a comma beside a blank (`a, b` is a
+// and b) and an empty argument, and sh keeps them.
+//
+// agreed is false where the two would not pair the quotes alike: an open
+// quote, or a backslash before a quote. fixed is false when what a program
+// receives is not, one for one, these values, so no rule can vet it: a
+// variable, a glob, a comment, a redirection, or a place where a shell, or
+// the program's own reading of the command line PowerShell builds for it,
+// splits or spells an argument another way. Each was seen on dash and on
+// PowerShell 5.1 with git.exe and with Git for Windows' Unix tools.
+func readOnlyArgs(s string) (sh, ps []string, fixed, agreed bool) {
+	var a, p strings.Builder // one argument, for sh and for PowerShell
 	fixed = true
 	quote, in := byte(0), false // the open quote; inside an argument
+	commas := 0                 // commas outside quotes that end p so far
+	put := func(ch byte) {
+		a.WriteByte(ch)
+		p.WriteByte(ch)
+		commas = 0
+	}
 	end := func() {
 		if in {
-			// PowerShell hands what follows --% to the program unparsed, %VAR% expanded.
-			fixed = fixed && b.String() != "--%"
-			args = append(args, b.String())
+			v := p.String()[:p.Len()-commas]
+			// --% : PowerShell hands the rest to the program unparsed, %VAR%
+			// expanded. @x : PowerShell's splat, and a file of arguments to
+			// Git for Windows' Unix tools, quoted or not.
+			fixed = fixed && v != "--%" && !strings.HasPrefix(v, "@")
+			sh = append(sh, a.String())
+			if v != "" {
+				ps = append(ps, v)
+			}
 		}
-		b.Reset()
-		in = false
+		a.Reset()
+		p.Reset()
+		in, commas = false, 0
 	}
 	for i := 0; i < len(s); i++ {
 		ch, next := s[i], byte(0)
@@ -375,54 +570,70 @@ func readOnlyArgs(s string) (args []string, fixed, agreed bool) {
 		switch {
 		case quote != 0 && ch == quote:
 			// PowerShell ends the argument at the quote that began it ('x'-o is
-			// x and -o); sh goes on. Alike only when the argument ends here.
-			fixed = fixed && (next == 0 || next == ' ' || next == '\t')
+			// x and -o) and sh goes on: alike only when the argument ends here.
+			// And PowerShell wraps an argument with a blank in double quotes
+			// without escaping a backslash at its end, which then escapes the
+			// closing quote for the program and swallows the next argument.
+			fixed = fixed && (next == 0 || next == ' ' || next == '\t') && s[i-1] != '\\'
 			quote = 0
-		case quote == '\'':
-			b.WriteByte(ch)
-		case quote == '"':
-			if ch == '\\' && next == '"' { // sh: a quote character; PowerShell: the closing quote
-				return nil, false, false
-			}
-			fixed = fixed && ch != '$'
-			b.WriteByte(ch)
+		case quote == '"' && ch == '\\' && next == '"': // sh: a quote character; PowerShell: the closing quote
+			return nil, nil, false, false
+		case quote != 0:
+			// PowerShell passes a double quote inside single quotes on
+			// unescaped, and the program's parser drops it or splits there
+			// (git log '--out"put=x' writes x); Git for Windows' Unix tools
+			// read a single quote as a quote too. In double quotes a variable
+			// is not text.
+			fixed = fixed && ch != '\'' && ch != '"' && (ch != '$' || quote == '\'')
+			put(ch)
 		case ch == '\'' || ch == '"':
 			quote, in = ch, true
 		case ch == ' ' || ch == '\t':
 			end()
 		case ch == '\\':
 			if next == '\'' || next == '"' { // sh: a quote character; PowerShell: an opening quote
-				return nil, false, false
+				return nil, nil, false, false
 			}
 			// sh drops the backslash and PowerShell keeps it. That changes what
 			// the argument is when it leads (\-o) or ends it (a\ b).
-			fixed = fixed && b.Len() > 0 && next != 0 && next != ' ' && next != '\t'
+			fixed = fixed && a.Len() > 0 && next != 0 && next != ' ' && next != '\t'
+			if next == '\\' { // sh: one backslash
+				a.WriteByte('\\')
+				p.WriteByte('\\')
+				i++
+			}
+			p.WriteByte('\\')
+			in, commas = true, 0
+		case ch == ',':
+			// Inside an argument both shells keep a comma. Beside a blank
+			// PowerShell drops it, and two in a row it does not parse.
+			fixed = fixed && next != ','
+			a.WriteByte(ch)
+			if p.Len() > 0 {
+				p.WriteByte(ch)
+				commas++
+			}
 			in = true
 		default:
 			switch ch {
-			case '$', '<': // a variable; a redirection
+			case '$', '<', '*', '?', '[':
+				// A variable; a redirection; a glob, which sh turns into file
+				// names: an option, or two operands.
 				fixed = false
-			case ',':
-				// Inside an argument both shells keep a comma. Beside a blank,
-				// PowerShell makes `a ,b` the arguments a and b, and sh passes
-				// the comma itself (`uniq in ,` writes a file named ",").
-				fixed = fixed && in && next != 0 && next != ' ' && next != '\t' && next != ','
-			case '*', '?', '[': // sh turns a glob into file names: an option, or two operands
-				fixed = false
-			case '#', '@': // leading: a comment; PowerShell's splat
+			case '#': // leading: a comment
 				fixed = fixed && in
 			case '.': // PowerShell splits -c.a into -c and .a
-				fixed = fixed && (b.Len() == 0 || b.String()[0] != '-' || strings.HasPrefix(b.String(), "--"))
+				fixed = fixed && (a.Len() == 0 || a.String()[0] != '-' || strings.HasPrefix(a.String(), "--"))
 			}
-			b.WriteByte(ch)
+			put(ch)
 			in = true
 		}
 	}
 	if quote != 0 {
-		return nil, false, false
+		return nil, nil, false, false
 	}
 	end()
-	return args, fixed, true
+	return sh, ps, fixed, true
 }
 
 // destructiveTarget flags a recursive rm, chmod or chown whose target is the
