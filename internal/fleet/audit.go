@@ -184,10 +184,33 @@ var ErrAuditHeld = errors.New("fleet: another child process is running on this d
 // says so, which tells more than a child that will not start.
 func OpenAudit(dir string, oslog func(line string)) (*AuditLog, error) {
 	l := &AuditLog{dir: AuditDir(dir), oslog: oslog, now: time.Now, max: maxAuditFile}
-	if err := l.open(); errors.Is(err, ErrAuditHeld) {
-		return nil, err
+	// AuditHeld, asked by a `tenant child status` at this very moment, holds
+	// the lock for an instant; a child is not kept from starting by that.
+	for try := 0; ; try++ {
+		err := l.open()
+		if !errors.Is(err, ErrAuditHeld) {
+			return l, nil
+		}
+		if try == 5 {
+			return nil, err
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	return l, nil
+}
+
+// AuditHeld reports whether a process holds the audit log of the child in
+// dir for writing: whether a child is running there. It creates nothing.
+func AuditHeld(dir string) bool {
+	path := filepath.Join(AuditDir(dir), auditLockName)
+	if !fileExists(path) {
+		return false
+	}
+	lock, err := datalock.ExclusiveFile(path)
+	if err != nil {
+		return errors.Is(err, datalock.ErrBusy)
+	}
+	_ = lock.Release()
+	return false
 }
 
 // Ready reports whether a record can be written now, opening the log if it

@@ -237,6 +237,17 @@ func cliCommands() []*cliCommand {
 				{Syntax: "peer list | show | rename | remove | revoke | rotate", Desc: "manage paired peers"},
 				{Syntax: "peer share …", Desc: "what each peer may see"},
 			}},
+		{Names: []string{"child"}, Section: "connect", Run: cmdChild, Sub: []string{"install", "status", "pause", "resume", "audit", "uninstall", "run"},
+			Flags:   []string{"--system", "--ceiling", "--sandbox", "--dir"},
+			Summary: "run this machine as a child of a fleet: its tools served to the master that enrolled it",
+			Rows: []cmdreg.Row{
+				{Syntax: "child install [--system] [--ceiling full|no-exec|read-only]", Desc: "enroll this machine with the code from `tenant fleet enroll` (read from standard input or $TENANT_ENROLL_CODE, never an argument), show the six digits to type on the master, and install the service that connects on every boot; --system: as root or SYSTEM"},
+				{Syntax: "child status", Desc: "where this machine stands with its master: connected, waiting for confirmation (with the six digits), paused, rejected, offline; exit 3 unless connected"},
+				{Syntax: "child pause | resume", Desc: "stop serving the master at once (running calls and background commands end), until resume"},
+				{Syntax: "child audit", Desc: "check the chain of this machine's audit log of the master's calls"},
+				{Syntax: "child uninstall", Desc: "remove the service and this machine's fleet key; the audit log stays"},
+				{Syntax: "child run", Desc: "what the installed service runs: hold the link from this terminal"},
+			}},
 		{Names: []string{"mcp-memory"}, Section: "connect", Run: cmdMCPMemory,
 			Summary: "serve Tenant's memory over MCP (stdio) to another client"},
 

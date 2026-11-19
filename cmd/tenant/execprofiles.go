@@ -463,9 +463,20 @@ func osExecConfig(cfgDir, dataDir string, confirm confirmFunc) osys.Config {
 // timeout or the turn. A confining backend reaps what it started, so there
 // the answer is ErrNoBackground and the runner's kill-at-timeout stands.
 func sandboxStarter(cfgDir, dataDir string) func(ctx context.Context, command string, log io.Writer) (osys.Proc, error) {
-	return func(ctx context.Context, command string, log io.Writer) (osys.Proc, error) {
+	return profileStarter(func(ctx context.Context) (execProfile, string, error) {
 		surface := execSurfaceFrom(ctx)
-		p := resolveExecProfile(surface, cfgDir, dataDir, "")
+		return resolveExecProfile(surface, cfgDir, dataDir, ""), surface, nil
+	})
+}
+
+// profileStarter is the starter for whatever profile and surface resolve
+// names for the call in ctx.
+func profileStarter(resolve func(ctx context.Context) (execProfile, string, error)) func(ctx context.Context, command string, log io.Writer) (osys.Proc, error) {
+	return func(ctx context.Context, command string, log io.Writer) (osys.Proc, error) {
+		p, surface, err := resolve(ctx)
+		if err != nil {
+			return nil, err
+		}
 		be, err := profileBackend(ctx, p, surface)
 		if err != nil || be.Isolation() != sandbox.IsolationNone {
 			return nil, osys.ErrNoBackground
@@ -669,6 +680,13 @@ func credentialStoreRoots() []string {
 	if err != nil || home == "" {
 		return nil
 	}
+	return credentialStoresIn(home, os.Getenv("APPDATA"), os.Getenv("LOCALAPPDATA"))
+}
+
+// credentialStoresIn lists the credential stores of the account whose home
+// folder is home. roaming and local are its two AppData folders on Windows;
+// an empty one adds nothing.
+func credentialStoresIn(home, roaming, local string) []string {
 	rel := []string{".ssh", ".aws", ".gnupg", ".netrc", ".git-credentials", ".config/gh", ".config/gcloud",
 		".azure", ".kube", ".docker", ".npmrc", ".pypirc",
 		// Browser profiles: session cookies and saved logins (red-team #8).
@@ -682,15 +700,15 @@ func credentialStoreRoots() []string {
 		out = append(out, filepath.Join(home, filepath.FromSlash(r)))
 	}
 	if runtime.GOOS == "windows" {
-		for _, env := range []string{"APPDATA", "LOCALAPPDATA"} {
-			if dir := os.Getenv(env); dir != "" {
+		for _, dir := range []string{roaming, local} {
+			if dir != "" {
 				out = append(out, filepath.Join(dir, "Microsoft", "Credentials"))
 			}
 		}
-		if dir := os.Getenv("APPDATA"); dir != "" {
+		if dir := roaming; dir != "" {
 			out = append(out, filepath.Join(dir, "gcloud"), filepath.Join(dir, "Mozilla", "Firefox"))
 		}
-		if dir := os.Getenv("LOCALAPPDATA"); dir != "" {
+		if dir := local; dir != "" {
 			out = append(out,
 				filepath.Join(dir, "Google", "Chrome", "User Data"),
 				filepath.Join(dir, "Microsoft", "Edge", "User Data"),

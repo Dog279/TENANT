@@ -267,6 +267,9 @@ func fileToolGuards(cfgDir, dataDir string, pf *pluginFlags, lc *launchConfig) (
 		}
 		// The mcp dir as a whole also covers caches created after this list.
 		add(&secret, launchConfigPath(cfgDir), mcpCacheDir(cfgDir))
+		// A fleet child on this machine (TEN-531): its key, its limits, its
+		// pause mark and its audit log, this account's and the machine's.
+		add(&secret, filepath.Join(cfgDir, "child"), childSystemDir())
 	}
 	// Every file on the authoritative secret list, config and data dirs both
 	// (TEN-337). A listing error still leaves every other entry.
