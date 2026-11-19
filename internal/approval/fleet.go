@@ -454,7 +454,7 @@ type Fleet struct {
 	// only what differs from them as an edit.
 	synced      map[string]string
 	syncedRules string
-	persist     func()
+	persist     func(snapshot func() (schemes map[string]json.RawMessage, rules json.RawMessage))
 }
 
 // machine is one entry of "fleet_schemes".
@@ -481,13 +481,17 @@ func NewFleet(categorize func(action string) string) *Fleet {
 	return f
 }
 
-// SetPersist installs the hook that is told when a scheme or the fleet's
-// rules changed (nil: nothing is saved). The hook saves what Snapshot
-// returns when it runs, and takes the snapshot and writes the file in one
-// hold of the lock under which that file is read back into Load. Then the
-// file never gets an older state after a newer one, and Load never mistakes a
-// change this process has not written yet for a hand edit that undoes it.
-func (f *Fleet) SetPersist(persist func()) {
+// SetPersist installs the hook that saves the fleet whenever a scheme or the
+// fleet's rules change (nil: nothing is saved). The hook is handed snapshot,
+// which returns the values of the settings file's "fleet_schemes" and
+// "fleet_rules" as they are when it is called: an entry that held no scheme
+// goes back as it was written, for the operator to fix. The hook must call
+// snapshot and write the file in one hold of the lock under which that file
+// is read back into Load, and write what snapshot returned: it is what Load
+// compares the file with next. Then the file never gets an older state after
+// a newer one, and Load never mistakes a change this process has not written
+// yet for a hand edit that undoes it.
+func (f *Fleet) SetPersist(persist func(snapshot func() (schemes map[string]json.RawMessage, rules json.RawMessage))) {
 	f.mu.Lock()
 	f.persist = persist
 	f.mu.Unlock()
@@ -504,15 +508,15 @@ func (f *Fleet) save() {
 	persist := f.persist
 	f.mu.Unlock()
 	if persist != nil {
-		persist()
+		persist(f.snapshot)
 	}
 }
 
-// Snapshot is the fleet as the settings file keeps it: the values of
-// "fleet_schemes" and "fleet_rules". An entry that held no scheme goes back
-// as it was written, for the operator to fix. The caller writes what it
-// returns: it is what Load compares the file with next (see SetPersist).
-func (f *Fleet) Snapshot() (schemes map[string]json.RawMessage, rules json.RawMessage) {
+// snapshot is the fleet as the settings file keeps it, for the persist hook
+// alone (SetPersist): it also notes what it returns as the file's next
+// content, so a caller that did not write it would make Load take the file
+// for an edit.
+func (f *Fleet) snapshot() (schemes map[string]json.RawMessage, rules json.RawMessage) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	schemes = make(map[string]json.RawMessage, len(f.machines))

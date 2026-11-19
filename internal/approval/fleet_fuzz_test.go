@@ -289,7 +289,7 @@ func FuzzFleetSchemes(f *testing.F) {
 			t.Fatalf("the same file again: %d change(s), problems %v", n, p)
 		}
 		local := fleet.For(LocalOrigin(host), Machine{ID: id})
-		schemes, savedRules := fleet.Snapshot()
+		schemes, savedRules := fleet.snapshot()
 
 		s, err := fleet.Scheme(id)
 		if reachable := local.Reach() == nil; reachable != (err == nil) {

@@ -947,6 +947,15 @@ func TestFleet_CancelDeniesAndRemovesTheCard(t *testing.T) {
 // decides by itself is not counted, and another machine is not held back.
 func TestFleet_PromptsAreRateLimited(t *testing.T) {
 	r := newFleetRig(t, "aaaa", "bbbb")
+	// No prompt is given back while this runs, however slow the machine: the
+	// allowance's clock is put ahead of the test's.
+	for _, id := range []string{"aaaa", "bbbb"} {
+		b, err := r.fleet.Child(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.limit.last = time.Now().Add(time.Hour)
+	}
 	r.answer = control.ApproveOnce
 	for i := range askBurst {
 		if ok, n := r.confirm(r.attended(), "aaaa", "os_exec", "uptime"); !ok || n != 1 {
@@ -1049,7 +1058,10 @@ func TestFleet_LoadAndSave(t *testing.T) {
 	var schemes map[string]json.RawMessage
 	var rules json.RawMessage
 	saves := 0
-	r.fleet.SetPersist(func() { schemes, rules = r.fleet.Snapshot(); saves++ })
+	r.fleet.SetPersist(func(snapshot func() (map[string]json.RawMessage, json.RawMessage)) {
+		schemes, rules = snapshot()
+		saves++
+	})
 
 	// A file from before the fleet: nothing to load, nothing wrong, nothing saved.
 	if n, problems := r.fleet.Load(nil, nil); n != 0 || len(problems) != 0 || saves != 0 {
@@ -1197,7 +1209,7 @@ func TestFleet_MalformedEntriesFailClosed(t *testing.T) {
 		t.Run(what, func(t *testing.T) {
 			r := newFleetRig(t)
 			saved := map[string]json.RawMessage{}
-			r.fleet.SetPersist(func() { saved, _ = r.fleet.Snapshot() })
+			r.fleet.SetPersist(func(snapshot func() (map[string]json.RawMessage, json.RawMessage)) { saved, _ = snapshot() })
 			// aaaa was fine and allowed everything; then its entry was edited badly.
 			r.fleet.Load(raws("aaaa", `{"permissions":{"exec":"allow","write":"allow"}}`, "good", `{"permissions":{"exec":"allow"}}`), nil)
 			n, problems := r.fleet.Load(raws("aaaa", raw, "good", `{"permissions":{"exec":"allow"}}`), nil)
@@ -1264,7 +1276,7 @@ func TestFleet_MalformedEntriesFailClosed(t *testing.T) {
 		t.Run("fleet rules: "+what, func(t *testing.T) {
 			r := newFleetRig(t)
 			var saved json.RawMessage
-			r.fleet.SetPersist(func() { _, saved = r.fleet.Snapshot() })
+			r.fleet.SetPersist(func(snapshot func() (map[string]json.RawMessage, json.RawMessage)) { _, saved = snapshot() })
 			r.fleet.Load(raws("aaaa", `{"permissions":{"exec":"allow"}}`), json.RawMessage(`{"os_exec(df *)":"allow"}`))
 			n, problems := r.fleet.Load(raws("aaaa", `{"permissions":{"exec":"allow"}}`), json.RawMessage(raw))
 			if n != 1 || len(problems) != 1 || !strings.Contains(problems[0], "fleet_rules") {

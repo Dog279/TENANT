@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"log/slog"
 	"sort"
 	"sync"
@@ -58,10 +59,10 @@ func loadFleetSettings(stg *settings, mu *sync.Mutex, cfgDir, agentID string, te
 	for _, p := range problems {
 		tell("permissions: " + p)
 	}
-	defaultFleet.SetPersist(func() {
+	defaultFleet.SetPersist(func(snapshot func() (map[string]json.RawMessage, json.RawMessage)) {
 		mu.Lock()
 		defer mu.Unlock()
-		stg.FleetSchemes, stg.FleetRules = defaultFleet.Snapshot()
+		stg.FleetSchemes, stg.FleetRules = snapshot()
 		saveSettingsOrTell(stg, cfgDir, agentID, tell)
 	})
 }
