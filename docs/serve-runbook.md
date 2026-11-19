@@ -289,6 +289,18 @@ Not stopped on Windows, and open in this release:
   that handle out of the starter. A shell that waits for `tenant serve` is such a starter.
 - **The first instant.** A program that is already running can open Tenant between its start
   and the controls, and keeps what it opened.
+- **A program already running when Tenant starts.** The Windows controls refuse a program that
+  starts after Tenant has finished starting. A program already running when Tenant starts (and
+  so one that ends Tenant and waits for it to be started again) can still get in, through the
+  instant before the controls or through the full-access handle the console host holds until
+  Tenant has joined its console again, and what it takes then keeps working; closing that takes
+  Tenant being started already closed, which this version does not do.
+- **The error-reporting exclusion.** A program of the same user can make the Windows Error
+  Reporting exclusion fail at start (delete the value and deny writes to the key), so that
+  Tenant asks at a terminal whether to go on without it or, as a hidden serve, refuses to start.
+- **A thread changed in the first instant.** If a thread's access list was changed before the
+  controls applied so that Tenant may not set it, `windows.thread-dacl` is reported off ("its
+  access list is not the restricted one, …") and serve and the TUI ask, as for any missing control.
 
 What an operator meets:
 

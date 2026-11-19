@@ -44,6 +44,15 @@ Releases page.
     running as you can copy that handle out of the starter (a shell that waits for `tenant
     serve` is one such starter). And a program that is already running can open Tenant in the
     instant between its start and these controls.
+
+    Put plainly: the Windows controls refuse a program that starts after Tenant has finished
+    starting. A program already running when Tenant starts (and so one that ends Tenant and
+    waits for it to be started again) can still get in, through the instant before the controls
+    or through the full-access handle the console host holds until Tenant has joined its console
+    again, and what it takes then keeps working; closing that takes Tenant being started already
+    closed, which this version does not do. A program running as you can also make the Windows
+    Error Reporting exclusion fail at start (delete the value and deny writes to the key), so that
+    Tenant asks at a terminal whether to go on without it or, as a hidden serve, refuses to start.
   - **macOS:** Tenant denies a later debugger attach and turns core files off. This was compiled
     and not yet run on a Mac, and what the call stops on its own is not measured, so doctor
     reports it as "attach denied, not verified". The stronger control is the hardened-runtime
