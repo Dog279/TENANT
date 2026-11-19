@@ -391,22 +391,28 @@ func TestFleetCommandRefusals(t *testing.T) {
 	}
 }
 
+// fleetHostile is what a machine that has been taken over might call itself,
+// its system or its version, and what a link might be said to have ended on.
+var fleetHostile = []string{
+	"\x1b[2J\x1b[H\x1b]0;owned\x07",                                     // clear the screen, retitle the window
+	"root\r  state       confirmed",                                     // overwrite the line
+	"linux\n  ceiling   \"read-only\"\n  id          m0000000000000000", // add lines of its own
+	"web1\x00\x08\x7f",                                                  // another machine's name, and what erases
+	"rооt",                                                              // Cyrillic o, twice
+	"a\u202eb\u200bc\ufeff",                                             // reorder and hide
+	`"quoted" \ and back`,                                               // close the quotes
+	strings.Repeat("A", 4000),                                           // push the rest out of view
+	"\xff\xfe not UTF-8",
+	"Reported by the machine (its own words; the master has not checked them):",            // the screen's own heading
+	`<script>alert(1)</script>"><img src=x onerror=alert(1)>`,                              // markup, for a screen that is a page
+	`</td></tr></table><form method="POST" action="/fleet/confirm">&amp;&#34;`,             // close the page's table, start a form
+	"Reported by the machine: its own words, in quotes. This Tenant has not checked them.", // the page's own footnote
+}
+
 // What a machine says about itself is shown as its own words, in quotes it
 // cannot close, and can neither draw on the screen nor pass for a line of it.
 func TestFleetScreensEscapeWhatAMachineSays(t *testing.T) {
-	hostile := []string{
-		"\x1b[2J\x1b[H\x1b]0;owned\x07",                                     // clear the screen, retitle the window
-		"root\r  state       confirmed",                                     // overwrite the line
-		"linux\n  ceiling   \"read-only\"\n  id          m0000000000000000", // add lines of its own
-		"web1\x00\x08\x7f",                                                  // another machine's name, and what erases
-		"rооt",                                                              // Cyrillic o, twice
-		"a\u202eb\u200bc\ufeff",                                             // reorder and hide
-		`"quoted" \ and back`,                                               // close the quotes
-		strings.Repeat("A", 4000),                                           // push the rest out of view
-		"\xff\xfe not UTF-8",
-		"Reported by the machine (its own words; the master has not checked them):", // the screen's own heading
-	}
-	for _, evil := range hostile {
+	for _, evil := range fleetHostile {
 		m := fleet.Machine{ID: "m0123456789abcdef", Name: evil, Fingerprint: strings.Repeat("ab", 32), State: fleet.StatePending,
 			Reported: fleet.Reported{OS: evil, User: evil, Version: evil, Sandbox: evil, Ceiling: evil}, EnrolledAt: time.Now()}
 		clean := fleet.Machine{ID: m.ID, Name: "web1", Fingerprint: m.Fingerprint, State: fleet.StatePending,
