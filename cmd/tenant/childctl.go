@@ -43,6 +43,7 @@ import (
 	"tenant/internal/fsperm"
 	"tenant/internal/memory/soul"
 	"tenant/internal/sandbox"
+	"tenant/internal/selfupdate"
 	"tenant/internal/version"
 )
 
@@ -75,6 +76,11 @@ func cmdChild(ctx context.Context, args []string) error {
 	ceiling := fs.String("ceiling", string(fleet.CeilingFull), "install: what this machine lets its master do: full, no-exec or read-only")
 	sandboxName := fs.String("sandbox", "host", "install: the sandbox backend this machine runs commands through")
 	hidden := fs.Bool("hidden", false, "run: Windows: hide the console window (the logon task passes it)")
+	// An update's own (childupdate.go): the new version's trial run, and on
+	// Windows the child an older process keeps. Both end when their standard
+	// input closes.
+	trial := fs.Bool("trial", false, "run: the trial run of an update (started by the child itself)")
+	kept := fs.Bool("kept", false, "run: kept by an older child process after an update (started by the child itself)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -99,7 +105,7 @@ func cmdChild(ctx context.Context, args []string) error {
 		if *hidden {
 			hideConsoleWindow()
 		}
-		return childRun(ctx, dir, newLogger())
+		return childRun(ctx, dir, newLogger(), childRunOpts{trial: *trial, kept: *kept})
 	case "status":
 		return childStatus(ctx, os.Stdout, dir)
 	case "pause", "resume":
@@ -287,17 +293,108 @@ func childAccount(system bool) string {
 
 // --- run ---
 
+// childRunOpts are the two ways an update starts a child itself
+// (childupdate.go). Both read standard input and stop when it closes.
+type childRunOpts struct {
+	trial bool // the new version's trial run: it applies no update and settles none
+	kept  bool // kept by an older process (Windows): it restarts by exiting with childRestartCode
+}
+
 // childRun is what the installed service runs: it holds the link to the
 // master, serving this machine's tools behind the gate, until it is stopped
 // or the master revokes the machine. While the pause mark is there it holds
-// no link; the mark is looked for once a second.
-func childRun(ctx context.Context, dir string, log *slog.Logger) error {
+// no link; the mark is looked for once a second. An update the master sends
+// is applied between two links (childApply), and this process then gives
+// way to the new version (childReplace).
+func childRun(ctx context.Context, dir string, log *slog.Logger, o childRunOpts) error {
 	ctx, stopSignals := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
+	if o.trial || o.kept {
+		var stop context.CancelFunc
+		ctx, stop = context.WithCancel(ctx)
+		defer stop()
+		go func() { // the process that started this one closed its end, or died
+			_, _ = io.Copy(io.Discard, os.Stdin)
+			stop()
+		}()
+	}
 	if !exists(fleet.ChildPath(dir)) {
 		return fmt.Errorf("no child is enrolled in %s (tenant child install)", dir)
 	}
+	exe, err := os.Executable()
+	if err == nil {
+		exe, err = resolveExe(exe)
+	}
+	if err != nil {
+		return err
+	}
+	var (
+		pending = &childPending{dir: dir, log: log, confirmed: make(chan struct{})}
+		hello   = trialHello(dir)
+		upd     *childUpdater
+	)
+	if !o.trial {
+		pending = settleChildUpdate(dir, exe, log)
+		hello, upd = pending.hello, newChildUpdater(dir, exe, log)
+	}
+	for {
+		serveCtx, stopServing := context.WithCancel(ctx)
+		expired := make(chan struct{})
+		if pending.confirm {
+			// The new version on its first run: the master's hello by the
+			// deadline, or the old version back.
+			go func() {
+				t := time.NewTimer(max(0, time.Until(pending.st.Deadline)))
+				defer t.Stop()
+				select {
+				case <-t.C:
+					if pending.expire() {
+						close(expired)
+						stopServing()
+					}
+				case <-pending.confirmed:
+				case <-serveCtx.Done():
+				}
+			}()
+		}
+		staged, err := childServe(serveCtx, dir, log, hello, upd)
+		stopServing()
+		select {
+		case <-expired:
+			if err := pending.rollBack(exe); err != nil {
+				log.Error("fleet child: the new version did not reach the master, and the old one could not be put back", "err", err)
+				return err
+			}
+			return childReplace(ctx, exe, dir, o.kept, log)
+		default:
+		}
+		if staged == nil || ctx.Err() != nil {
+			return err
+		}
+		if !childApply(ctx, dir, exe, *staged, log) {
+			upd.reset()
+			continue // rolled back: the link again, on this version
+		}
+		err = childReplace(ctx, exe, dir, o.kept, log)
+		if !errors.Is(err, errNotReplaced) {
+			return err
+		}
+		// Not replaced, and still this process: the old binary back, and on.
+		st, _, _ := fleet.ReadChildUpdate(dir)
+		if rerr := selfupdate.Rollback(exe); rerr != nil {
+			return fmt.Errorf("%w; and the old binary could not be put back: %v", err, rerr)
+		}
+		rolledBack(dir, st, "the new version could not be started in this process's place: "+err.Error(), log)
+		upd.reset()
+	}
+}
 
+// childServe holds the link, with this machine's tools behind the gate and
+// its audit log open, until ctx ends, the master revokes the machine, or an
+// update arrives whole and checked: then it gives up the link, the tools and
+// the audit log, and returns the update for childRun to apply. upd is nil in
+// a trial, which takes no update.
+func childServe(ctx context.Context, dir string, log *slog.Logger, hello func() *fleet.UpdateReport, upd *childUpdater) (*childStaged, error) {
 	var oslog func(string)
 	if write, done, err := openChildOSLog(); err != nil {
 		log.Warn("fleet child: the system log is not available; the audit log is kept in the child's own file only", "err", err)
@@ -314,7 +411,7 @@ func childRun(ctx context.Context, dir string, log *slog.Logger) error {
 	}
 	audit, err := fleet.OpenAudit(dir, oslog)
 	if err != nil {
-		return err // another child runs on this directory
+		return nil, err // another child runs on this directory
 	}
 	defer audit.Close()
 	if err := audit.Ready(); err != nil {
@@ -330,6 +427,11 @@ func childRun(ctx context.Context, dir string, log *slog.Logger) error {
 	mux, stopTools := buildChildMux(ctx, dir, gate.Confirm, gate.Current, log)
 	defer mux.Close()
 	who := childAccount(false)
+	cfg := fleet.ClientConfig{Dir: dir, Tools: gate.Tools(mux), Version: version.Version, User: who, Hello: hello, Log: log}
+	var ready chan childStaged
+	if upd != nil {
+		cfg.Update, ready = upd.piece, upd.ready
+	}
 
 	var told string
 	for {
@@ -339,10 +441,10 @@ func childRun(ctx context.Context, dir string, log *slog.Logger) error {
 				log.Info("fleet child: paused on this machine; holding no link until `tenant child resume`")
 			}
 			if !sleepCtx(ctx, childPoll) {
-				return nil
+				return nil, nil
 			}
 		}
-		client, err := fleet.NewClient(fleet.ClientConfig{Dir: dir, Tools: gate.Tools(mux), Version: version.Version, User: who, Log: log})
+		client, err := fleet.NewClient(cfg)
 		if err != nil {
 			// A child.json that does not load, or a key that is gone. The child
 			// stays up and serves nothing, and takes the file up again when the
@@ -352,7 +454,7 @@ func childRun(ctx context.Context, dir string, log *slog.Logger) error {
 				log.Error("fleet child: no link can be held, and nothing is served, until this is put right", "err", err)
 			}
 			if !sleepCtx(ctx, 5*childPoll) {
-				return nil
+				return nil, nil
 			}
 			continue
 		}
@@ -365,14 +467,33 @@ func childRun(ctx context.Context, dir string, log *slog.Logger) error {
 				}
 			}
 		}()
+		var staged *childStaged
+		got := make(chan childStaged, 1)
+		go func() { // an update, whole and checked: the link goes once the master has its answer
+			select {
+			case s := <-ready: // nil in a trial: never
+				got <- s
+				sleepCtx(linkCtx, time.Second)
+				drop()
+			case <-linkCtx.Done():
+			}
+		}()
 		err = client.Run(linkCtx) // returns once the calls that were running have stopped
 		drop()
+		select {
+		case s := <-got:
+			staged = &s
+		default:
+		}
 		switch {
+		case staged != nil:
+			stopTools() // the background commands and the browser end at the restart
+			return staged, nil
 		case ctx.Err() != nil:
-			return nil
+			return nil, nil
 		case errors.Is(err, fleet.ErrRevoked):
 			log.Warn("fleet child: the master revoked this machine; the child has stopped and will not connect with this key again")
-			return nil
+			return nil, nil
 		}
 		stopTools() // paused: the background commands and the browser end with the link
 	}
@@ -419,6 +540,9 @@ func childStatus(ctx context.Context, out io.Writer, dir string) error {
 	}
 	state, connected := childStateLine(dir, child)
 	fmt.Fprintf(out, "state:    %s\n", state)
+	if line := childUpdateLine(dir); line != "" {
+		fmt.Fprintf(out, "update:   %s\n", line)
+	}
 	if !connected {
 		return exitError{code: 3}
 	}
@@ -463,6 +587,34 @@ func childStateLine(dir string, child fleet.Child) (string, bool) {
 			"to use the machine again, `tenant child uninstall` and enroll it anew", false
 	}
 	return "offline since " + since + ", trying again: " + firstNonEmpty(st.Detail, "the master could not be reached"), false
+}
+
+// childUpdateLine is the last update the master sent, in words: one in
+// progress, or what became of it. "" when there was none.
+func childUpdateLine(dir string) string {
+	st, ok, err := fleet.ReadChildUpdate(dir)
+	switch {
+	case err != nil:
+		return "its record cannot be read: " + err.Error()
+	case !ok:
+		return ""
+	}
+	at := st.At.Local().Format("2006-01-02 15:04:05")
+	switch st.State {
+	case fleet.UpdateDone:
+		return fmt.Sprintf("updated from %s to %s at %s", st.From, st.To, at)
+	case fleet.UpdateRolledBack:
+		return fmt.Sprintf("the update from %s to %s was rolled back at %s: %s", st.From, st.To, at, st.Reason)
+	}
+	line := fmt.Sprintf("in the middle of an update from %s to %s, since %s", st.From, st.To, at)
+	if st.Step == fleet.StepCommit {
+		line += "; the new version is in place, and goes back to " + st.From + " if it has not reached the master by " +
+			st.Deadline.Local().Format("15:04:05")
+	}
+	if !fleet.AuditHeld(dir) {
+		line += " (no child process is running: the next start finishes or undoes it)"
+	}
+	return line
 }
 
 // --- pause, resume, audit, uninstall ---
@@ -537,7 +689,7 @@ func childUninstall(ctx context.Context, out io.Writer, dir string) error {
 		name = " " + child.Name
 	}
 	for _, p := range []string{fleet.ChildPath(dir), fleet.ChildPath(dir) + ".lock", fleet.ChildIdentityPath(dir),
-		fleet.ChildStatusPath(dir), fleet.PausedPath(dir)} {
+		fleet.ChildStatusPath(dir), fleet.PausedPath(dir), fleet.ChildUpdatePath(dir)} {
 		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}

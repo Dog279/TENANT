@@ -248,7 +248,7 @@ func startChild(t *testing.T, dir string) (stop func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- childRun(ctx, dir, quietLog) }()
+	go func() { done <- childRun(ctx, dir, quietLog, childRunOpts{}) }()
 	var once sync.Once
 	stop = func() {
 		once.Do(func() {
@@ -1214,10 +1214,10 @@ func TestChildRunsOncePerDirectory(t *testing.T) {
 			t.Fatal("the running child never took its directory")
 		}
 	}
-	if err := childRun(context.Background(), dir, quietLog); !errors.Is(err, fleet.ErrAuditHeld) {
+	if err := childRun(context.Background(), dir, quietLog, childRunOpts{}); !errors.Is(err, fleet.ErrAuditHeld) {
 		t.Errorf("a second child on the same directory: %v", err)
 	}
-	if err := childRun(context.Background(), filepath.Join(t.TempDir(), "nothing"), quietLog); err == nil || !strings.Contains(err.Error(), "no child is enrolled") {
+	if err := childRun(context.Background(), filepath.Join(t.TempDir(), "nothing"), quietLog, childRunOpts{}); err == nil || !strings.Contains(err.Error(), "no child is enrolled") {
 		t.Errorf("a child with no child.json: %v", err)
 	}
 }
