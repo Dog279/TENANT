@@ -101,6 +101,42 @@ func (k *Key) ID() string { return k.id }
 // and written nowhere.
 func (k *Key) recipient() *age.X25519Recipient { return k.to }
 
+// Seal encrypts data to this fleet key and to the recovery recipient, the
+// two a snapshot is encrypted to, without making the public half known: for
+// what the master keeps beside its machines' memory that is as private as
+// that memory (the forgets a rebuilt shadow must have applied again).
+func (k *Key) Seal(data []byte, recovery string) ([]byte, error) {
+	rec, err := age.ParseX25519Recipient(recovery)
+	if err != nil {
+		return nil, fmt.Errorf("shadow: recovery recipient: %w", err)
+	}
+	var b bytes.Buffer
+	w, err := age.Encrypt(&b, k.to, rec)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := w.Write(data); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return b.Bytes(), nil
+}
+
+// Unseal decrypts what Seal made, reading at most limit bytes of it.
+func (k *Key) Unseal(blob []byte, limit int64) ([]byte, error) {
+	r, err := age.Decrypt(bytes.NewReader(blob), k)
+	if err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err == nil && int64(len(data)) > limit {
+		err = fmt.Errorf("shadow: more than %d bytes", limit)
+	}
+	return data, err
+}
+
 // Locked reports whether the key's memory is locked into RAM, and if not,
 // why not, as secrets.LockedBuffer.Locked does.
 func (k *Key) Locked() (bool, string) { return k.buf.Locked() }
