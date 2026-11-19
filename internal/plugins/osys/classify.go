@@ -54,7 +54,9 @@ var dangerPatterns = []dangerPattern{
 	// not this; a path or .exe before the name is.
 	// TEN-531: the same for the fleet child a machine runs: `tenant child
 	// pause`, `resume` and `uninstall` are the operator's on that machine.
-	{regexp.MustCompile(`(?i)^(\S*[\\/])?tenant(\.exe)?\s+(service|update|child)\b`), "tenant service/update/child (changes how Tenant itself runs)"},
+	// And for the master's `tenant fleet …`, which sets what the agent may
+	// do on every machine of the fleet (permissions, relay, revoke, enroll).
+	{regexp.MustCompile(`(?i)^(\S*[\\/])?tenant(\.exe)?\s+(service|update|child|fleet)\b`), "tenant service/update/child/fleet (changes how Tenant itself runs, or what it may do on its fleet)"},
 }
 
 // cmdStart anchors a command word at the start of a command: the string's

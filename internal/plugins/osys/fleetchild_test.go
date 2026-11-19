@@ -30,6 +30,35 @@ func TestClassifyTenantChild(t *testing.T) {
 	}
 }
 
+// TEN-531: `tenant fleet …` on a master changes which machines it owns and
+// what the agent may do on them (permissions, relay, revoke, enroll), so an
+// agent with host exec on allow does not run it unasked; an ordinary mention
+// of the words is not that. The pattern matches at the start of a command
+// only, as it does for `tenant service`.
+func TestClassifyTenantFleet(t *testing.T) {
+	for _, tc := range []struct {
+		cmd       string
+		dangerous bool
+	}{
+		{"tenant fleet permissions web1 set exec allow", true},
+		{"tenant fleet relay discord on", true},
+		{"tenant fleet revoke web1 --delete-scheme", true},
+		{"tenant fleet enroll web2", true},
+		{"tenant fleet init --listen 0.0.0.0:9777", true},
+		{"tenant fleet list", true},
+		{`C:\Tenant\tenant.exe fleet permissions --defaults add "os_exec(*)" allow`, true},
+		{"./tenant fleet confirm web1", true},
+		{"TENANT FLEET RELAY IMESSAGE ON", true},
+		{"tenant fleets", false},
+		{"echo tenant fleet", false},
+		{"grep tenant fleet.json", false},
+	} {
+		if d, reason := Classify(tc.cmd); d != tc.dangerous {
+			t.Errorf("Classify(%q) = %v (%s), want %v", tc.cmd, d, reason, tc.dangerous)
+		}
+	}
+}
+
 // os_processes runs a console program. Under a Tenant with no console of its
 // own, Windows would open a window for it unless it is created without one.
 func TestProcessListOpensNoConsoleWindow(t *testing.T) {
