@@ -743,7 +743,7 @@ func TestFleetTools_AppearWithTheFirstMachineAndGoWithTheLast(t *testing.T) {
 		t.Helper()
 		s.turn(t)
 		system, offered := s.prompt(t)
-		return system, fleetNames(offered)
+		return system, fleetToolNames(offered)
 	}
 	all := len(fleetToolSpecs())
 

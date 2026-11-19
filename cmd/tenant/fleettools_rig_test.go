@@ -461,7 +461,7 @@ func (s *scriptedFleetAgent) prompt(t *testing.T) (system string, tools []string
 	return system, tools
 }
 
-func fleetNames(tools []string) []string {
+func fleetToolNames(tools []string) []string {
 	var out []string
 	for _, n := range tools {
 		if strings.HasPrefix(n, "fleet_") {
