@@ -39,7 +39,7 @@ const (
 type ChildUpdate struct {
 	UpdateReport
 	Step     string    `json:"step,omitempty"`
-	SHA256   string    `json:"sha256,omitempty"`    // of the archive that was sent
+	SHA256   string    `json:"sha256,omitempty"`  // of the archive that was sent
 	Deadline time.Time `json:"deadline,omitzero"` // StepCommit: reach the master by then, or roll back
 }
 
