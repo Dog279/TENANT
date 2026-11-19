@@ -65,8 +65,8 @@ func NewLockedBuffer(src []byte) (*LockedBuffer, error) {
 // it. p is valid only until fn returns. fn must not keep p or a slice of it (a
 // later use would crash the process once the pages are gone), and whatever it
 // copies out of p, or converts to a string, is no longer protected. One fn
-// runs at a time, and Release waits for it; fn must not call With or Release
-// on the same buffer.
+// runs at a time, and Release waits for it; fn must not call a method of the
+// same buffer, which would wait for fn itself.
 //
 // With returns fn's error, or ErrBufferReleased, without calling fn, after
 // Release.
