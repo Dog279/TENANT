@@ -365,14 +365,7 @@ func TestFleetEndToEnd(t *testing.T) {
 	step("the operator's stop reaches a command on a machine, starting or running", func(t *testing.T) {
 		// Running: the command is on its way when the operator presses Stop.
 		m.begin(e2eScript(e2eCall("fleet_exec", map[string]any{"host": "beta", "command": h.slow(file("stop-start"), 8, file("stop-end"), "never-printed"), "timeout": 120})))
-		go func() {
-			for !t.Failed() && !there("stop-start") { // the card, until the command runs
-				for _, card := range m.cards() {
-					m.decide(card, "approve")
-				}
-				time.Sleep(50 * time.Millisecond)
-			}
-		}()
+		go m.approve(func() bool { return there("stop-start") }) // the card, until the command runs
 		since := running(t, "stop-start")
 		m.stop()
 		if !never(since, 8, "stop-end") {
@@ -463,16 +456,9 @@ func TestFleetEndToEnd(t *testing.T) {
 	step("the master is killed with a call in flight, and comes back", func(t *testing.T) {
 		m := second
 		m.begin(e2eScript(e2eCall("fleet_exec", map[string]any{"host": "alpha", "command": h.slow(file("kill-start"), 5, file("kill-end"), "finished-without-its-master"), "timeout": 120})))
-		go func() {
-			for !t.Failed() && !there("kill-start") {
-				for _, card := range m.cards() {
-					m.decide(card, "approve")
-				}
-				time.Sleep(50 * time.Millisecond)
-			}
-		}()
+		go m.approve(func() bool { return there("kill-start") })
 		since := running(t, "kill-start")
-		time.Sleep(200 * time.Millisecond) // let the approving goroutine see the file
+		time.Sleep(200 * time.Millisecond) // the approving goroutine sees the file and stops asking
 		m.proc.kill()
 		alpha.state("trying again")
 		// The command runs on without a master, as the spec says a call does

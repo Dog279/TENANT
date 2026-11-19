@@ -319,7 +319,15 @@ type e2eHost struct {
 	bin  string // the test binary as this host runs it
 	root string // this host's directory, as this host names it
 	os   string // windows | linux | darwin
+	// rehome, when not nil, names the only variables of this account's
+	// environment a process here gets pointed at the test's own home folder
+	// (e2eHomeVars lists them all, and nil means all of them). An empty list
+	// leaves the environment the account's own.
+	rehome []string
 }
+
+// e2eHomeVars are the variables that say where an account keeps its things.
+var e2eHomeVars = []string{"HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME"}
 
 // thisHost is the computer the test runs on.
 func thisHost(t *testing.T) *e2eHost {
@@ -352,7 +360,11 @@ func (h *e2eHost) command(spec e2eSpec) *exec.Cmd {
 		cmd = exec.Command(h.bin, "-test.run=^TestFleetE2EProcess$")
 		cmd.Env = append(os.Environ(), orders)
 		// No default dir of this account is in reach, whatever a command's flags say.
-		for _, env := range []string{"HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME"} {
+		vars := e2eHomeVars
+		if h.rehome != nil {
+			vars = h.rehome
+		}
+		for _, env := range vars {
 			cmd.Env = append(cmd.Env, env+"="+home)
 		}
 	}
@@ -750,6 +762,41 @@ func (m *e2eMaster) decide(card control.PendingApproval, decision string) {
 	}
 }
 
+// approve answers every card that comes up with approve, each once, until
+// done says to stop. It is for a turn a test does not see to its end (a
+// stop, a kill); it runs beside the test, so it fails nothing itself.
+func (m *e2eMaster) approve(done func() bool) {
+	seen := map[string]bool{}
+	for !done() {
+		var pending []control.PendingApproval
+		req, err := http.NewRequest(http.MethodGet, m.dash+"/api/approvals", nil)
+		if err != nil {
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+m.token)
+		if resp, err := m.client.Do(req); err == nil {
+			_ = json.NewDecoder(resp.Body).Decode(&pending)
+			_ = resp.Body.Close()
+		}
+		for _, card := range pending {
+			if seen[card.ID] {
+				continue
+			}
+			seen[card.ID] = true
+			post, err := http.NewRequest(http.MethodPost, m.dash+"/api/approvals/"+card.ID, strings.NewReader(`{"decision":"approve"}`))
+			if err != nil {
+				return
+			}
+			post.Header.Set("Authorization", "Bearer "+m.token)
+			post.Header.Set("Content-Type", "application/json")
+			if resp, err := m.client.Do(post); err == nil {
+				_ = resp.Body.Close()
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // finish plays the operator until the turn begin started is over: every
 // card that comes up is answered with what decide returns for it (a nil
 // decide, or "", leaves the card waiting).
@@ -842,6 +889,7 @@ type e2eChild struct {
 	name, dir, id, digits string
 	scratch               string
 	shipped               bool
+	env                   map[string]string // for its run process
 	proc                  *e2eProc
 }
 
@@ -892,7 +940,7 @@ func (c *e2eChild) confirm(set ...string) string {
 // run starts the machine's child the way its unit does: `tenant child run`.
 func (c *e2eChild) run() {
 	c.t.Helper()
-	c.proc = c.host.start("child "+c.name, e2eSpec{Argv: []string{"child", "run", "--dir", c.dir}, Scratch: c.scratch, Shipped: c.shipped})
+	c.proc = c.host.start("child "+c.name, e2eSpec{Argv: []string{"child", "run", "--dir", c.dir}, Env: c.env, Scratch: c.scratch, Shipped: c.shipped})
 }
 
 // tenant runs `tenant child <verb>` on the machine.

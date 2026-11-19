@@ -286,10 +286,58 @@ func TestFleetBrowserOnAChild(t *testing.T) {
 		t.Skip("starts a real browser: TENANT_FLEET_E2E=browser")
 	}
 	h := thisHost(t)
+	// The machine's child runs in this account's own environment, not in the
+	// test's bare home folder like the other helper processes: on Windows,
+	// Edge does not come up (chromedp waits 20 s and gives up) when
+	// %USERPROFILE%\AppData\Local is not there. Seen here, one start each:
+	// the account's own environment starts it; USERPROFILE alone pointed at
+	// an empty folder does not; the same folder with AppData\Local and
+	// AppData\Roaming made in it does. TENANT_FLEET_E2E_BROWSER_HOME repeats
+	// that: the variables to point at the test's home ("all": every one of
+	// e2eHomeVars), and "+layout" to make a profile's folders there. The
+	// master keeps the test's home either way.
+	kid := *h
+	kid.rehome = []string{}
+	v, layout := strings.CutSuffix(os.Getenv("TENANT_FLEET_E2E_BROWSER_HOME"), "+layout")
+	if v == "all" {
+		kid.rehome = nil
+	} else if v != "" {
+		kid.rehome = strings.Split(v, ",")
+	}
+	if layout { // the folders a Windows profile has, in the test's home
+		for _, d := range []string{"Local", "Roaming"} {
+			if err := os.MkdirAll(filepath.Join(h.join("home"), "AppData", d), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Logf("the child's environment: %v pointed at the test's home folder (nil: all of %v); a profile's folders made there: %v", kid.rehome, e2eHomeVars, layout)
+	var c *e2eChild
+	// What the machine's child and its browser said, before the test's
+	// directory goes: a child has no log book of its own, so its browser's
+	// lines are on its standard error. Registered before the child starts,
+	// so it runs after the child has stopped.
+	t.Cleanup(func() {
+		if c == nil || c.proc == nil {
+			return
+		}
+		t.Logf("%s", c.proc.said())
+		data := c.dir + "-data"
+		_ = filepath.WalkDir(data, func(p string, d os.DirEntry, err error) error {
+			if err == nil && !d.IsDir() {
+				t.Logf("in the child's working folder: %s", strings.TrimPrefix(p, data))
+			}
+			return nil
+		})
+	})
 	m := h.master(true)
 	m.serve()
 	m.init("")
-	m.join(h, "alpha")
+	c = m.enroll(&kid, "alpha")
+	c.confirm()
+	c.env = map[string]string{"TENANT_LOG": "info"}
+	c.run()
+	c.state("connected to the master")
 
 	turn := m.turn(e2eScript(
 		e2eCall("fleet_tools", map[string]any{"host": "alpha"}),
@@ -516,7 +564,7 @@ func TestFleetIdleSpike(t *testing.T) {
 }
 
 // Acceptance: the idle budget. Three machines hold their links to a master
-// for a minute and a half, as real processes on the shipped intervals, and
+// for a little over a minute (two pings), as real processes on the shipped intervals, and
 // what that costs stays inside limits set from the spike's numbers: about
 // three times what was measured, so a busy runner does not fail it and a
 // link that started to poll, or a child that grew a second ping, does.
@@ -528,8 +576,8 @@ func TestFleetIdleBudget(t *testing.T) {
 	f := newIdleFleet(t)
 	base, _, _ := f.m.proc.usage()
 	f.grow(3)
-	time.Sleep(20 * time.Second) // past the connect, the hello and the first address push
-	idle := f.measure(90 * time.Second)
+	time.Sleep(15 * time.Second) // past the connect, the hello and the first address push
+	idle := f.measure(65 * time.Second)
 	t.Logf("%s (the master alone: %d goroutines)", idle, base)
 	budget := idleBudget[runtime.GOOS]
 	if budget == (idleLimits{}) {
@@ -555,7 +603,7 @@ func TestFleetIdleBudget(t *testing.T) {
 // idleLimits is the idle budget on one operating system.
 type idleLimits struct {
 	bytesPerMinute           float64       // on the wire, both directions, per machine
-	childCPU                 time.Duration // one child, over the budget test's 90 s
+	childCPU                 time.Duration // one child, over the budget test's 65 s
 	childRSS                 int64         // one child, resident
 	childGoroutines          int
 	masterGoroutinesPerChild int
