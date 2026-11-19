@@ -650,7 +650,10 @@ var fleetInitWait = 2*settingsWatchInterval + 2*time.Second
 func holderLine(cfgDir string, wait time.Duration) string {
 	deadline := time.Now().Add(wait)
 	for {
-		if h, held := fleet.CurrentHolder(cfgDir); held {
+		// A holder takes the lock first and records who and where it is a
+		// moment later: the line waits for that record while the wait lasts.
+		h, held := fleet.CurrentHolder(cfgDir)
+		if held && (h.PID != 0 && h.Address != "" || !time.Now().Before(deadline)) {
 			return strings.TrimPrefix((&fleet.HeldError{Holder: h}).Error(), "fleet: ")
 		}
 		if !time.Now().Before(deadline) {
@@ -953,13 +956,18 @@ func fleetRecoverCmd(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Where it would go is settled before the identity is read, and before
+	// anything is sent: plain HTTP only to this computer.
+	base := attachBaseURL(*hub, cli.c.lc)
+	if err := recoverHubSafe(base); err != nil {
+		return exitError{2, err.Error()}
+	}
 	identity, err := readRecoveryInput()
 	if err != nil {
 		return err
 	}
 	defer clear(identity)
 	token, _ := dashboardClientToken(cli.c.cfgDir, cli.c.lc, true)
-	base := attachBaseURL(*hub, cli.c.lc)
 	q := url.Values{"machine": {m.ID}, "confirm": {"yes"}}
 	if *was != "" {
 		q.Set("was", *was)
@@ -970,7 +978,8 @@ func fleetRecoverCmd(args []string) error {
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("Authorization", "Bearer "+token)
-	client := &http.Client{Timeout: 3 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client := &http.Client{Timeout: 3 * time.Minute, Transport: fleetRecoverTransport,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("no running Tenant answers at %s, and only the Tenant that holds the fleet (tenant serve) can read a machine's memory: nothing was sent (%v)", base, err)
@@ -988,6 +997,47 @@ func fleetRecoverCmd(args []string) error {
 		return exitError{1, fleetName(m.Name) + ": " + e}
 	}
 	fmt.Println(loc.Query().Get("msg"))
+	return nil
+}
+
+// fleetRecoverTransport is what fleet recover sends with; nil is the
+// default. Tests replace it.
+var fleetRecoverTransport http.RoundTripper
+
+// recoverHubSafe allows the recovery identity to go to base only where
+// nobody on the way can read it: an https:// address, or plain http to this
+// computer (an IP that is loopback, or a name every address of which is).
+// It reads every machine's memory, and with it a copy could be forged.
+func recoverHubSafe(base string) error {
+	u, err := url.Parse(base)
+	if err == nil && u.Scheme == "https" && u.Host != "" {
+		return nil
+	}
+	refuse := fmt.Errorf("nothing was sent: the recovery identity would go to %s in clear text, over plain http to an address that is not this computer. "+
+		"Run `tenant fleet recover` on the master itself, or give --hub the running Tenant's https:// address", base)
+	if err != nil || u.Scheme != "http" || u.Hostname() == "" {
+		return refuse
+	}
+	var ips []net.IP
+	if ip := net.ParseIP(u.Hostname()); ip != nil {
+		ips = []net.IP{ip}
+	} else {
+		addrs, err := net.LookupHost(u.Hostname())
+		if err != nil {
+			return refuse
+		}
+		for _, a := range addrs {
+			ips = append(ips, net.ParseIP(a))
+		}
+	}
+	if len(ips) == 0 {
+		return refuse
+	}
+	for _, ip := range ips {
+		if ip == nil || !ip.IsLoopback() {
+			return refuse
+		}
+	}
 	return nil
 }
 

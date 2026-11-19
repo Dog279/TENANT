@@ -661,6 +661,14 @@ const maxRecoveryIdentity = 1 << 10
 // parsed as a form: the identity is read as bytes, handed on, and zeroed.
 // It has no form on the page; the command line posts it.
 func (s *Server) handleFleetRecover(w http.ResponseWriter, r *http.Request) {
+	// The identity reads every machine's memory: it may cross only a
+	// connection nobody on the way can read, from this computer or over TLS.
+	// Anything else is refused before the body is read, and the refusal
+	// says nothing of what was sent.
+	if !fromLoopback(r) && r.TLS == nil {
+		s.fleetDone(w, r, "", "", "Nothing was read: the recovery identity is taken only from this computer or over HTTPS, and this request came over plain HTTP from another computer, not this computer. Run `tenant fleet recover` on the master itself.")
+		return
+	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRecoveryIdentity))
 	defer clear(body)
 	if s.fleet == nil {
@@ -682,6 +690,16 @@ func (s *Server) handleFleetRecover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.fleetDone(w, r, m.ID, "The memory of "+m.Name+": "+said+".", "")
+}
+
+// fromLoopback reports whether r's connection comes from this computer.
+func fromLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // --- GET /api/fleet ---

@@ -250,7 +250,11 @@ It reads the identity at the terminal without showing it, or from standard input
 argument. The running Tenant that holds the fleet (through its dashboard, as `fleet update`;
 `--hub ADDR` when it is not where `config.json` says) fetches the machine's newest copy under
 the old key, reads it with the identity, makes it the machine's memory and sends it back as a
-generation under the new key. The old copies stay on the machine. `--was` is needed because the
+generation under the new key. The old copies stay on the machine. The identity crosses only a
+connection nobody on the way can read: the command sends it over plain http only to this
+computer (a loopback address, or a name that resolves to loopback alone), otherwise only to an
+`https://` `--hub`, and refuses before it reads the identity; the running Tenant takes it only
+from a loopback peer or over TLS. On another computer, run the command on the master itself. `--was` is needed because the
 new master gave the machine a new id and the copies name the old one; without the right id, or
 with another fleet's identity, nothing is read. The same command reads a machine's memory after
 the master's fleet key file was replaced (then without `--was`).

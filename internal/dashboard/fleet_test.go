@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1266,4 +1267,53 @@ func TestFleetRecover(t *testing.T) {
 	if _, _, errMsg := fleetFlash(rec); rec.Code != http.StatusSeeOther || !strings.Contains(errMsg, "not a recovery identity") {
 		t.Errorf("a wrong identity with the API key: %d, err %q", rec.Code, errMsg)
 	}
+}
+
+// The recovery identity is taken only over a connection that cannot be read
+// on the way: from this computer (a loopback peer) or over TLS. From anywhere
+// else it is refused before the handler touches the body (which the server's
+// body cap, httplimits.Protect, has buffered like every POST's: on plain HTTP
+// the bytes have crossed the network by then, which is why the command line
+// refuses to send them), the control never sees it, and the refusal says
+// nothing of what it carried; signed in or with the API key alike.
+func TestFleetRecoverOnlyOverLoopbackOrTLS(t *testing.T) {
+	f := fleetFake(3)
+	s := fleetServer(f)
+	h := s.served()
+	const secret = "AGE-SECRET-KEY-1TEST"
+	send := func(remote string, tlsOn bool, set func(*http.Request)) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/fleet/recover?machine="+fleetConfirmed+"&confirm=yes", strings.NewReader(secret))
+		r.Header.Set("Content-Type", "application/octet-stream")
+		set(r)
+		r.RemoteAddr = remote
+		if tlsOn {
+			r.TLS = &tls.ConnectionState{Version: tls.VersionTLS13, HandshakeComplete: true}
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec
+	}
+	apiKey := func(r *http.Request) { r.Host = "127.0.0.1:9770"; bearer("s3cret")(r) }
+	for name, set := range map[string]func(*http.Request){"the API key": apiKey, "a signed-in browser": here} {
+		before := f.called()
+		rec := send("192.0.2.7:50000", false, set)
+		_, msg, errMsg := fleetFlash(rec)
+		if msg != "" || !strings.Contains(errMsg+rec.Body.String(), "not this computer") || strings.Contains(errMsg+rec.Body.String(), "AGE-") {
+			t.Errorf("%s from another computer over plain HTTP: %d, msg %q, err %q", name, rec.Code, msg, errMsg)
+		}
+		if got := f.called(); !slices.Equal(got, before) {
+			t.Errorf("%s from another computer reached the control: %q", name, got[len(before):])
+		}
+	}
+	if rec := send("127.0.0.1:50000", false, apiKey); !strings.Contains(fleetMsg(rec), "generation 3 was read") {
+		t.Errorf("from this computer: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if rec := send("192.0.2.7:50000", true, apiKey); !strings.Contains(fleetMsg(rec), "generation 3 was read") {
+		t.Errorf("from another computer over TLS: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+func fleetMsg(rec *httptest.ResponseRecorder) string {
+	_, msg, _ := fleetFlash(rec)
+	return msg
 }
