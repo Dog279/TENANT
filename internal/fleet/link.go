@@ -224,19 +224,23 @@ type Update struct {
 	Data    []byte `json:"data"`
 	// The release's own material, for a child that verifies the release
 	// itself (Child.Updates, decision A71): the archive's name in the
-	// release, the release's checksums.txt and its signature bundle. The
-	// master sends them on the piece with no data that opens each send, so
-	// a child refuses before the archive is on the wire.
+	// release, the release's checksums.txt, its signature bundle and its
+	// project signature (TEN-542, checksums.txt.sig). The master sends them
+	// on the piece with no data that opens each send, so a child refuses
+	// before the archive is on the wire.
 	Asset     string `json:"asset,omitempty"`
 	Checksums []byte `json:"checksums,omitempty"`
 	Bundle    []byte `json:"bundle,omitempty"`
+	Signature []byte `json:"signature,omitempty"`
 }
 
 // The bounds of a release's material: a checksums.txt lists a few dozen
-// archives, a Sigstore bundle is a certificate chain and a log entry.
+// archives, a Sigstore bundle is a certificate chain and a log entry, a
+// project signature one line of 88 characters (selfupdate.MaxSignature).
 const (
 	MaxReleaseChecksums = 64 << 10
 	MaxReleaseBundle    = 64 << 10
+	MaxReleaseSignature = 128
 	maxAssetLen         = 128
 )
 
@@ -247,7 +251,17 @@ type UpdateAck struct {
 	// Rule is which rule the child applies to this update (UpdatesRelease or
 	// UpdatesMaster); an older child says none.
 	Rule string `json:"rule,omitempty"`
+	// Verified is which check a child on UpdatesRelease passed (TEN-542):
+	// VerifiedProjectKey or VerifiedCosign; an older child says none. The
+	// master reads it only as one of those two words.
+	Verified string `json:"verified,omitempty"`
 }
+
+// What a child on UpdatesRelease verified a release with (UpdateAck.Verified).
+const (
+	VerifiedProjectKey = "project_key" // the project key built into its binary
+	VerifiedCosign     = "cosign"      // the release workflow's Sigstore signature
+)
 
 // What a child says of the last update it was sent (UpdateReport.State).
 const (
@@ -306,7 +320,7 @@ func Served(link int) bool { return speaks(LinkVersion, link) }
 func (u Update) validate() error {
 	if _, err := parseFingerprint(u.SHA256); err != nil || len(u.Version) == 0 || len(u.Version) > maxReportedLen || !printable(u.Version) ||
 		u.Size < 1 || u.Size > maxUpdateSize || u.Offset < 0 || len(u.Data) > MaxUpdateChunk || u.Offset+int64(len(u.Data)) > u.Size ||
-		len(u.Checksums) > MaxReleaseChecksums || len(u.Bundle) > MaxReleaseBundle || !validAsset(u.Asset) {
+		len(u.Checksums) > MaxReleaseChecksums || len(u.Bundle) > MaxReleaseBundle || len(u.Signature) > MaxReleaseSignature || !validAsset(u.Asset) {
 		return errors.New("fleet: not a valid piece of an update")
 	}
 	return nil

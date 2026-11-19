@@ -157,13 +157,14 @@ func FuzzHelloUpdate(f *testing.F) {
 // more, or a name that is a path, is not a piece of an update.
 func TestUpdateReleaseMaterialIsBounded(t *testing.T) {
 	ok := Update{Version: "3.0.0", SHA256: strings.Repeat("ab", 32), Size: 10, Asset: "tenant_3.0.0_linux_x86_64.tar.gz",
-		Checksums: make([]byte, MaxReleaseChecksums), Bundle: make([]byte, MaxReleaseBundle)}
+		Checksums: make([]byte, MaxReleaseChecksums), Bundle: make([]byte, MaxReleaseBundle), Signature: make([]byte, MaxReleaseSignature)}
 	if err := ok.validate(); err != nil {
 		t.Fatalf("material at its bounds: %v", err)
 	}
 	for name, change := range map[string]func(*Update){
 		"checksums too large":       func(u *Update) { u.Checksums = make([]byte, MaxReleaseChecksums+1) },
 		"a bundle too large":        func(u *Update) { u.Bundle = make([]byte, MaxReleaseBundle+1) },
+		"a signature too large":     func(u *Update) { u.Signature = make([]byte, MaxReleaseSignature+1) },
 		"an asset that is a path":   func(u *Update) { u.Asset = "../tenant_3.0.0_linux_x86_64.tar.gz" },
 		"an asset with a backslash": func(u *Update) { u.Asset = `x\tenant.zip` },
 		"a hidden asset":            func(u *Update) { u.Asset = ".tenant.zip" },
@@ -192,6 +193,10 @@ func FuzzUpdateParams(f *testing.F) {
 		`{"version":"3.0.0","sha256":"` + sha + `","size":10,"asset":"tenant\u0000.zip"}`,
 		`{"version":"3.0.0","sha256":"` + sha + `","size":10,"checksums":"` + strings.Repeat("A", 90000) + `"}`,
 		`{"version":"3.0.0","sha256":"` + sha + `","size":10,"bundle":12}`,
+		`{"version":"3.0.0","sha256":"` + sha + `","size":10,"asset":"tenant_3.0.0_linux_x86_64.tar.gz","checksums":"YWJj","signature":"` + strings.Repeat("QUFB", 30) + `"}`,
+		`{"version":"3.0.0","sha256":"` + sha + `","size":10,"signature":"` + strings.Repeat("A", 200) + `"}`,
+		`{"version":"3.0.0","sha256":"` + sha + `","size":10,"signature":"not base64!"}`,
+		`{"version":"3.0.0","sha256":"` + sha + `","size":10,"signature":["x"],"later":{"field":1}}`,
 		`{"version":"3.0.0","sha256":"` + sha + `","size":-1,"offset":5}`,
 		`{"version":"3.0.0","sha256":"` + sha + `","size":10,"asset":"‮zip.exe"}`,
 	} {
@@ -202,7 +207,7 @@ func FuzzUpdateParams(f *testing.F) {
 		if json.Unmarshal(raw, &u) != nil || u.validate() != nil {
 			return
 		}
-		if len(u.Checksums) > MaxReleaseChecksums || len(u.Bundle) > MaxReleaseBundle || len(u.Data) > MaxUpdateChunk ||
+		if len(u.Checksums) > MaxReleaseChecksums || len(u.Bundle) > MaxReleaseBundle || len(u.Signature) > MaxReleaseSignature || len(u.Data) > MaxUpdateChunk ||
 			u.Offset < 0 || u.Size < 1 || u.Offset+int64(len(u.Data)) > u.Size {
 			t.Fatalf("validated out of bounds: asset %q, %d/%d bytes of material", u.Asset, len(u.Checksums), len(u.Bundle))
 		}
