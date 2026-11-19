@@ -673,7 +673,7 @@ func TestFleetStates(t *testing.T) {
 		`<span class="tag-new">waiting for you</span>`, `<span class="on-tag">online</span>`, `<span class="risk">offline</span>`, `<span class="act-errtag">revoked</span>`,
 		`<td>online since 2026-11-18 10:02</td>`, `<td><span class="dim">known to the process that holds the fleet</span></td>`,
 		`<td class="fl-said">&#34;linux&#34;</td>`, `<td class="fl-said">&#34;root&#34;</td>`, `<td class="fl-said">&#34;1.2.3&#34;</td>`,
-		`<td>not available yet</td>`,
+		`<td>unknown</td>`,
 		`<td>none until you confirm it</td>`, `<td>0 ask first, 8 allowed, 0 blocked, 12 rules <span class="dim">· differs from a fresh copy</span></td>`,
 		`<td>none that can be read: every request to it is refused</td>`,
 		"* Reported by the machine: its own words, in quotes. This Tenant has not checked them.",
@@ -683,8 +683,8 @@ func TestFleetStates(t *testing.T) {
 			t.Errorf("the list is missing %q", want)
 		}
 	}
-	if strings.Count(list, `<td>not available yet</td>`) != 13 {
-		t.Errorf("the memory column: %d of 13 machines say it is not available yet", strings.Count(list, `<td>not available yet</td>`))
+	if strings.Count(list, `<td>unknown</td>`) != 13 {
+		t.Errorf("the memory column: %d of 13 machines say it is unknown", strings.Count(list, `<td>unknown</td>`))
 	}
 	if strings.Contains(list, "<form") && strings.Contains(list, `action="/fleet/`) {
 		t.Errorf("the list carries a form: every change is on a machine's own page")
@@ -1051,8 +1051,8 @@ func TestFleetDriftWords(t *testing.T) {
 
 // What the list says of a machine's memory and of its approval settings.
 func TestFleetMachineWords(t *testing.T) {
-	for state, want := range map[string]string{FleetMemoryUnknown: "not available yet", FleetMemoryInStep: "in step", FleetMemoryBehind: "behind",
-		FleetMemoryNeedsKey: "needs recovery key", "something a later version says": "not available yet"} {
+	for state, want := range map[string]string{FleetMemoryUnknown: "unknown", FleetMemoryInStep: "in step", FleetMemoryBehind: "behind",
+		FleetMemoryNeedsKey: "needs recovery key", "something a later version says": "unknown"} {
 		if got := (FleetMachine{Memory: state}).MemoryWords(); got != want {
 			t.Errorf("memory %q: %q, want %q", state, got, want)
 		}

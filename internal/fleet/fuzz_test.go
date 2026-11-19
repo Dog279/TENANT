@@ -73,6 +73,9 @@ func FuzzParseEnrollCode(f *testing.F) {
 }
 
 // FuzzParseStore: fleet.json as found on disk.
+// fuzzRecipient is the public half of a recovery identity.
+const fuzzRecipient = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"
+
 func FuzzParseStore(f *testing.F) {
 	machine := `{"name":"box","fingerprint":"` + fuzzPrint + `","state":"confirmed","reported":{"os":"linux","user":"root","version":"1.2.3","sandbox":"host","ceiling":"full"},"enrolled_at":"2026-11-18T18:00:00Z","confirmed_at":"2026-11-18T18:05:00Z"}`
 	other := strings.Replace(strings.Replace(machine, fuzzPrint, strings.Repeat("cd", 32), 1), `"box"`, `"other"`, 1)
@@ -94,6 +97,13 @@ func FuzzParseStore(f *testing.F) {
 		`{"version":1,"machines":{},"enrollments":[{"name":"a","secret_sha256":"x","expires":9223372036854775807}]}`,
 		`{"version":1,"addresses":["a:1","a:1","b:99999"],"machines":{}}`,
 		good + good,
+		// The recovery key (TEN-532): its public half and when it was proven.
+		`{"version":1,"machines":{},"recovery":"` + fuzzRecipient + `","recovery_proven":"2026-11-19T10:00:00Z"}`,
+		`{"version":1,"machines":{},"recovery":"` + fuzzRecipient + `"}`,
+		`{"version":1,"machines":{},"recovery_proven":"2026-11-19T10:00:00Z"}`,
+		`{"version":1,"machines":{},"recovery":"` + strings.ToUpper(fuzzRecipient) + `"}`,
+		`{"version":1,"machines":{},"recovery":"age1","recovery_identity":"AGE-SECRET-KEY-1"}`,
+		`{"version":1,"machines":{},"recovery":"` + fuzzRecipient + `","recovery":"` + fuzzRecipient + `"}`,
 	} {
 		f.Add([]byte(seed))
 	}
@@ -123,6 +133,9 @@ func FuzzParseStore(f *testing.F) {
 		}
 		if validAddresses(d.Addresses) != nil {
 			t.Fatalf("accepted addresses %q", d.Addresses)
+		}
+		if validRecovery(d.Recovery, d.RecoveryProven) != nil {
+			t.Fatalf("accepted recovery key %q proven %v", d.Recovery, d.RecoveryProven)
 		}
 		// What was read can be acted on and written back: this is what
 		// every change to the file does with it.

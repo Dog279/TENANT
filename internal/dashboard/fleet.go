@@ -63,8 +63,8 @@ type FleetControl interface {
 	Update(machine, version, arch string, allowOlder bool) error
 }
 
-// The memory states of the spec's section 7. TEN-532 supplies them; until
-// then every machine's is FleetMemoryUnknown.
+// The memory states of the spec's section 7 (cmd/tenant's memory* constants
+// are the same strings). FleetMemoryUnknown comes with a detail saying why.
 const (
 	FleetMemoryUnknown  = ""
 	FleetMemoryInStep   = "in_step"
@@ -232,7 +232,7 @@ func (m FleetMachine) MemoryWords() string {
 	case FleetMemoryNeedsKey:
 		return "needs recovery key"
 	}
-	return "not available yet"
+	return "unknown"
 }
 
 // Approvals sums up the machine's approval settings for the list.

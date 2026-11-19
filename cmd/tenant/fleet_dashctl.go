@@ -25,21 +25,6 @@ import (
 	"tenant/internal/fleet"
 )
 
-// fleetMemory says where each machine's memory stands, for the Fleet page's
-// memory column: a dashboard.FleetMemory state, and a line of detail or "".
-// TEN-532 (the shadows and the copies on the machines) supplies the real one.
-type fleetMemory interface {
-	State(machineID string) (state, detail string)
-}
-
-// memoryNotBuilt is the fleet's memory before TEN-532: no machine's is known.
-type memoryNotBuilt struct{}
-
-func (memoryNotBuilt) State(string) (string, string) { return dashboard.FleetMemoryUnknown, "" }
-
-// fleetMemoryOf is what the Fleet page asks. TEN-532 replaces it.
-var fleetMemoryOf fleetMemory = memoryNotBuilt{}
-
 type dashFleet struct{ ops fleetOps }
 
 // newDashFleet builds the dashboard's fleet control over the live settings
@@ -109,7 +94,9 @@ func (d dashFleet) View() dashboard.FleetView {
 			link = &st
 		}
 		mv := dashMachine(m, link)
-		mv.Memory, mv.MemoryDetail = fleetMemoryOf.State(m.ID)
+		// The memory column: what the holder's last comparison found, or
+		// its record of it (memoryStateIn decrypts nothing).
+		mv.Memory, mv.MemoryDetail = memoryStateIn(d.ops.dataDir, m.ID)
 		if u := fleetUpdater(); u != nil {
 			if st, ok := u.State(m.ID); ok {
 				mv.Update = dashUpdate(st)

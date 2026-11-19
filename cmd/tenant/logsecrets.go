@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"tenant/internal/fleet"
 	"tenant/internal/logs"
 	"tenant/internal/secrets"
 )
@@ -90,6 +91,12 @@ func logSecretValues(cfgDir, dataDir string, fixed, last map[string]string) map[
 		maps.Copy(out, last) // an MCP cache went unlisted
 	}
 	for _, f := range files {
+		if f.path == fleet.KeyPath(cfgDir) {
+			// The fleet key (TEN-532) is only ever read into locked memory:
+			// as text here it would sit on the heap for the whole run. It is
+			// never written as text either, so no log line can hold it.
+			continue
+		}
 		b, err := secrets.Peek(f.path)
 		switch {
 		case err == nil:

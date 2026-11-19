@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"tenant/internal/fleet/shadow"
 	"tenant/internal/secrets"
 )
 
@@ -688,5 +689,83 @@ func TestParseStoreRejects(t *testing.T) {
 		if _, err := parseStore([]byte(bad)); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// testRecipient is the public half of a fresh recovery identity.
+func testRecipient(t testing.TB) string {
+	t.Helper()
+	identity, recipient, err := shadow.NewRecovery()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = identity.Release()
+	return recipient
+}
+
+// The recovery key's public half and its proof live in fleet.json, read as
+// strictly as the rest of it; a fleet made before them reads as one without.
+func TestRecoveryInTheStore(t *testing.T) {
+	m := newMaster(t)
+	if rec, proven, err := m.store.Recovery(); err != nil || rec != "" || !proven.IsZero() {
+		t.Fatalf("a fleet made before the recovery key: %q %v %v", rec, proven, err)
+	}
+	recipient := testRecipient(t)
+	at := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	for name, tc := range map[string]struct {
+		rec    string
+		proven time.Time
+	}{
+		"not a recipient":       {"age1notarecipient", at},
+		"in capitals":           {strings.ToUpper(recipient), at},
+		"an identity":           {"AGE-SECRET-KEY-1" + strings.Repeat("Q", 58), at},
+		"a proof of no key":     {"", at},
+		"a recipient with a nl": {recipient + "\n", at},
+	} {
+		if err := m.store.SetRecovery(tc.rec, tc.proven); err == nil {
+			t.Errorf("%s: recorded", name)
+		}
+	}
+	if rec, _, _ := m.store.Recovery(); rec != "" {
+		t.Fatalf("a refused change was recorded: %q", rec)
+	}
+	if err := m.store.SetRecovery(recipient, at); err != nil {
+		t.Fatal(err)
+	}
+	reopened := Open(m.dir)
+	if rec, proven, err := reopened.Recovery(); err != nil || rec != recipient || !proven.Equal(at) {
+		t.Fatalf("read back: %q %v %v", rec, proven, err)
+	}
+	// Strict as the rest of the file.
+	fp := strings.Repeat("ab", 32)
+	file := func(extra string) string {
+		return `{"version":1,"machines":{"m0123456789abcdef":{"name":"box","fingerprint":"` + fp +
+			`","state":"confirmed","reported":{"os":"linux","ceiling":"full"},"enrolled_at":"2026-01-01T00:00:00Z"}}` + extra + `}`
+	}
+	if _, err := parseStore([]byte(file(`,"recovery":"` + recipient + `","recovery_proven":"2026-11-19T10:00:00Z"`))); err != nil {
+		t.Fatalf("the valid file: %v", err)
+	}
+	if _, err := parseStore([]byte(file(`,"recovery":"` + recipient + `"`))); err != nil {
+		t.Fatalf("a recovery key never proven: %v", err)
+	}
+	for name, bad := range map[string]string{
+		"the identity itself":    file(`,"recovery":"` + recipient + `","recovery_identity":"AGE-SECRET-KEY-1"`),
+		"the recovery key twice": file(`,"recovery":"` + recipient + `","Recovery":"` + recipient + `"`),
+		"a proof of no key":      file(`,"recovery_proven":"2026-11-19T10:00:00Z"`),
+		"not a recipient":        file(`,"recovery":"age1xyz"`),
+		"a number":               file(`,"recovery":7`),
+		"a proof that is text":   file(`,"recovery":"` + recipient + `","recovery_proven":"yesterday"`),
+	} {
+		if _, err := parseStore([]byte(bad)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// A key the file does not know makes every lookup fail, the recovery
+	// key's included.
+	if err := os.WriteFile(StorePath(m.dir), []byte(file(`,"recovery":"`+recipient+`","fleet_key":"x"`)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Open(m.dir).Recovery(); !errors.Is(err, ErrUnreadable) {
+		t.Fatalf("an unknown key: %v, want ErrUnreadable", err)
 	}
 }

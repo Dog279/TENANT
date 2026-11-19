@@ -158,8 +158,9 @@ generated from `internal/archtest/rules.go`, and
 | `internal/logs/capture` | `internal/logs/event`, `internal/runtrace`, `internal/lifecycle` | child-process capture; every internal package may import it; a running child is a lifecycle component |
 | `internal/research` | `internal/fsperm` |  |
 | `internal/backup` | `internal/datalock`, `internal/fsperm`, `internal/secrets`, `internal/version` |  |
+| `internal/fleet/shadow` | `internal/memory/episodic`, `internal/memory/semantic`, `internal/secrets`, `internal/fsperm`, `internal/datalock` | a fleet machine's memory: the master's shadow in RAM and its encrypted snapshots, the child's copies, and which side wins; knows no link |
 | `internal/peering` | `internal/httplimits`, `internal/secrets` |  |
-| `internal/fleet` | `internal/secrets`, `internal/datalock`, `internal/httplimits`, `internal/mcp/**`, `internal/model` | a fleet's identity, enrollment and fleet.json, and the link between a master and its children; serves the tool mux it is handed and knows no tool and no command |
+| `internal/fleet` | `internal/fleet/shadow`, `internal/secrets`, `internal/datalock`, `internal/httplimits`, `internal/mcp/**`, `internal/model` | a fleet's identity, enrollment and fleet.json, and the link between a master and its children; serves the tool mux it is handed and knows no tool and no command |
 | `internal/mcp` | `internal/mcp/transport` | wire protocol only, no LLM knowledge |
 | `internal/model` | `internal/model/profiles`, `internal/runtrace` | no memory, agent or plugins |
 | `internal/model/**` | `internal/model/**`, `internal/runtrace`, `internal/fsperm` |  |
@@ -1410,8 +1411,10 @@ fleet` and `/fleet` (`fleetOps`) over the running process's state: the
 machines with their link, what each reports about itself (escaped and quoted
 by `fleetQuote` before it reaches the page), each machine's scheme, and its
 drift from what `Fleet.Inherit` would give it now (`Scheme.Drift`), with "copy
-again" and "apply fleet rules". Its memory column reads the `fleetMemory`
-interface, which answers "not available yet" until TEN-532. A machine is
+again" and "apply fleet rules". Its memory column is `memoryStateIn`
+(`cmd/tenant/fleetmemory.go`): the holder's last comparison, or in another
+process the holder's record in `<data>/fleet/states.json`; it decrypts
+nothing. A machine is
 confirmed there only from a browser signed in on the computer running Tenant
 (`Server.atThisComputer`: loopback peer, loopback Host, no proxy header, the
 session cookie and never the API key); `TestOnlyTheOperatorConfirmsAMachine`

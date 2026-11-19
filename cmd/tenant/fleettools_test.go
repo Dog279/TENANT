@@ -60,6 +60,7 @@ func everyFleetCall(host string) map[string]map[string]any {
 		"fleet_copy":     {"host": host, "direction": "from_host", "local_path": "/tmp/l", "remote_path": "/tmp/r"},
 		"fleet_tools":    {"host": host},
 		"fleet_call":     {"host": host, "tool": "os_sysinfo"},
+		"fleet_note":     {"host": host, "fact": "a fact"},
 	}
 }
 
@@ -1139,7 +1140,7 @@ func TestFleetTools_LinkVersionsThatDoNotGoTogether(t *testing.T) {
 	r.online(k, true)
 
 	for tool, args := range everyFleetCall("future") {
-		if tool == "fleet_list" {
+		if tool == "fleet_list" || tool == "fleet_note" { // a note goes to the master's memory, not over the link
 			continue
 		}
 		out, isErr := r.call(fleetTurnCtx(), tool, args)

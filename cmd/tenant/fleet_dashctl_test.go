@@ -348,7 +348,7 @@ func TestFleetDashSettingsAndDrift(t *testing.T) {
 		`<tr><th>Version</th><td class="fl-said">&#34;1.2.3 (reported by you)&#34;</td></tr>`,
 		`<tr><th>Sandbox</th><td class="fl-said">&#34;host&#34;</td></tr>`,
 		`<tr><th>Its own limit</th><td class="fl-said">&#34;no-exec&#34;</td></tr>`,
-		`<tr><th>Memory</th><td>not available yet</td></tr>`,
+		`<tr><th>Memory</th><td>unknown <span class="dim">`, // its reason follows
 		`<strong>Run commands</strong>: Ask first <span class="dim">(this master: allow)</span>`,
 		`<strong>Act on websites</strong>: Allow`,
 		`<strong>Connect remote services</strong>: Block`,
@@ -384,7 +384,7 @@ func TestFleetDashSettingsAndDrift(t *testing.T) {
 		`<a class="linkbtn" href="/fleet/` + ch.id + `">web1</a><div class="dim nm">` + ch.id + `</div>`,
 		`<span class="on-tag">online</span>`, `<td>online since `,
 		`<td class="fl-said">&#34;root&#34;</td>`, // what it says now that it is linked
-		`<td>not available yet</td>`,
+		`<td>unknown</td>`,
 		`<td>6 ask first, 1 allowed, 1 blocked, 3 rules</td>`,
 		`<span class="nm">os_exec(systemctl status *)</span> <span class="tag">runs without asking</span>`,
 	} {
@@ -573,8 +573,9 @@ func (f *fleetViewOnly) View() dashboard.FleetView { return f.v }
 
 // fleetPager is a dashboard that shows one machine at a time.
 type fleetPager struct {
-	srv *dashboard.Server
-	ctl *fleetViewOnly
+	srv  *dashboard.Server
+	ctl  *fleetViewOnly
+	data string // the data dir whose memory record the page reads ("" for none)
 }
 
 func newFleetPager() *fleetPager {
@@ -588,7 +589,7 @@ func newFleetPager() *fleetPager {
 func (p *fleetPager) pages(t testing.TB, m fleet.Machine, link *fleet.MachineStatus) (list, one string) {
 	t.Helper()
 	mv := dashMachine(m, link)
-	mv.Memory, mv.MemoryDetail = fleetMemoryOf.State(m.ID)
+	mv.Memory, mv.MemoryDetail = memoryStateIn(p.data, m.ID)
 	p.ctl.v = dashboard.FleetView{Master: true, Here: link != nil, Holder: "this process holds the fleet, on 127.0.0.1:9777", Machines: []dashboard.FleetMachine{mv}}
 	get := func(path string) string {
 		rec := httptest.NewRecorder()
@@ -699,26 +700,29 @@ func TestFleetDashShowsWhatAMachineSaysAsItsWords(t *testing.T) {
 
 // --- memory, and a fleet another process holds ---
 
-type memoryStub map[string][2]string
-
-func (s memoryStub) State(id string) (string, string) { return s[id][0], s[id][1] }
-
-// The memory column shows what the fleet's memory says of each machine;
-// until TEN-532 supplies it, that is "not available yet".
+// The memory column shows what the fleet's memory says of each machine: in a
+// process that does not hold the fleet, the holder's record of it
+// (<data>/fleet/states.json), and "unknown" with the reason when there is
+// none. The states are the dashboard's own strings.
 func TestFleetDashMemoryColumn(t *testing.T) {
+	prev := theFleet.Swap(nil)
+	t.Cleanup(func() { theFleet.Store(prev) })
 	m := fleet.Machine{ID: "m0123456789abcdef", Name: "web1", State: fleet.StateConfirmed}
-	if state, detail := fleetMemoryOf.State(m.ID); state != dashboard.FleetMemoryUnknown || detail != "" {
-		t.Fatalf("the fleet's memory before TEN-532 says %q %q", state, detail)
+	p := newFleetPager()
+	p.data = t.TempDir()
+	if list, one := p.pages(t, m, nil); !strings.Contains(list, "<td>unknown</td>") || !strings.Contains(one, `<tr><th>Memory</th><td>unknown <span class="dim">known to the process that holds the fleet</span></td></tr>`) {
+		t.Errorf("the memory column with no record:\n%s", one)
 	}
-	if list, one := fleetPages(t, m, nil); !strings.Contains(list, "<td>not available yet</td>") || !strings.Contains(one, "<tr><th>Memory</th><td>not available yet</td></tr>") {
-		t.Errorf("the memory column before TEN-532:\n%s", list)
+	if err := os.MkdirAll(fleetShadowDir(p.data), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	prev := fleetMemoryOf
-	defer func() { fleetMemoryOf = prev }()
 	for state, words := range map[string]string{dashboard.FleetMemoryInStep: "in step", dashboard.FleetMemoryBehind: "behind", dashboard.FleetMemoryNeedsKey: "needs recovery key"} {
-		fleetMemoryOf = memoryStub{m.ID: {state, "its newest copy is from 12:03"}}
-		list, one := fleetPages(t, m, nil)
-		if !strings.Contains(list, "<td>"+words+"</td>") || !strings.Contains(one, `<tr><th>Memory</th><td>`+words+` <span class="dim">its newest copy is from 12:03</span></td></tr>`) {
+		raw, _ := json.Marshal(map[string]memoryState{m.ID: {State: state, Detail: "its newest copy is from 12:03", At: time.Now()}})
+		if err := os.WriteFile(fleetMemoryStatesPath(p.data), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		list, one := p.pages(t, m, nil)
+		if !strings.Contains(list, "<td>"+words+"</td>") || !strings.Contains(one, `<tr><th>Memory</th><td>`+words+` <span class="dim">its newest copy is from 12:03 (as the process that holds the fleet recorded it at `) {
 			t.Errorf("memory %s: the page does not say %q:\n%s", state, words, one)
 		}
 	}

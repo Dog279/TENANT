@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"tenant/internal/datalock"
+	"tenant/internal/fleet/shadow"
 	"tenant/internal/httplimits"
 	"tenant/internal/mcp"
 	"tenant/internal/mcp/transport"
@@ -41,6 +42,10 @@ type ManagerConfig struct {
 	// why, handshakes refused, a machine that sends what the link does not
 	// allow. Nil is the process logger.
 	Log *slog.Logger
+	// Connected, when not nil, is told the id of each machine whose link is
+	// up, once per link, on a goroutine of its own: the master's memory
+	// compares its copy with the machine's then (TEN-532).
+	Connected func(id string)
 }
 
 // Holder is the process that holds a fleet's links.
@@ -567,6 +572,9 @@ func (m *Manager) serveLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.log.Info("fleet: machine connected", "machine", l.id, "remote", l.remote, "link", l.version)
+	if m.cfg.Connected != nil {
+		go m.cfg.Connected(l.id)
+	}
 	l.sendAddresses()
 }
 
@@ -672,6 +680,14 @@ func (l *link) request(ctx context.Context, d time.Duration, method string, para
 			return fmt.Errorf("%w: %s", ErrBusy, text)
 		case codeIncompatible:
 			return fmt.Errorf("%w: %s", ErrIncompatible, text)
+		case mcp.ErrMethodNotFound:
+			return fmt.Errorf("%w: %s", errNotServed, text)
+		case codeStale:
+			return fmt.Errorf("%w: %s", shadow.ErrStale, text)
+		case codeConflict:
+			return fmt.Errorf("%w: %s", shadow.ErrConflict, text)
+		case codeNoCopy:
+			return fmt.Errorf("%w: %s", shadow.ErrNoCopy, text)
 		}
 		return errors.New("fleet: " + text)
 	case ctx.Err() != nil && errors.Is(err, ctx.Err()):

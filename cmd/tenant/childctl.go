@@ -40,6 +40,7 @@ import (
 	"github.com/mattn/go-isatty"
 
 	"tenant/internal/fleet"
+	"tenant/internal/fleet/shadow"
 	"tenant/internal/fsperm"
 	"tenant/internal/memory/soul"
 	"tenant/internal/sandbox"
@@ -427,7 +428,16 @@ func childServe(ctx context.Context, dir string, log *slog.Logger, hello func() 
 	mux, stopTools := buildChildMux(ctx, dir, gate.Confirm, gate.Current, log)
 	defer mux.Close()
 	who := childAccount(false)
-	cfg := fleet.ClientConfig{Dir: dir, Tools: gate.Tools(mux), Version: version.Version, User: who, Hello: hello, Log: log}
+	// The copies of this machine's memory the master sends (TEN-532): sealed
+	// snapshots it cannot read, kept inside the child's own directory, which
+	// the file tools refuse. Without them the child serves its tools and says
+	// it keeps no copy.
+	memory, err := shadow.OpenChildStore(childMemoryDir(dir))
+	if err != nil {
+		log.Warn("fleet child: no copy of this machine's memory can be kept", "err", err)
+		memory = nil
+	}
+	cfg := fleet.ClientConfig{Dir: dir, Tools: gate.Tools(mux), Version: version.Version, User: who, Hello: hello, Memory: memory, Log: log}
 	var ready chan childStaged
 	if upd != nil {
 		cfg.Update, ready = upd.piece, upd.ready

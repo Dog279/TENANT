@@ -33,6 +33,10 @@ import (
 //	tools/call      {"call_id","name","arguments","timeout_ms"} -> {"text","is_error","clipped","audit"}
 //	fleet/result    {"call_id"}                        -> {"state":"done|running|unknown","text","is_error","clipped","audit"}
 //	fleet/addresses {"addresses":["host:port"]}        -> {}
+//	fleet/memory/list  (no params)                     -> [{"key","gen","hash","ok"}]
+//	fleet/memory/put   {"key","gen","hash","size","offset","data"} -> {"received":N}
+//	fleet/memory/get   {"key","gen","hash","offset"}   -> {"size":N,"data"}
+//	fleet/memory/purge {"key","gen","hash"}            -> {}
 //	fleet/revoked   notification, no params
 //	notifications/cancelled, sent by the session when a caller gives up
 //
