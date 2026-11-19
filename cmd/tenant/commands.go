@@ -2159,6 +2159,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	mux.EnableStats(tstats)
 	mainLocal.EnableStats(tstats)
 	life.AddFunc(lifecycle.Release, "tool stats", tstats.StartPersist(time.Minute))
+	wireFleetTools() // the fleet_* tools work on this process's fleet (TEN-531); before the first turn
 	mainTools := composite{shared: mux, local: mainLocal, budget: rt.budget, agentID: c.agent, refresh: fleetToolSync(mainLocal, mux)}
 
 	// Live bus view → feed (lossless cursor over the retained log).

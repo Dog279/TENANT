@@ -216,6 +216,10 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 		runCtx = withExecSurface(runCtx, surfaceCronExec) // picks the cron-exec exec profile
 		runCtx = withFleetMachines(runCtx, job.Fleet)     // the fleet machines this job was opened for; none by default
 		prompt, override := agent.ParseRoutePrefix(job.Prompt)
+		// A job opened for fleet machines is told which they are: those on its
+		// list and no other. The two cron agents serve every job, so this is
+		// said in the job's own turn and not in their system prompt.
+		prompt += fleetRosterOf(job.Fleet)
 		res, err := ag.Turn(runCtx, agent.TurnRequest{
 			UserQuery: prompt, RouteSurface: agent.RouteSurfaceCron, RouteOverride: override,
 			TraceID: trace, ParentTraceID: parent,

@@ -385,9 +385,10 @@ type scriptedFleetAgent struct {
 	allow  bool     // its answer
 }
 
-func newScriptedFleetAgent(t *testing.T, tools agent.ToolRegistry, disp agent.ToolDispatcher, render func() string) *scriptedFleetAgent {
+// fleetTestRouter is a router whose planner is planner: an agent built on it
+// asks that fake, and the fake keeps every request it was sent.
+func fleetTestRouter(t *testing.T, planner *testllm.Fake) *model.Router {
 	t.Helper()
-	s := &scriptedFleetAgent{planner: testllm.New()}
 	reg := model.NewEmptyRegistry()
 	for _, p := range []model.Profile{
 		{ID: "plan", Role: model.RolePlanner, Backend: "plan", ProviderKind: "vllm", Endpoint: "http://plan", ContextLength: 64000},
@@ -399,6 +400,14 @@ func newScriptedFleetAgent(t *testing.T, tools agent.ToolRegistry, disp agent.To
 	}
 	router := model.NewRouter(reg, nil)
 	embedder := testllm.New()
+	router.RegisterBackend("plan", func(context.Context, model.Profile, *slog.Logger) (any, error) { return planner, nil })
+	router.RegisterBackend("embed", func(context.Context, model.Profile, *slog.Logger) (any, error) { return embedder, nil })
+	return router
+}
+
+func newScriptedFleetAgent(t *testing.T, tools agent.ToolRegistry, disp agent.ToolDispatcher, render func() string) *scriptedFleetAgent {
+	t.Helper()
+	s := &scriptedFleetAgent{planner: testllm.New()}
 	s.planner.GenerateFn = func(context.Context, model.GenerateRequest) (*model.GenerateResponse, error) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -409,8 +418,7 @@ func newScriptedFleetAgent(t *testing.T, tools agent.ToolRegistry, disp agent.To
 		s.script = s.script[1:]
 		return &model.GenerateResponse{ToolCalls: []model.ToolCall{next}}, nil
 	}
-	router.RegisterBackend("plan", func(context.Context, model.Profile, *slog.Logger) (any, error) { return s.planner, nil })
-	router.RegisterBackend("embed", func(context.Context, model.Profile, *slog.Logger) (any, error) { return embedder, nil })
+	router := fleetTestRouter(t, s.planner)
 	var err error
 	s.ag, err = agent.New(agent.Config{
 		AgentID: "main", SessionID: "fleet", Router: router, Working: working.New(),

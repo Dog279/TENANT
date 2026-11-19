@@ -447,6 +447,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	mux.EnableStats(stats)
 	mainLocal.EnableStats(stats)
 	life.AddFunc(lifecycle.Release, "tool stats", stats.StartPersist(time.Minute))
+	wireFleetTools() // the fleet_* tools work on this process's fleet (TEN-531); before the first turn
 	mainTools := composite{shared: mux, local: mainLocal, budget: rt.budget, agentID: c.agent, refresh: fleetToolSync(mainLocal, mux)}
 
 	// Bus traffic → dashboard feed (lossless cursor over the retained log).

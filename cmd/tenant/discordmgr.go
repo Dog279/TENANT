@@ -120,6 +120,7 @@ func buildDiscordAgent(token string, d discordAgentDeps) (relayRunner, *discord.
 		Compactor:              d.compactor,
 		UserProfile:            d.userProfile,
 		SystemPrompt:           d.sysPrompt + discordSysSuffix,
+		RenderAgents:           func() string { return fleetRelayRoster(surfaceDiscord) }, // once this relay is opened for the fleet
 		Observer:               mirrorObserver(d.events, "tenant-discord", "discord"),
 		RouteHook:              d.routeHook,
 		RouteActive:            d.routeActive,

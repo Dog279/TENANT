@@ -59,6 +59,9 @@ type fleetToolDeps struct {
 	store   func() *fleet.Store                       // nil result: no fleet in this config dir
 	origin  func(ctx context.Context) approval.Origin // the turn's origin
 	schemes *approval.Fleet                           // per-machine approval schemes
+	// heldBy names the process that holds the fleet when it is not this one,
+	// or "" (nil: this seam cannot tell).
+	heldBy func() string
 }
 
 var fleetDeps *fleetToolDeps // nil: no fleet, no tools, no roster line
@@ -259,8 +262,23 @@ func fleetNameOK(s string) bool {
 // set of words. Empty while there is no machine. The agent is told the hosts
 // that exist so that it need not ask, and so that a host it was never told
 // about stands out.
-func fleetRoster() string {
+func fleetRoster() string { return fleetRosterWhere(nil) }
+
+// fleetRosterOf is the roster of the machines with these ids alone: what a
+// cron job opened for them is told. Empty for an empty list.
+func fleetRosterOf(ids []string) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	return fleetRosterWhere(func(id string) bool { return slices.Contains(ids, id) })
+}
+
+// fleetRosterWhere is the roster of the machines keep takes (nil: all).
+func fleetRosterWhere(keep func(id string) bool) string {
 	list, held, err := fleetChildren()
+	if keep != nil {
+		list = slices.DeleteFunc(list, func(m fleet.MachineStatus) bool { return !keep(m.ID) })
+	}
 	if err != nil || len(list) == 0 {
 		return ""
 	}
@@ -382,6 +400,9 @@ func (p *fleetToolPlugin) Dispatch(ctx context.Context, call model.ToolCall) (st
 		res, err := t.mgr.Result(ctx, t.m.ID, a.ID)
 		if err == nil {
 			t.turn.touch(t.m)
+			// The call's own record was written when its link dropped, with no
+			// hash: the machine's audit record of it is kept here.
+			fleetToolLog.InfoContext(ctx, "fleet call result", "host", t.m.ID, "name", t.m.Name, "call", a.ID, "origin", t.origin.Name, "audit", res.Audit)
 		}
 		return t.say(ctx, "the result of call "+a.ID, res, err)
 	case call.Name == "fleet_call":
@@ -680,6 +701,11 @@ func fleetReach(ctx context.Context, host string) (*fleetTarget, string) {
 		return nil, fmt.Sprintf("fleet: %s: %v. No call was made.", m.Name, err)
 	}
 	if t.mgr = d.holder(); t.mgr == nil {
+		if d.heldBy != nil {
+			if who := d.heldBy(); who != "" { // "fleet: tenant serve (process N) holds the fleet, on ADDR since T"
+				return nil, who + ". No call was made: fleet calls work from that process, not this one."
+			}
+		}
 		return nil, "fleet: this Tenant process does not hold the fleet's links: another Tenant process on this computer does, or the fleet's listener is not running. Fleet calls work from the process that holds them; /fleet says which."
 	}
 	return t, ""
@@ -731,9 +757,11 @@ func (t *fleetTarget) run(ctx context.Context, tool string, args json.RawMessage
 		t.turn.touch(t.m)
 	}
 	// The record of the call that names its machine: the turn's own tool
-	// records have no place for one.
+	// records have no place for one. audit is the hash of the record the
+	// machine wrote of the same call in its own audit log (64 hex, or empty
+	// when no result came back): the two logs can be laid side by side.
 	fleetToolLog.InfoContext(ctx, "fleet call", "host", t.m.ID, "name", t.m.Name, "tool", tool, "call", res.CallID,
-		"origin", t.origin.Name, "outcome", outcome, "took", time.Since(start).Round(time.Millisecond))
+		"origin", t.origin.Name, "outcome", outcome, "took", time.Since(start).Round(time.Millisecond), "audit", res.Audit)
 	return res, err
 }
 

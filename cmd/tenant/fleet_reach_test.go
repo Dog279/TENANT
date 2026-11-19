@@ -28,8 +28,9 @@ func TestOnlyTheOperatorConfirmsAMachine(t *testing.T) {
 		toolNames     = map[string]string{}
 	)
 	// Where a relay, a tool or the dashboard lives: none of it may so much as
-	// name the confirm operation.
-	offLimits := regexp.MustCompile(`^(internal/(dashboard|plugins|toolmux|pluginreg|mcpserver|agent|orchestra)/|cmd/tenant/(discord|imessage|dashboard|plugin_|toolmux|mcp|cron|peer|extapprove|restricttools|team|research)[^/]*$|cmd/tenant/[^/]*(_dashctl|tools|_tool)\.go$)`)
+	// name the confirm operation. The fleet's own tools are among them
+	// (fleettools.go by the pattern's "tools", fleetcopy.go by name).
+	offLimits := regexp.MustCompile(`^(internal/(dashboard|plugins|toolmux|pluginreg|mcpserver|agent|orchestra)/|cmd/tenant/(discord|imessage|dashboard|plugin_|toolmux|mcp|cron|peer|extapprove|restricttools|team|research)[^/]*$|cmd/tenant/[^/]*(_dashctl|tools|_tool)\.go$|cmd/tenant/fleetcopy\.go$)`)
 	names := regexp.MustCompile(`\b(confirmMachine|fleetTUIControl|FleetControl|fleetConfirmCmd)\b`)
 	fleetTool := regexp.MustCompile(`^fleet_[a-z_]+$`)
 
@@ -128,7 +129,16 @@ func TestOnlyTheOperatorConfirmsAMachine(t *testing.T) {
 	}
 	// The fleet's tools are the spec's (section 4), and none of them enrolls,
 	// confirms, renames, revokes or sets permissions. The other two names are
-	// the settings file's keys.
+	// the settings file's keys. The ten tools that are built (fleet_note comes
+	// with the memory, TEN-532) are the ten the agent is offered, no more.
+	var offered []string
+	for _, spec := range fleetToolSpecs() {
+		offered = append(offered, spec.Name)
+	}
+	if want := []string{"fleet_list", "fleet_exec", "fleet_process", "fleet_read", "fleet_list_dir", "fleet_write", "fleet_edit",
+		"fleet_copy", "fleet_tools", "fleet_call"}; !slices.Equal(offered, want) {
+		t.Errorf("the agent is offered %v, want the ten tools of the spec %v: a new one is looked at here first", offered, want)
+	}
 	allowed := []string{"fleet_list", "fleet_exec", "fleet_process", "fleet_read", "fleet_list_dir", "fleet_write", "fleet_edit",
 		"fleet_copy", "fleet_tools", "fleet_call", "fleet_note", "fleet_schemes", "fleet_rules"}
 	for name, where := range toolNames {

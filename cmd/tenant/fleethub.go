@@ -44,6 +44,35 @@ const defaultFleetListen = "0.0.0.0:9777"
 // command line made. Tests shorten it.
 var fleetWatchInterval = settingsWatchInterval
 
+// fleetListenGuard, when set, is asked before the fleet port is bound, and
+// its error keeps the listener down. Nothing sets it in a shipped Tenant.
+// The tests set it for their whole binary, helper processes included, to a
+// check that refuses every address but a loopback one: the default is every
+// interface, and a first listener there puts a firewall prompt on the screen
+// of whoever is using the computer the tests run on.
+var fleetListenGuard func(addr string) error
+
+// wireFleetTools connects the fleet_* tools (fleettools.go) to this
+// process's fleet: the listener it may hold, the fleet's files, where a turn
+// came from and the machines' approval schemes. serve and the terminal app
+// call it once, where the main agent's tools are built, so it is set before
+// the first turn. A command-line process never calls it and has no fleet
+// tools.
+func wireFleetTools() {
+	fleetDeps = &fleetToolDeps{manager: fleetManager, store: fleetStore, origin: fleetOrigin, schemes: defaultFleet, heldBy: fleetHeldElsewhere}
+}
+
+// fleetRelayRoster is the fleet's roster line for a relay's agent (discord,
+// imessage): the machines, once the operator opened that relay for the
+// fleet, and nothing before. A relay that may make no fleet call is not told
+// which machines exist either.
+func fleetRelayRoster(surface string) string {
+	if h := theFleet.Load(); h == nil || !h.relayOpen(surface) {
+		return ""
+	}
+	return fleetRoster()
+}
+
 // theFleet is this process's hub: nil in a command-line process, and in
 // serve or the terminal app until startFleetHub runs.
 var theFleet atomic.Pointer[fleetHub]
@@ -279,6 +308,9 @@ func (h *fleetHub) tick(ctx context.Context) {
 		h.close()
 	}
 	id, err := fleet.LoadIdentity(path)
+	if err == nil && fleetListenGuard != nil {
+		err = fleetListenGuard(listen)
+	}
 	if err != nil {
 		h.failed(ctx, err)
 		return
