@@ -544,6 +544,7 @@ var readOnlyRefused = []struct{ name, cmd string }{
 	{"find -files0-from", "find -files0-from list -name x"},
 	{"tree --fromfile", "tree --fromfile list"},
 	{"git log --stdin", "git log --stdin"},
+	{"a word of nothing but globs that may climb, past the walk's bound", "ls " + strings.Repeat(".*/", 64)},
 }
 
 // The plain forms must go on running without a prompt.
