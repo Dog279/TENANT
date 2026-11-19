@@ -96,6 +96,9 @@ func TestChildFitsASmallFrame(t *testing.T) {
 	r := newRig(t, func(m *Manager) { m.ws.MaxFrameSize = frame })
 	k := r.kid(t, "box", StateConfirmed)
 	k.c.ws.MaxFrameSize = frame
+	for i := range 600 { // more tools than a frame can list
+		k.tools.fns[fmt.Sprintf("tool-%03d-%s", i, strings.Repeat("x", 100))] = k.tools.fns["echo"]
+	}
 	k.start()
 	id := k.mach.ID
 	r.awaitOnline(t, id, true)
@@ -106,9 +109,6 @@ func TestChildFitsASmallFrame(t *testing.T) {
 	}
 	// A tool list too long for a frame is an error the master hears, not a
 	// request that is never answered.
-	for i := range 600 {
-		k.tools.fns[fmt.Sprintf("tool-%03d-%s", i, strings.Repeat("x", 100))] = k.tools.fns["echo"]
-	}
 	start := time.Now()
 	if _, err := r.mgr.Tools(ctxFor(t), id); err == nil || !strings.Contains(err.Error(), "does not fit in a frame") || time.Since(start) > 5*time.Second {
 		t.Errorf("a tool list larger than a frame = %v after %v", err, time.Since(start))

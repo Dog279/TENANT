@@ -185,10 +185,13 @@ type Call struct {
 	Tool      string
 	Arguments json.RawMessage
 	// Confirm decides each approval the child asks for while this call runs,
-	// and only then. Its context is the call's, with the caller's values, and
-	// ends when the call ends, the link drops or the child stops asking. A
-	// nil Confirm denies. action and detail are the child's words: untrusted
-	// text, bounded in length and nothing more.
+	// and only then: one at a time, and no more than sixteen. Its context is
+	// the call's, with the caller's values, and ends when the call ends, the
+	// link drops or the child stops asking; a yes given after that counts for
+	// nothing, and Confirm may still be returning when Manager.Call already
+	// has. A nil Confirm denies. action is a short identifier (os_exec,
+	// web_transact); detail is the child's words: untrusted text, cut to
+	// eight kilobytes and made valid UTF-8, and nothing more.
 	Confirm func(ctx context.Context, action, detail string) bool
 }
 

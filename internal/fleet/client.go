@@ -360,12 +360,12 @@ func (c *Client) dialLink(ctx context.Context, cfg *tls.Config, addr string) (*t
 func (c *Client) serve(ctx context.Context, t *transport.WS, addr string) (LinkState, string, string, bool) {
 	l := &childLink{c: c, addr: addr}
 	l.sess = mcp.NewSession(noticing{t, l}, l)
+	c.setStatus(LinkConnected, addr, "") // before the hello can add to it
+	c.log.Info("fleet: linked to the master", "address", addr)
+	l.sess.Start(ctx)
 	c.mu.Lock()
 	c.sess = l.sess
 	c.mu.Unlock()
-	c.setStatus(LinkConnected, addr, "")
-	c.log.Info("fleet: linked to the master", "address", addr)
-	l.sess.Start(ctx)
 	select {
 	case <-l.sess.Done():
 	case <-ctx.Done():
