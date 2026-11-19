@@ -13,12 +13,33 @@
 #   TENANT_REPO         GitHub owner/name asked for the latest release
 #   TENANT_BASE_URL     directory URL that holds the archive and checksums.txt
 #   TENANT_INSTALL_DIR  where the tenant binary goes (default: $HOME/.local/bin)
+#
+# To make this machine a child of a fleet in the same paste, set TENANT_CHILD:
+# the script goes straight on to `tenant child install`.
+#
+#   curl -fsSL .../install.sh | TENANT_CHILD=user TENANT_ENROLL_CODE='<code>' sh
+#   curl -fsSL .../install.sh | sudo TENANT_CHILD=system TENANT_ENROLL_CODE='<code>' sh
+#
+#   TENANT_CHILD        user: the child runs as this account. system: as root from
+#                       boot (run the script as root; the binary then goes to
+#                       /usr/local/bin, where only root can replace it)
+#   TENANT_ENROLL_CODE  the one-time code `tenant fleet enroll <name>` printed on the
+#                       master. Left unset, it is asked for on the terminal. It is
+#                       never passed as an argument, where the process list shows it.
 set -eu
 
-REPO="${TENANT_REPO:-__REPO__}"
-DIR="${TENANT_INSTALL_DIR:-$HOME/.local/bin}"
-
 die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
+
+REPO="${TENANT_REPO:-__REPO__}"
+CHILD="${TENANT_CHILD:-}"
+case "$CHILD" in
+  "" | user) DIR="${TENANT_INSTALL_DIR:-$HOME/.local/bin}" ;;
+  system)
+    [ "$(id -u)" = 0 ] || die "TENANT_CHILD=system installs a service that runs as root: run this script as root"
+    DIR="${TENANT_INSTALL_DIR:-/usr/local/bin}"
+    ;;
+  *) die "TENANT_CHILD is user or system, not $CHILD" ;;
+esac
 
 # macOS: the installed binary carries the hardened-runtime flag, which makes
 # the system refuse a debugger outright (process protection). The copy that
@@ -109,4 +130,17 @@ case ":$PATH:" in
     esac
     ;;
 esac
+
+if [ -n "$CHILD" ]; then
+  set -- child install
+  if [ "$CHILD" = system ]; then set -- "$@" --system; fi
+  if [ -n "${TENANT_ENROLL_CODE:-}" ]; then
+    "$DIR/tenant" "$@" # the code travels in the environment
+  elif (: </dev/tty) 2>/dev/null; then
+    "$DIR/tenant" "$@" </dev/tty # this script came in on standard input, so the code is typed
+  else
+    die "no terminal to ask for the enrollment code on: set TENANT_ENROLL_CODE"
+  fi
+  exit 0
+fi
 echo "Next: tenant setup"

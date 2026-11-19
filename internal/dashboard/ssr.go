@@ -140,6 +140,7 @@ type ssrTemplates struct {
 	research      *template.Template // research page (TEN-210)
 	researchRun   *template.Template // one past research run
 	researchParts *template.Template // the research partials, patched over /research/live
+	fleet         *template.Template // the fleet's machines (TEN-533)
 }
 
 // parseSSR parses every set with the ui.html partials and their funcs
@@ -176,6 +177,7 @@ func parseSSR() *ssrTemplates {
 		research:      must("templates/layout.html", "templates/research.html", "templates/research_parts.html"),
 		researchRun:   must("templates/layout.html", "templates/research_run.html", "templates/research_parts.html"),
 		researchParts: must("templates/research_parts.html"),
+		fleet:         must("templates/layout.html", "templates/fleet.html"),
 	}
 }
 

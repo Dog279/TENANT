@@ -45,6 +45,24 @@ func TestChatStream_RailLinesAndCap(t *testing.T) {
 	}
 }
 
+// A fleet call's rail lines name the machine it works on (TEN-531), escaped
+// like the rest of the line: the name is what the model asked for.
+func TestChatStream_RailNamesAFleetCallsMachine(t *testing.T) {
+	cs := newChatStream()
+	for _, c := range []struct {
+		ev   agent.Event
+		want string
+	}{
+		{agent.Event{Kind: agent.EventToolCall, Tool: "fleet_exec", Host: "web1", Args: `{"host":"web1"}`}, "⚡ fleet_exec@web1("},
+		{agent.Event{Kind: agent.EventToolResult, Tool: "fleet_exec", Host: "web1", Duration: time.Second}, "✓ fleet_exec@web1 · 1s"},
+		{agent.Event{Kind: agent.EventToolResult, Tool: "fleet_read", Host: "<b>", IsErr: true, Result: "offline"}, "✗ fleet_read@&lt;b&gt; · "},
+	} {
+		if ps := cs.railPatches(c.ev); len(ps) != 1 || !strings.Contains(string(ps[0]), c.want) {
+			t.Errorf("rail line for %+v: %q, want %q in it", c.ev, ps, c.want)
+		}
+	}
+}
+
 func TestChatPage_HasTheActivityToggle(t *testing.T) {
 	s := New(Config{}, &chatRunner{}, &fakeTools{}, nil, nil, nil)
 	body := get(t, s, "/chat").Body.String()

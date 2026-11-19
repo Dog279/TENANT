@@ -524,6 +524,7 @@ func buildIMessageAgent(d imessageAgentDeps) (*agent.Agent, error) {
 		Compactor:              d.compactor,
 		UserProfile:            d.userProfile,
 		SystemPrompt:           d.sysPrompt + imessageSysSuffix,
+		RenderAgents:           func() string { return fleetRelayRoster(surfaceIMessage) }, // once this relay is opened for the fleet
 		Observer:               mirrorObserver(d.events, "tenant-imessage", "imessage"),
 		RouteHook:              d.routeHook,
 		RouteActive:            d.routeActive,

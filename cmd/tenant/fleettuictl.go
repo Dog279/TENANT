@@ -1,0 +1,246 @@
+package main
+
+// fleettuictl.go adapts the fleet to tui.FleetControl: /fleet and
+// /permissions fleet in the terminal app (TEN-531). It runs the same
+// operations as `tenant fleet` (fleetctl.go), over this process's own state:
+// defaultFleet and the live settings. It works whether this process holds the
+// fleet or another does; only the holder knows which machines are online.
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"maps"
+	"os"
+	"slices"
+	"strings"
+	"sync"
+
+	"tenant/internal/approval"
+	"tenant/internal/fleet"
+	"tenant/internal/logs/catalog"
+	"tenant/internal/tui"
+)
+
+type fleetTUIControl struct {
+	ops fleetOps
+	lc  *launchConfig
+}
+
+// newFleetTUIControl builds the terminal's fleet control. stg is the live
+// settings, read under mu: the master's local scheme as its settings file
+// holds it, which a new machine's scheme is copied from.
+func newFleetTUIControl(c *commonFlags, stg *settings, mu *sync.Mutex) fleetTUIControl {
+	lc := c.lc
+	if lc == nil {
+		lc = &launchConfig{}
+	}
+	return fleetTUIControl{lc: lc, ops: liveFleetOps(c, stg, mu, surfaceTUI)}
+}
+
+// liveFleetOps are the fleet's operations over a running process's own state:
+// defaultFleet, and the live settings stg read under mu. surface names where
+// the operator is (the terminal app, the dashboard) in the Security records.
+func liveFleetOps(c *commonFlags, stg *settings, mu *sync.Mutex, surface string) fleetOps {
+	return fleetOps{
+		cfgDir: c.cfgDir, store: fleet.Open(c.cfgDir), surface: surface,
+		schemes: func() (*approval.Fleet, error) { return defaultFleet, nil },
+		local: func() (approval.Scheme, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			return approval.Scheme{Permissions: maps.Clone(stg.Permissions), ToolRules: maps.Clone(stg.ToolRules)}, nil
+		},
+	}
+}
+
+// fleetHolding says which process holds the fleet of this process's config
+// dir, in words; here is true when it is this one, which then knows which
+// machines are online.
+func fleetHolding() (head string, here bool) {
+	if mgr := fleetManager(); mgr != nil {
+		return "this process holds the fleet, on " + mgr.Addr().String(), true
+	}
+	if elsewhere := fleetHeldElsewhere(); elsewhere != "" {
+		return strings.TrimPrefix(elsewhere, "fleet: "), false
+	}
+	head = "no process holds the fleet yet, so no machine can connect"
+	if h := theFleet.Load(); h != nil {
+		h.mu.Lock()
+		if h.problem != "" {
+			head = "the fleet listener is not up: " + fleetQuote(h.problem)
+		}
+		h.mu.Unlock()
+	}
+	return head, false
+}
+
+// links is each machine's link, when this process holds the fleet.
+func fleetLinks() map[string]fleet.MachineStatus {
+	mgr := fleetManager()
+	if mgr == nil {
+		return nil
+	}
+	all, err := mgr.Machines()
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]fleet.MachineStatus, len(all))
+	for _, st := range all {
+		out[st.ID] = st
+	}
+	return out
+}
+
+func (f fleetTUIControl) Status() string {
+	// Never made a master. (An identity that is there and does not load is a
+	// listener that is not up, told below.)
+	if _, err := os.Lstat(fleet.MasterIdentityPath(f.ops.cfgDir)); err != nil {
+		return "Fleet: this Tenant has no fleet yet: run `tenant fleet init`"
+	}
+	machines, err := f.ops.store.Machines()
+	if err != nil {
+		return "Fleet: " + err.Error()
+	}
+	links := fleetLinks()
+	head, here := fleetHolding()
+	foot := ""
+	switch {
+	case here:
+		foot = "  Machines are connected only while this app is open: a master with a fleet should run `tenant serve` as its service (tenant service install)."
+	case fleetHeldElsewhere() != "":
+		foot = "  Which machines are online is known there, and calls to them are made there."
+	}
+	return "Fleet: " + head + "\n" + listText(machines, links) + "\n" + foot
+}
+
+func (f fleetTUIControl) Show(name string) (string, error) {
+	m, err := f.ops.machine(name)
+	if err != nil {
+		return "", err
+	}
+	var link *fleet.MachineStatus
+	if st, ok := fleetLinks()[m.ID]; ok {
+		link = &st
+	}
+	return f.ops.show(m, link), nil
+}
+
+func (f fleetTUIControl) Confirm(name, code string, pairs []string) (string, error) {
+	set, err := parseSet(pairs)
+	if err != nil {
+		return "", err
+	}
+	if code == "" {
+		m, err := f.ops.machine(name)
+		if err != nil {
+			return "", err
+		}
+		if m.State != fleet.StatePending {
+			return "", fmt.Errorf("%s is %s, not waiting for confirmation", fleetName(m.Name), m.State)
+		}
+		_, p, err := f.ops.preview(m, set)
+		if err != nil {
+			return "", err
+		}
+		return confirmScreen(m, p) + fmt.Sprintf("\nTo confirm, type the six digits it shows on its own screen:  /fleet confirm %s <six digits>%s\n"+
+			"To start a category looser or tighter on this machine alone, add pairs:  /fleet confirm %s <six digits> exec=allow",
+			fleetName(m.Name), strings.Join(append([]string{""}, pairs...), " "), fleetName(m.Name)), nil
+	}
+	m, _, err := f.ops.confirmMachine(name, code, set)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("confirmed %s (%s). The master may call it from now on; its scheme: /permissions fleet %s", fleetName(m.Name), m.ID, fleetName(m.Name)), nil
+}
+
+func (f fleetTUIControl) Revoke(name, scheme string) (string, error) {
+	m, err := f.ops.machine(name)
+	if err != nil {
+		return "", err
+	}
+	n := fleetName(m.Name)
+	switch scheme {
+	case "":
+		return fmt.Sprintf("Revoke %s (%s)? Its certificate is refused from then on and its link is closed.\n"+
+			"  /fleet revoke %s keep     keeps its approval scheme under its id, for a machine enrolled later to adopt\n"+
+			"  /fleet revoke %s delete   deletes its approval scheme and its record", n, m.ID, n, n), nil
+	case "keep", "delete":
+		if _, err := f.ops.revoke(m.ID, scheme == "delete"); err != nil {
+			return "", err
+		}
+		if scheme == "delete" {
+			return fmt.Sprintf("revoked %s (%s): its certificate is refused, and its record and approval scheme are deleted", n, m.ID), nil
+		}
+		return fmt.Sprintf("revoked %s (%s): its certificate is refused. Its approval scheme is kept under its id", n, m.ID), nil
+	}
+	return "", errors.New("say keep or delete: what becomes of its approval scheme")
+}
+
+func (f fleetTUIControl) Perms(name string) (tui.PermissionControl, error) {
+	m, err := f.ops.machine(name)
+	if err != nil {
+		return nil, err
+	}
+	return defaultFleet.Child(m.ID)
+}
+
+func (f fleetTUIControl) Defaults() tui.ToolRuleControl { return fleetRuleSet{defaultFleet.Rules()} }
+
+func (f fleetTUIControl) Relay(args []string) (string, error) {
+	out, err := fleetRelaySwitch(f.ops.cfgDir, f.lc, args)
+	if h := theFleet.Load(); err == nil && h != nil {
+		h.mu.Lock()
+		h.cfgSeen = [2]int64{} // read config.json again at the next look, whatever its timestamp says
+		h.relays = map[string]bool{surfaceDiscord: f.lc.Relay.AllowFleet, surfaceIMessage: f.lc.IMessage.AllowFleet}
+		h.mu.Unlock()
+	}
+	return out, err
+}
+
+// fleetNames is a list of machine ids as their names, for display; an id no
+// machine has any more shows as itself.
+func fleetNames(ids []string) []string {
+	st := fleetStore()
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = id
+		if st == nil {
+			continue
+		}
+		if m, err := st.Machine(id); err == nil && m.State != fleet.StateRevoked {
+			out[i] = fleetName(m.Name)
+		} else if err == nil {
+			out[i] = id + " (revoked)"
+		}
+	}
+	return out
+}
+
+// SetFleet is /cron fleet: the fleet machines job id may reach, by name or
+// id. The job keeps their ids, so a rename does not move it and a revoked
+// machine's name, given to another, does not either.
+func (a tuiCron) SetFleet(id string, machines []string) (tui.CronJobView, error) {
+	st := fleetStore()
+	if st == nil && len(machines) > 0 {
+		return tui.CronJobView{}, errors.New("this Tenant has no fleet: tenant fleet init")
+	}
+	ids := make([]string, 0, len(machines))
+	for _, ref := range machines {
+		m, err := (fleetOps{store: st}).machine(ref)
+		if err != nil {
+			return tui.CronJobView{}, err
+		}
+		if m.State == fleet.StateRevoked {
+			return tui.CronJobView{}, fmt.Errorf("%s is revoked", fleetName(m.Name))
+		}
+		ids = append(ids, m.ID)
+	}
+	j, err := a.m.engine.SetFleet(id, ids)
+	if err != nil {
+		return tui.CronJobView{}, err
+	}
+	_ = catalog.ScheduledJobChanged.Audit(context.Background(), "job", j.Label(), "id", j.ID,
+		"state", "fleet machines: "+strings.Join(slices.Clone(j.Fleet), ", "), "actor", actorOperator, "surface", surfaceTUI)
+	return tui.CronJobView{ID: j.ID, Name: j.Name, Spec: j.Spec, Enabled: j.Enabled, Kind: j.KindOf(), Exec: j.Exec, TZ: j.TZ,
+		NextRun: cronFmtTime(j.NextRun), Fleet: fleetNames(j.Fleet)}, nil
+}

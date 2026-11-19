@@ -94,6 +94,9 @@ type Event struct {
 	Iter   int    // planner-loop iteration (1-based), 0 for turn-level events
 	Text   string // user query / token delta / assistant text / final / error
 	Tool   string // tool name (ToolCall/ToolResult/Validation)
+	// Host is the fleet machine a fleet_* call works on, by the name the
+	// model gave (ToolCall/ToolResult; TEN-531). "" for every other tool.
+	Host string
 	// ToolCallID is the model's ID for the call (ToolCall/ToolResult), so its
 	// approval and sandbox run, which carry it too, stay with it.
 	ToolCallID string
@@ -165,8 +168,8 @@ var FinalAnswer = Turns.Event(1005, event.Info, "Turn", "final response", "agent
 		"The model answered without calling another tool.",
 		"None.")
 
-var ToolDone = Turns.Event(1101, event.Info, "Tool call", "Tool {tool} finished in {duration}", "agent", "iter", "tool", "duration").
-	Doc("A tool call returned. Its arguments and result are in the diagnostic channel (turns 9001 and 9002).",
+var ToolDone = Turns.Event(1101, event.Info, "Tool call", "Tool {tool} finished in {duration}", "agent", "iter", "tool", "duration", "host").
+	Doc("A tool call returned. Its arguments and result are in the diagnostic channel (turns 9001 and 9002). host names the fleet machine a fleet_* call worked on.",
 		"The model called a tool.",
 		"None. A tool that is often slow shows here first.")
 
@@ -254,8 +257,8 @@ var TurnError = Turns.Event(3001, event.Error, "Turn", "turn error", "agent", "i
 		"The model's backend failed or refused the request, or the conversation outgrew the model's context.",
 		"Read the error; the model log usually has the backend's side. A turn that ends on it also has a turn fail (turns 1).")
 
-var ToolFailed = Turns.Event(3101, event.Error, "Tool call", "Tool {tool} failed after {duration}", "agent", "iter", "tool", "duration", "error").
-	Doc("A tool call returned an error. The model gets the error and usually tries something else; the result is in the diagnostic channel (turns 9003), and error holds a failure outside the tool itself.",
+var ToolFailed = Turns.Event(3101, event.Error, "Tool call", "Tool {tool} failed after {duration}", "agent", "iter", "tool", "duration", "error", "host").
+	Doc("A tool call returned an error. The model gets the error and usually tries something else; the result is in the diagnostic channel (turns 9003), and error holds a failure outside the tool itself. host names the fleet machine a fleet_* call worked on.",
 		"The tool refused its arguments, its service failed, or the tool is broken.",
 		"None when the turn recovers. A tool that fails every time needs its configuration or its service checked.")
 

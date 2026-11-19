@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sort"
+	"strings"
 	"sync"
 	"tenant/internal/logs/event"
 	"time"
@@ -129,6 +130,27 @@ func (f DispatcherFunc) Dispatch(ctx context.Context, call model.ToolCall) (stri
 	return f(ctx, call)
 }
 
+// callHost is the fleet machine a call works on: the host argument of a
+// fleet_* tool (TEN-531), cut to 64 bytes; "" for every other call. The run
+// trace, the activity rail and the turns log name it beside the tool. It is
+// what the model asked for, not a machine the call was checked against.
+func callHost(c model.ToolCall) string {
+	if !strings.HasPrefix(c.Name, "fleet_") {
+		return ""
+	}
+	var a struct {
+		Host string `json:"host"`
+	}
+	if json.Unmarshal(c.Arguments, &a) != nil {
+		return ""
+	}
+	h := strings.TrimSpace(a.Host)
+	if len(h) > 64 {
+		h = strings.ToValidUTF8(h[:64], "")
+	}
+	return h
+}
+
 // ToolCallResult is the outcome of one dispatched tool call.
 type ToolCallResult struct {
 	Call    model.ToolCall
@@ -138,7 +160,8 @@ type ToolCallResult struct {
 	// Duration is how long the call took to return.
 	Duration time.Duration
 	// Labels carry sensitivity/provenance on the tool-result envelope. They are
-	// populated from the registered ToolSpec only for successful results.
+	// populated from the registered ToolSpec only for successful results; a
+	// failed call carries what its tool reported itself (ReportFlow).
 	Labels []model.InfoFlowLabel
 	// Images are the pictures the tool handed the model (TEN-493), saved and
 	// labelled by the agent from rawImages.

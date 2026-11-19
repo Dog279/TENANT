@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -90,7 +89,7 @@ func (b *windowsRestricted) Run(ctx context.Context, cmd Command, pol Policy) (R
 	c.Stdout = buf
 	c.Stderr = buf
 
-	c.SysProcAttr = &syscall.SysProcAttr{CreationFlags: uint32(windows.CREATE_SUSPENDED)}
+	c.SysProcAttr = procAttr(windows.CREATE_SUSPENDED)
 
 	if err := procprotect.Start(c); err != nil {
 		return Result{}, fmt.Errorf("sandbox: start child: %w", err)
@@ -164,7 +163,7 @@ func (b *windowsRestricted) Start(ctx context.Context, argv []string, pol Policy
 		c.Dir = pol.WorkDir
 	}
 	c.Env = pol.Env.materialize(os.Environ())
-	c.SysProcAttr = &syscall.SysProcAttr{CreationFlags: uint32(windows.CREATE_SUSPENDED)}
+	c.SysProcAttr = procAttr(windows.CREATE_SUSPENDED)
 	return startProcess(c, pol.Stderr, func(pid int) error { return assignAndResume(job, pid) },
 		func() { windows.CloseHandle(job) }) // kill-on-close ends anything the server left behind
 }

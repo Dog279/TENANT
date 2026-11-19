@@ -278,6 +278,15 @@ func (cs *chatStream) railPatches(ev agent.Event) [][]byte {
 	return out
 }
 
+// railTool is a tool call's name on the rail, with the fleet machine it
+// works on (TEN-531): fleet_exec@web1.
+func railTool(ev agent.Event) string {
+	if ev.Host == "" {
+		return ev.Tool
+	}
+	return ev.Tool + "@" + ev.Host
+}
+
 // railLine is the activity rail's text for an event, with its class: turn,
 // tool, ok, err or sys; "" for an event the rail does not show.
 func railLine(ev agent.Event) (string, string) {
@@ -285,12 +294,12 @@ func railLine(ev agent.Event) (string, string) {
 	case agent.EventTurnStart:
 		return "▸ " + snippetStr(ev.Text, 60), "turn"
 	case agent.EventToolCall:
-		return "⚡ " + ev.Tool + "(" + snippetStr(ev.Args, 48) + ")", "tool"
+		return "⚡ " + railTool(ev) + "(" + snippetStr(ev.Args, 48) + ")", "tool"
 	case agent.EventToolResult:
 		if ev.IsErr {
-			return "✗ " + ev.Tool + " · " + ev.Duration.Round(tenth).String() + " · " + snippetStr(ev.Result, 60), "err"
+			return "✗ " + railTool(ev) + " · " + ev.Duration.Round(tenth).String() + " · " + snippetStr(ev.Result, 60), "err"
 		}
-		return "✓ " + ev.Tool + " · " + ev.Duration.Round(tenth).String(), "ok"
+		return "✓ " + railTool(ev) + " · " + ev.Duration.Round(tenth).String(), "ok"
 	case agent.EventValidation:
 		return "✗ " + ev.Tool + ": " + snippetStr(ev.Text, 60), "err"
 	case agent.EventRetry:

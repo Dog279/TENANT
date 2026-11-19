@@ -75,6 +75,8 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 
 	discordBroker := newDiscordApprovalBroker(d.log.With("source", "approvals"))
 	discordBroker.SetEvents(d.emit) // visibility bridge: surface Discord-routed approvals on the feed (TEN-203)
+	// A Discord turn's fleet call is checked by this broker as well as by the machine's scheme (TEN-531).
+	fleetRelayBroker(surfaceDiscord, discordBroker)
 	discordBroker.SetPersist(func(snap map[string]string, known []string) {
 		persistChoice(c.cfgDir, c.lc, d.notify, "relay: the permission change", func(lc *launchConfig) {
 			lc.Relay.Permissions, lc.Relay.KnownCategories = snap, known
@@ -219,6 +221,8 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 		imsgBroker.LoadModes(c.lc.IMessage.Permissions, c.lc.IMessage.KnownCategories)
 	}
 	allowMgr.setPerms(imsgBroker)
+	// An iMessage turn's fleet call is checked by this broker as well as by the machine's scheme (TEN-531).
+	fleetRelayBroker(surfaceIMessage, imsgBroker)
 	allowMgr.loadConfig(c.cfgDir, c.lc)
 
 	// Phase-2 text-confirm operator (TEN-267): the handle whose "Y <nonce>" reply

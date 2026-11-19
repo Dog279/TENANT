@@ -12,33 +12,38 @@ import "tenant/internal/logs/event"
 // Approvals. category, action and detail name what was asked; origin is the
 // surface that raised it: local, discord, imessage or cron. via says what
 // decided: operator (a person; the actor names who), mode, session, rule,
-// lock, no_surface or cron (the cron-exec approver).
+// lock, no_surface or cron (the cron-exec approver). For an action that lands
+// on a fleet machine, host is the id the master gave the machine and
+// host_name its label, escaped to plain ASCII (detail starts with both), and
+// via may also be origin (the origin's own rules refused it), fleet (the
+// origin may not reach that machine, or the request was not fit to show) or
+// rate_limit (the machine asked too often).
 
-var ApprovalAsk = Security.Event(4101, event.Info, "Approval", "Approval requested: {action} ({category})", "category", "action", "detail", "origin").
+var ApprovalAsk = Security.Event(4101, event.Info, "Approval", "Approval requested: {action} ({category})", "category", "action", "detail", "origin", "host", "host_name").
 	Keywords("audit.success").
 	Doc("A gated action is waiting for the operator's decision.",
-		"The agent, a job or a peer asked for an action whose category needs approval.",
+		"The agent, a job or a peer asked for an action whose category needs approval. For an action on a fleet machine, host and host_name say which machine, and detail starts with them.",
 		"Approve or deny it where it was asked; it expires when nobody answers.")
 
-var ApprovalYes = Security.Event(4102, event.Info, "Approval", "Approval granted {grant}: {action} ({category})", "category", "action", "detail", "origin", "grant", "via", "nonce").
+var ApprovalYes = Security.Event(4102, event.Info, "Approval", "Approval granted {grant}: {action} ({category})", "category", "action", "detail", "origin", "grant", "via", "nonce", "host", "host_name").
 	Keywords("audit.success").
 	Doc("A gated action was allowed, so it went ahead: once, for the session, or always (which sets its category, or its tool rule, to allow).",
 		"The operator approved it (via operator; on a Discord card, nonce is the card's), or a standing setting allowed it without asking: the category's mode, a session grant, a tool rule, the cron-exec approver.",
 		"None when intended. To be asked again, set the category back to ask (/permissions).")
 
-var ApprovalNo = Security.Event(4103, event.Warning, "Approval", "Approval denied: {action} ({category})", "category", "action", "detail", "origin", "via", "nonce").
+var ApprovalNo = Security.Event(4103, event.Warning, "Approval", "Approval denied: {action} ({category})", "category", "action", "detail", "origin", "via", "nonce", "host", "host_name").
 	Keywords("audit.failure").
 	Doc("A gated action was denied, so it did not run.",
-		"The operator denied it (via operator), a standing setting did (the category's mode, a tool rule, the surface's lock: the Discord relay's exec mode, or the cron-exec approver), or no operator could be reached (no_surface).",
+		"The operator denied it (via operator), a standing setting did (the category's mode, a tool rule, the surface's lock: the Discord relay's exec mode, or the cron-exec approver), or no operator could be reached (no_surface). For an action on a fleet machine (host): the origin's own rules refused it (origin), the origin may not reach that machine or the request was not fit to show (fleet), or the machine asked too often (rate_limit).",
 		"None when intended; otherwise check the category's approval mode.")
 
-var ApprovalShutdown = Security.Event(4104, event.Warning, "Approval", "Approval denied at shutdown: {action} ({category})", "category", "action", "detail", "origin").
+var ApprovalShutdown = Security.Event(4104, event.Warning, "Approval", "Approval denied at shutdown: {action} ({category})", "category", "action", "detail", "origin", "host", "host_name").
 	Keywords("audit.failure").
 	Doc("A gated action still waiting for its decision was denied because Tenant was stopping.",
 		"Tenant stopped while the prompt was open.",
 		"None. The agent can ask again after the restart.")
 
-var ApprovalExpired = Security.Event(4105, event.Warning, "Approval", "Approval expired unanswered: {action} ({category})", "category", "action", "detail", "origin", "nonce").
+var ApprovalExpired = Security.Event(4105, event.Warning, "Approval", "Approval expired unanswered: {action} ({category})", "category", "action", "detail", "origin", "nonce", "host", "host_name").
 	Keywords("audit.failure").
 	Doc("Nobody answered a gated action's prompt in time, so it did not run.",
 		"The prompt timed out (relay.approval_timeout on Discord and iMessage), or the turn that asked ended first.",
@@ -46,8 +51,8 @@ var ApprovalExpired = Security.Event(4105, event.Warning, "Approval", "Approval 
 
 var ModeChanged = Security.Event(4106, event.Info, "Approval", "{broker} approvals for {category} set to {mode}", "broker", "category", "mode", "was").
 	Keywords("audit.success").
-	Doc("The operator changed how one category of gated actions is approved on one surface (broker: local, discord or imessage): ask, allow or deny.",
-		"/permissions, /relay permissions or /imessage permissions in the terminal, or the dashboard's Access page. An Always grant sets allow too; its record is the grant (4102).",
+	Doc("The operator changed how one category of gated actions is approved on one surface (broker: local, discord or imessage) or for one fleet machine (broker: fleet: followed by the machine's id): ask, allow or deny.",
+		"/permissions, /relay permissions or /imessage permissions in the terminal, tenant fleet permissions, or the dashboard's Access page or, for a fleet machine, its Fleet page. An Always grant sets allow too; its record is the grant (4102).",
 		"None when intended.")
 
 // Execution: every os_exec and cron shell command, on every backend. The
@@ -109,6 +114,33 @@ var PeerUnpaired = Security.Event(4312, event.Info, "Peering", "Unpaired peer {p
 	Doc("A peer can no longer authenticate: its record was removed (how remove) or its tokens revoked (how revoke).",
 		"tenant peer remove or revoke, or /peer remove.",
 		"None when intended. Pair again to restore it.")
+
+// The fleet (TEN-531): a master's child machines. machine is the id the
+// master gave the machine and name its label.
+
+var FleetEnrollRefused = Security.Event(4321, event.Warning, "Fleet", "Fleet enrollment from {remote} refused: {reason}", "reason", "remote", "name", "machine", "certificate").
+	Keywords("audit.failure").
+	Doc("The fleet's enroll endpoint turned an attempt away. reason says why: rate_limited, bad_method, no_certificate, enrollment_off, store_unreadable, body_too_large, bad_request, unknown_code, expired_code, conflict (the name or the certificate is in use). name is the machine name on the code, when the code was recognised; certificate is the fingerprint the attempt presented.",
+		"A code that was mistyped or has expired, a machine enrolled twice, or something on the network probing the fleet port.",
+		"For a machine of yours, make a new code with tenant fleet enroll. Many from an address you don't know mean someone is guessing: keep the fleet port off public networks.")
+
+var FleetCodeReplayed = Security.Event(4322, event.Error, "Fleet", "A spent fleet enrollment code for {name} was presented again from {remote}", "name", "machine", "remote", "certificate").
+	Keywords("audit.failure").
+	Doc("An enrollment code that had already enrolled a machine was presented a second time, and refused. Someone other than the machine it enrolled holds the code, or held it first. machine is the id of the machine the code enrolled.",
+		"The install was run twice on one machine, or the code leaked and one of the two (the machine that is pending, or this attempt) is not yours.",
+		"Check the pending machine before you confirm it: compare the six digits on its own screen. If in doubt, tenant fleet revoke it and enroll it again with a new code.")
+
+var FleetMachineChanged = Security.Event(4323, event.Info, "Fleet", "Fleet machine {name}: {change}", "name", "machine", "change", "detail").
+	Keywords("audit.success").
+	Doc("The operator changed the fleet: change is initialised (this Tenant became a master), code issued, confirmed, renamed, revoked, removed (revoked, and its record and approval scheme deleted) or scheme changed (the machine's approval scheme was replaced by a fresh copy of the master's, or the fleet's rules were laid over it again; detail says which). For a confirmed machine, detail is what the machine reported about itself (its own words) and the categories the operator loosened. surface is where the operator was: cli, tui or dashboard.",
+		"tenant fleet init, enroll, confirm, rename, revoke or permissions --from; /fleet confirm or revoke in the terminal; or the dashboard's Fleet page.",
+		"None when intended. Otherwise tenant fleet revoke the machine.")
+
+var FleetConfirmRefused = Security.Event(4324, event.Warning, "Fleet", "Fleet machine {name} was not confirmed: {reason}", "name", "machine", "reason").
+	Keywords("audit.failure").
+	Doc("A confirmation of a pending fleet machine was refused, and the machine stays pending. On the dashboard the actor is the operator when a browser signed in on the computer running Tenant asked, and otherwise the address the request came from.",
+		"The six digits typed are not the ones that machine shows (a typo, or the pending machine is not the one in front of you), or the machine is not waiting for confirmation. On the dashboard also: the request did not come from a browser signed in on the computer running Tenant (it came with the API key, by a tailnet or proxy name, through a proxy or from another address), or too many attempts for that machine failed and the next ones have to wait.",
+		"Read the six digits from the machine's own screen and try again. If they never match, the pending machine is not yours: tenant fleet revoke it. A machine is confirmed in the terminal, or in a browser on the computer running Tenant at the dashboard's 127.0.0.1 address; a refusal from an address you don't know means someone who can reach the dashboard tried.")
 
 // system: the Security log's own health (4000s).
 

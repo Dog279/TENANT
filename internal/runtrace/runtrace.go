@@ -43,6 +43,7 @@ type Fallback struct {
 type ToolCall struct {
 	ID        string `json:"id,omitempty"`
 	Name      string `json:"name"`
+	Host      string `json:"host,omitempty"` // the fleet machine a fleet_* call worked on (TEN-531)
 	Arguments string `json:"arguments,omitempty"`
 	Result    string `json:"result,omitempty"`
 	Outcome   string `json:"outcome"`

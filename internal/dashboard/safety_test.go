@@ -434,6 +434,30 @@ func TestSafety_KeepNew(t *testing.T) {
 	}
 }
 
+// A card for an action on a fleet machine (TEN-531) says which machine in its
+// headline: "on this computer" is the one thing it must not say. The session
+// step is not offered: on a machine it would cover the one request.
+func TestSafety_QueueNamesTheFleetMachine(t *testing.T) {
+	fq := &fakeQueue{}
+	fq.add(PendingApproval{ID: "ap-fleet", Category: "exec", Action: "os_exec_dangerous", AgeSecs: 1, Origin: "local",
+		Detail: `[host m0123456789abcdef "web1"] rm -rf /srv/old`, Host: "m0123456789abcdef", HostName: "web1"},
+		PendingApproval{ID: "ap-odd", Category: "write", Action: "os_write", AgeSecs: 2, Origin: "local", SessionOK: true,
+			Detail: `[host m0123456789abcdee "<b>"] /etc/motd`, Host: "m0123456789abcdee", HostName: "<b>"})
+	s := safetyServer(&fakeSafety{perms: safetyPerms()}, fq, SafetyFacts{Account: "dylan"})
+	page := get(t, s, "/safety").Body.String()
+	it := item(t, page, "ap-fleet")
+	if !strings.Contains(it, "<b>On the machine &#34;web1&#34;: your agent wants to run commands and programs</b>") || strings.Contains(it, "on this computer") {
+		t.Errorf("the card for a fleet machine:\n%s", it)
+	}
+	if !strings.Contains(it, `[host m0123456789abcdef &#34;web1&#34;] rm -rf /srv/old`) {
+		t.Errorf("the card's detail does not name the machine:\n%s", it)
+	}
+	odd := item(t, page, "ap-odd")
+	if !strings.Contains(odd, "On the machine &#34;&lt;b&gt;&#34;: your agent wants to create and change files</b>") || strings.Contains(odd, "Allow for the rest of this session") {
+		t.Errorf("a machine's name is escaped and its card has no session step:\n%s", odd)
+	}
+}
+
 // The queue: oldest first whatever order Pending gives, plain headlines,
 // escaped detail, buttons only for safe IDs, the session step only where
 // the grant is real and visible, and the pieces the live page relies on.

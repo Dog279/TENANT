@@ -330,6 +330,10 @@ type composite struct {
 	local   *toolMux
 	budget  *orchestra.Governor
 	agentID string
+	// refresh, when set, brings the local tools up to date before they are
+	// listed: a main agent's fleet tools come and go with the fleet
+	// (fleetToolSync). nil for every other agent.
+	refresh func()
 }
 
 // Compile-time guard: the composite MUST satisfy agent.RankingReporter, else the
@@ -387,6 +391,9 @@ func (c composite) Get(name string) (model.ToolSpec, bool) {
 // trimming on the GENERAL catalog, not the SPECIALIZED one. Keep this
 // asymmetry — if it ever needs to change, document why in this comment.
 func (c composite) Search(ctx context.Context, emb []float32, k int) ([]model.ToolSpec, error) {
+	if c.refresh != nil {
+		c.refresh() // before a turn's tools are chosen
+	}
 	out := c.local.All()
 	if c.shared != nil {
 		s, err := c.shared.Search(ctx, emb, k)
@@ -430,6 +437,9 @@ func (c composite) Dispatch(ctx context.Context, call model.ToolCall) (string, b
 // --- tui.ToolControl (so /tools + /enable work over both layers) ---
 
 func (c composite) ToolList() []tui.ToolInfo {
+	if c.refresh != nil {
+		c.refresh()
+	}
 	out := c.local.ToolList()
 	if c.shared != nil {
 		out = append(out, c.shared.ToolList()...)

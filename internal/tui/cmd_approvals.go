@@ -32,39 +32,56 @@ func slashPermissions(m *model, line string) tea.Cmd {
 		return nil
 	}
 	f := strings.Fields(arg)
+	if len(f) > 0 && strings.EqualFold(f[0], "fleet") { // one fleet machine's scheme, or the fleet's rules (cmd_fleet.go)
+		m.fleetPermissions(f[1:])
+		return nil
+	}
+	m.editPermissions(m.cfg.Perms, "Permissions", "/permissions",
+		"usage: /permissions   |   /permissions set <category> <ask|allow|deny>   |   /permissions add <tool|pattern|os_exec(<prefix> *)> <ask|allow|deny>   |   /permissions rm <pattern>   |   /permissions fleet <name>", f)
+	return nil
+}
+
+// editPermissions shows a scheme (no arguments) or applies one edit to it:
+// the master's own under /permissions, a fleet machine's under /permissions
+// fleet <name>. cmd is how the scheme is addressed, for the hints.
+func (m *model) editPermissions(pc PermissionControl, header, cmd, usage string, f []string) {
 	switch {
 	case len(f) == 0:
-		m.sysChatStyled(m.renderPermissions())
+		m.sysChatStyled(renderPermissionsWith(pc, header, cmd, cmd))
 	case strings.ToLower(f[0]) == "set" && len(f) >= 3:
 		cat, mode := strings.ToLower(f[1]), strings.ToLower(f[2])
-		ok, err := m.cfg.Perms.SetPermission(cat, mode)
+		ok, err := pc.SetPermission(cat, mode)
 		switch {
 		case err != nil:
 			m.sysChat("error: " + err.Error())
 		case !ok:
-			m.sysChat("no such category " + f[1] + " (see /permissions)")
+			m.sysChat("no such category " + f[1] + " (see " + cmd + ")")
 		default:
 			m.sysChat("set " + cat + " → " + mode)
 		}
 	case (strings.ToLower(f[0]) == "add" || strings.ToLower(f[0]) == "rule") && len(f) >= 3:
-		rc, ok := m.cfg.Perms.(ToolRuleControl)
+		rc, ok := pc.(ToolRuleControl)
 		if !ok {
 			m.sysChat("tool rules are not available in this session")
-			return nil
+			return
 		}
 		// A command rule has spaces: /permissions add os_exec(brew install *) allow
 		// (TEN-491); the mode is the last word, the pattern everything before it.
 		pattern, mode := strings.Join(f[1:len(f)-1], " "), strings.ToLower(f[len(f)-1])
 		if err := rc.SetRule(pattern, mode); err != nil {
 			m.sysChat("error: " + err.Error())
-			return nil
+			return
 		}
-		m.sysChat("rule: " + pattern + " → " + mode + "   (checked before the category on every surface; most specific pattern wins)")
+		scope := "checked before the category on every surface; most specific pattern wins"
+		if cmd != "/permissions" { // a fleet machine's rules, or the fleet's, are its own
+			scope = "checked before the category; most specific pattern wins"
+		}
+		m.sysChat("rule: " + pattern + " → " + mode + "   (" + scope + ")")
 	case (strings.ToLower(f[0]) == "rm" || strings.ToLower(f[0]) == "remove" || strings.ToLower(f[0]) == "del") && len(f) >= 2:
-		rc, ok := m.cfg.Perms.(ToolRuleControl)
+		rc, ok := pc.(ToolRuleControl)
 		if !ok {
 			m.sysChat("tool rules are not available in this session")
-			return nil
+			return
 		}
 		pattern := strings.Join(f[1:], " ") // a command rule has spaces
 		removed, err := rc.RemoveRule(pattern)
@@ -72,14 +89,13 @@ func slashPermissions(m *model, line string) tea.Cmd {
 		case err != nil:
 			m.sysChat("error: " + err.Error())
 		case !removed:
-			m.sysChat("no rule " + pattern + " (see /permissions)")
+			m.sysChat("no rule " + pattern + " (see " + cmd + ")")
 		default:
 			m.sysChat("removed rule " + pattern)
 		}
 	default:
-		m.sysChat("usage: /permissions   |   /permissions set <category> <ask|allow|deny>   |   /permissions add <tool|pattern|os_exec(<prefix> *)> <ask|allow|deny>   |   /permissions rm <pattern>")
+		m.sysChat(usage)
 	}
-	return nil
 }
 
 // slashRelay runs /relay.
@@ -365,10 +381,23 @@ func (m *model) renderPermissions() (string, string) {
 // by both /permissions (global) and /imessage permissions (offsite), so they
 // look identical (TEN-230).
 func renderPermissionsFor(pc PermissionControl, header, cmd string) (string, string) {
+	return renderPermissionsWith(pc, header, cmd, "/permissions")
+}
+
+// renderPermissionsWith is renderPermissionsFor for a scheme whose tool rules
+// are its own and are edited under rulesCmd: a fleet machine's, the fleet's
+// rules. Every other view lists the one set all surfaces share, which is
+// edited under /permissions.
+func renderPermissionsWith(pc PermissionControl, header, cmd, rulesCmd string) (string, string) {
 	infos := pc.Permissions()
 	var p, s strings.Builder
-	p.WriteString(header + "  (ask / allow / deny)   ·   " + cmd + " set <category> <mode>\n")
-	s.WriteString(cHeading.Render(header) + cDim.Render("  ask / allow / deny   ·   "+cmd+" set <category> <mode>") + "\n")
+	if len(infos) == 0 { // a rule set with no categories of its own
+		p.WriteString(header + "\n")
+		s.WriteString(cHeading.Render(header) + "\n")
+	} else {
+		p.WriteString(header + "  (ask / allow / deny)   ·   " + cmd + " set <category> <mode>\n")
+		s.WriteString(cHeading.Render(header) + cDim.Render("  ask / allow / deny   ·   "+cmd+" set <category> <mode>") + "\n")
+	}
 	anyNew := false
 	for _, in := range infos {
 		mode := in.Mode
@@ -396,7 +425,7 @@ func renderPermissionsFor(pc PermissionControl, header, cmd string) (string, str
 	// categories don't know: a connector's tools, an unusual action id.
 	if rc, ok := pc.(ToolRuleControl); ok {
 		rules := rc.Rules()
-		manage := "/permissions add <tool|pattern> <mode> · /permissions rm <pattern>"
+		manage := rulesCmd + " add <tool|pattern> <mode> · " + rulesCmd + " rm <pattern>"
 		p.WriteString("Tool rules  (checked before the category; most specific wins)   ·   " + manage + "\n")
 		s.WriteString(cHeading.Render("Tool rules") + cDim.Render("  checked before the category; most specific wins   ·   "+manage) + "\n")
 		if len(rules) == 0 {
@@ -430,6 +459,7 @@ func approvalCommands() []*slashCommand {
 				{Syntax: "/permissions set <cat> <mode>", Desc: "e.g. /permissions set exec allow"},
 				{Syntax: "/permissions add <tool|pattern> <mode>", Desc: "per-tool rule: a name (any connector), an exact id, or a glob — delete_* deny, mcp:host:port:* allow"},
 				{Syntax: "/permissions rm <pattern>", Desc: "remove a tool rule"},
+				{Syntax: "/permissions fleet <name> [set|add|rm …]", Desc: "one fleet machine's own scheme, edited the same way; --defaults: the rules new machines start with"},
 			}},
 		{Names: []string{"/approve", "/approve!"}, Section: "safety", Run: slashApprove,
 			Summary: "approve a paused dangerous action",

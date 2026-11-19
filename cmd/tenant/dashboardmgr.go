@@ -48,6 +48,7 @@ type dashboardManager struct {
 	agents       dashboard.AgentControl        // TEN-209: named helpers (nil-safe)
 	goal         dashboard.GoalControl         // TEN-212: the goal loop; nil under serve
 	research     dashboard.ResearchControl     // TEN-210: deep research (nil-safe)
+	fleet        dashboard.FleetControl        // TEN-533: the fleet's machines (nil-safe)
 	broker       *agent.Broker
 	logs         *logs.Hub          // the unified log book: its folders and ring (nil-safe)
 	runs         *runtrace.Store    // run records, for the log book's timelines (nil-safe)
@@ -165,6 +166,9 @@ func (m *dashboardManager) enable(wait time.Duration) (string, error) {
 	}
 	if m.research != nil {
 		srv.SetResearch(m.research)
+	}
+	if m.fleet != nil {
+		srv.SetFleet(m.fleet)
 	}
 	if m.logs != nil {
 		srv.SetLogs(m.logs)

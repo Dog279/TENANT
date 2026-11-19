@@ -6,6 +6,9 @@ package main
 // with the session unless the account lingers, so install checks and prints
 // the enable-linger command instead of running it (it needs the operator's
 // say). Logs go to the journal; the log book has the rest.
+//
+// A fleet child installed with --system (TEN-531) is a system unit instead:
+// in /etc/systemd/system, managed without --user, started at boot as root.
 
 import (
 	"context"
@@ -19,19 +22,19 @@ import (
 )
 
 const systemdUnit = `[Unit]
-Description=Tenant agent (tenant serve)
+Description={{.What}}
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart={{q .Exe}} serve --config {{q .CfgDir}} --data {{q .DataDir}} --stop-budget {{secs .StopBudget}}
+ExecStart={{q .Exe}} {{if .Child}}child run --dir {{q .Child}}{{else}}serve --config {{q .CfgDir}} --data {{q .DataDir}} --stop-budget {{secs .StopBudget}}{{end}}
 WorkingDirectory={{.DataDir}}
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=100
 
 [Install]
-WantedBy=default.target
+WantedBy={{if .System}}multi-user.target{{else}}default.target{{end}}
 `
 
 var systemdTmpl = template.Must(template.New("unit").Funcs(template.FuncMap{
@@ -42,7 +45,10 @@ var systemdTmpl = template.Must(template.New("unit").Funcs(template.FuncMap{
 
 func (s serviceSpec) unitText() string {
 	var b strings.Builder
-	_ = systemdTmpl.Execute(&b, s)
+	_ = systemdTmpl.Execute(&b, struct {
+		serviceSpec
+		What string
+	}{s, s.what()})
 	return b.String()
 }
 
@@ -57,7 +63,16 @@ var unitDir = func() string {
 	return filepath.Join(cfg, "systemd", "user")
 }
 
-func (s serviceSpec) unitPath() string { return filepath.Join(unitDir(), s.unit()) }
+// systemUnitDir is where the machine's own units live: a --system child's.
+// A variable for the same reason unitDir is one.
+var systemUnitDir = func() string { return "/etc/systemd/system" }
+
+func (s serviceSpec) unitPath() string {
+	if s.System {
+		return filepath.Join(systemUnitDir(), s.unit())
+	}
+	return filepath.Join(unitDir(), s.unit())
+}
 
 func (s serviceSpec) install(ctx context.Context) error {
 	if err := os.MkdirAll(filepath.Dir(s.unitPath()), 0o755); err != nil {
@@ -72,6 +87,9 @@ func (s serviceSpec) install(ctx context.Context) error {
 		if err := s.systemctl(ctx, args...); err != nil {
 			return err
 		}
+	}
+	if s.System {
+		return nil // the machine's manager runs whether or not anyone is logged in
 	}
 	name := os.Getenv("USER")
 	if u, err := user.Current(); err == nil {
@@ -109,13 +127,20 @@ func (s serviceSpec) unitCurrent(context.Context) (bool, error) {
 }
 
 func (s serviceSpec) logs() string {
+	if s.System {
+		return "journalctl -u " + s.Label
+	}
 	return "journalctl --user -u " + s.Label + " (the log book has the rest: tenant logs)"
 }
 
 func (s serviceSpec) systemctl(ctx context.Context, args ...string) error {
-	out, err := runCmd(ctx, "systemctl", append([]string{"--user"}, args...)...)
+	what := "systemctl " + args[0]
+	if !s.System {
+		args, what = append([]string{"--user"}, args...), "systemctl --user "+args[0]
+	}
+	out, err := runCmd(ctx, "systemctl", args...)
 	if err != nil {
-		return cmdErr("systemctl --user "+args[0], out, err)
+		return cmdErr(what, out, err)
 	}
 	return nil
 }

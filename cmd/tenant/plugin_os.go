@@ -259,6 +259,7 @@ func fileToolGuards(cfgDir, dataDir string, pf *pluginFlags, lc *launchConfig) (
 		settings := settingsPath(cfgDir, "*")
 		peerCert, _ := peering.CertPaths(cfgDir)
 		add(&protect, settings, settings+".*.tmp", soul.SoulDir(cfgDir), peerCert, chainAnchorPath(cfgDir))
+		add(&protect, fleetLockPaths(cfgDir)...) // the fleet's lock files: one that is replaced excludes nobody (TEN-531)
 		// Plugin settings that decide what the agent may do (the GitHub merge
 		// rules, TEN-432) are trust roots like the approval settings: the agent
 		// must not loosen a gate it passes through.
@@ -267,6 +268,9 @@ func fileToolGuards(cfgDir, dataDir string, pf *pluginFlags, lc *launchConfig) (
 		}
 		// The mcp dir as a whole also covers caches created after this list.
 		add(&secret, launchConfigPath(cfgDir), mcpCacheDir(cfgDir))
+		// A fleet child on this machine (TEN-531): its key, its limits, its
+		// pause mark and its audit log, this account's and the machine's.
+		add(&secret, filepath.Join(cfgDir, "child"), childSystemDir())
 	}
 	// Every file on the authoritative secret list, config and data dirs both
 	// (TEN-337). A listing error still leaves every other entry.

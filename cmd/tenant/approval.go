@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"log/slog"
 	"sort"
+	"sync"
 
 	"tenant/internal/approval"
 )
@@ -36,7 +38,34 @@ const (
 var (
 	catOrder         = approval.Categories
 	defaultToolRules = approval.DefaultRules
+	// defaultFleet holds each fleet machine's approval scheme and the fleet's
+	// rules for new machines (internal/approval/fleet.go). Process-wide, like
+	// the tool rules: serve and the TUI load it from settings and set its
+	// persist hook (loadFleetSettings), and the settings watcher re-reads it.
+	defaultFleet = approval.NewFleet(categorize)
 )
+
+// loadFleetSettings loads the fleet's approval schemes from the settings
+// file's fleet_schemes and fleet_rules, tells the operator about each entry
+// that could not be read (that machine is refused everything until it is
+// fixed), and saves them back through stg whenever one changes: "always" on a
+// machine's card, an edit in the permissions editor, a machine confirmed or
+// revoked. The snapshot is taken, and stg and the file change, in one hold of
+// mu, the lock applySettingsFile reads the file under: the file always gets
+// the fleet's latest state, and the watcher never reads one that is older
+// than what the fleet believes it wrote.
+func loadFleetSettings(stg *settings, mu *sync.Mutex, cfgDir, agentID string, tell func(string)) {
+	_, problems := defaultFleet.Load(stg.FleetSchemes, stg.FleetRules)
+	for _, p := range problems {
+		tell("permissions: " + p)
+	}
+	defaultFleet.SetPersist(func(snapshot func() (map[string]json.RawMessage, json.RawMessage)) {
+		mu.Lock()
+		defer mu.Unlock()
+		stg.FleetSchemes, stg.FleetRules = snapshot()
+		saveSettingsOrTell(stg, cfgDir, agentID, tell)
+	})
+}
 
 // readOnlyExec judges a shell command that only looks (ls, git status, rg …):
 // the OS plugin installs its classifier at init (plugin_os.go), since the

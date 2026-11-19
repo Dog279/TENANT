@@ -271,6 +271,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	// Execution-sandbox profiles and exceptions (execprofiles.go): same file,
 	// re-read on edit; an approved exception is saved through stg.
 	loadExecSettings(c, stg, &stgMu, pushSys)
+	loadFleetSettings(stg, &stgMu, c.cfgDir, c.agent, pushSys) // each fleet machine's approval scheme: same file
 	go watchSettings(ctx, c.cfgDir, c.agent, broker, defaultToolRules, &stgMu, stg, pushSys)
 
 	// Web is per-agent (own browser each), kept out of the shared mux.
@@ -455,7 +456,8 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	mux.EnableStats(stats)
 	mainLocal.EnableStats(stats)
 	life.AddFunc(lifecycle.Release, "tool stats", stats.StartPersist(time.Minute))
-	mainTools := composite{shared: mux, local: mainLocal, budget: rt.budget, agentID: c.agent}
+	wireFleetTools() // the fleet_* tools work on this process's fleet (TEN-531); before the first turn
+	mainTools := composite{shared: mux, local: mainLocal, budget: rt.budget, agentID: c.agent, refresh: fleetToolSync(mainLocal, mux)}
 
 	// Bus traffic → dashboard feed (lossless cursor over the retained log).
 	go func() {
@@ -546,7 +548,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		PerTurnToolRanking:     c.lc.PerTurnToolRanking,
 		Skills:                 skillRetriever{st: skillStore, agentID: c.agent, tools: mainTools},
 		SystemPrompt:           mainPrompt,
-		RenderAgents:           func() string { return renderAgentsForOrchestrator(rt.AgentProfiles()) },
+		RenderAgents:           func() string { return renderAgentsForOrchestrator(rt.AgentProfiles()) + fleetRoster() },
 		Compactor:              compressor,
 		UserProfile:            prof,
 		Stopping:               serveStopping.Load,
@@ -618,7 +620,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 			for _, j := range c.lc.Cron.Jobs {
 				cronDefs = append(cronDefs, cron.JobDef{
 					ID: j.ID, Name: j.Name, Spec: j.Spec, Prompt: j.Prompt,
-					Enabled: j.Enabled, Kind: j.Kind, Exec: j.Exec, TZ: j.TZ,
+					Enabled: j.Enabled, Kind: j.Kind, Exec: j.Exec, TZ: j.TZ, Fleet: j.Fleet,
 				})
 			}
 		}
@@ -630,7 +632,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 			for i, d := range defs {
 				jobs[i] = cronJobConfig{
 					ID: d.ID, Name: d.Name, Spec: d.Spec, Prompt: d.Prompt,
-					Enabled: d.Enabled, Kind: d.Kind, Exec: d.Exec, TZ: d.TZ,
+					Enabled: d.Enabled, Kind: d.Kind, Exec: d.Exec, TZ: d.TZ, Fleet: d.Fleet,
 				}
 			}
 			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Cron.Jobs = jobs })
@@ -713,6 +715,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		safety:      broker, // and the SafetyControl (Permissions/SetPermissionFrom) — TEN-207
 		safetyFacts: newSafetyFacts(),
 		rules:       dashRules{defaultToolRules},
+		fleet:       newDashFleet(c, stg, &stgMu), // the Fleet page, over the same operations as tenant fleet (TEN-533)
 		broker:      evBroker,
 		logs:        hub,
 		runs:        st.runs,
@@ -834,6 +837,11 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 			pushSys("peer: federation listener on " + bound)
 		}
 	}
+
+	// The fleet (TEN-531): once `tenant fleet init` has made this Tenant a
+	// master, serve holds the fleet's links, so its machines stay connected. It
+	// takes the fleet with no restart when init runs later (fleethub.go).
+	life.AddFunc(lifecycle.Intake, "fleet listener", startFleetHub(ctx, c, "serve", broker, pushSys, log.With("source", "fleet")))
 
 	reconnectMon := &reconnectMonitor{cfgDir: c.cfgDir, feed: sysCh, ctx: ctx, log: log.With("source", "model")}
 	if degraded.Degraded() && degraded.class == degradeReachability {

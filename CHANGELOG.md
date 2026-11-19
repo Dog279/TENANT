@@ -185,6 +185,70 @@ Releases page.
   the acknowledgement run a `tenant` built with `-tags procprotecttest`, in which the environment
   can say that a control cannot be applied; `tenant version` announces such a build, and no
   release is built with the tag.
+- **A fleet: one Tenant that owns your other machines** (TEN-531, the first of three parts).
+  Install Tenant on a machine you own and run `tenant child install` with a one-time code from
+  the master (`tenant fleet enroll <name>`): the machine becomes a **child**. It has no model
+  and no agent. It dials the master, holds one link open, and serves that machine's tools to
+  the master's agent. The agent works on it with ten new tools that take a `host`: `fleet_list`,
+  `fleet_exec`, `fleet_process`, `fleet_read`, `fleet_list_dir`, `fleet_write`, `fleet_edit`,
+  `fleet_copy`, `fleet_tools` and `fleet_call`. They are there only while a confirmed machine
+  exists. Peering is unchanged: it is for a machine with a different operator.
+  - *Enrollment.* The machine mints its own key and shows six digits; the master sends it
+    nothing until you type them at a terminal (`tenant fleet confirm <name>`, or `/fleet confirm`).
+    No tool, relay or approval card can confirm a machine. `tenant fleet init | enroll | list |
+    show | confirm | rename | revoke | permissions | relay`, and `/fleet` in the terminal.
+  - *The link.* The child dials the master's fleet port (`fleet.listen`, default `0.0.0.0:9777`,
+    off until `tenant fleet init`) over TLS 1.3 with both certificates pinned by fingerprint: no
+    certificate authority and no token. A certificate that is not pinned is dropped before
+    anything is answered. Idle, a link carries one ping and its answer every 30 seconds, about
+    100 bytes a minute; a dead link is noticed within a minute by both ends, and the child
+    reconnects by itself. One process holds the links (`tenant serve` should); another on the
+    same data dir says which.
+  - *Approvals stay on the master.* A tool on the child asks the master over the link. The card
+    names the machine, and on the dashboard its headline says "on your fleet machine <name>"
+    with no step for the rest of the session. Each machine has its own approval scheme, copied
+    from the master's when it is confirmed, with commands, file writes, destructive actions,
+    sends and leaving the sandbox no looser than ask. Every shell command on a machine asks until
+    you answer "always", which saves a rule for that machine alone. A relay or a cron job reaches
+    no machine, reads included, until you open it (`tenant fleet relay discord on`, `/cron
+    fleet`). `tenant fleet …` and `tenant child …` join `tenant service …` and `tenant update …`
+    among the commands the agent does not run unasked.
+  - *On the machine.* `tenant child status | pause | resume | audit | uninstall`. `child.json`
+    holds a ceiling the master cannot lift (`no-exec`, `read-only`, a list of the only tools the
+    machine serves), read from the disk on every call. Every call is written to a hash-chained
+    audit log on the machine before it runs, and the master keeps that record's hash with its own
+    record of the call.
+  - *What a machine returns is untrusted.* Results are framed and labelled, the egress check
+    covers them, and after a turn has read from one machine anything but a read on another asks;
+    that card says which machine the turn read from.
+  - The run trace, the dashboard's activity rail (`fleet_exec@web1`) and the turns log's tool
+    records name the machine a fleet call worked on.
+  - Not in this part: a machine's memory (TEN-532); `tenant fleet update`, `tenant child rehome`,
+    the dashboard's Fleet page and doctor checks (TEN-533). A picture a tool makes on a machine
+    stays there (the result says so). `docs/fleet-runbook.md` has the walk-through.
+- **A fleet machine is updated over its link** (TEN-533). `tenant fleet update <name>` (or
+  `--all`, or Update on the machine's page of the dashboard) fetches the release for that
+  machine's system and processor, verifies it as `tenant update` verifies its own, and sends it
+  over the link with its SHA-256: the machine needs no way to the internet. The machine checks
+  the hash before it touches anything, runs the new version beside the old one until it reaches
+  the master, then swaps the binaries and restarts into it. A new version that exits, or does not
+  reach the master within a minute, is rolled back and the machine reconnects on the old one; a
+  machine stopped in the middle finishes or undoes the update at its next start. Background
+  commands on the machine end at the restart. An older version is sent only with
+  `--allow-older`, and an offline machine is refused (nothing is queued). The command prints each
+  step and how it ended; `tenant child status` on the machine shows the last update. The update
+  is allowed whatever link version the machine speaks.
+  - *Doctor* on a master checks each machine through the running Tenant: reachable, its version
+    against the master's, whether the master still serves its link version, and how its last
+    update went.
+  - The machine's hello now also says which processor it has (an older machine leaves it out;
+    `--arch` names it then).
+- **Fixed: on Windows, a Tenant with no console window opened one for every command it ran.** A
+  Tenant started by the service manager has no console to share, so each command got a new
+  console window. Such a Tenant now starts its commands with a console that has no window; one
+  in a terminal, or with the logon task's hidden console, shares it as before.
+- **Fixed: an MCP request cancelled the moment it was sent could run to the end.** A request is
+  now registered as it is read; one cancelled before its handler starts is not run.
 - **Fixed: a power cut could leave more files than `config.json` unreadable.** The fix that
   flushes a saved file to the disk before it replaces the old one now covers every file Tenant
   saves that way: the user profile, a research run's manifest, the Claude Code session ledger, the

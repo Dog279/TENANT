@@ -246,6 +246,8 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		// instead of by a silently empty daily brief.
 		{"remote MCP auth", checkRemoteMCPAuth},
 	}...)
+	// TEN-533: on a fleet master, one check per machine (doctorfleet.go).
+	checks = append(checks, fleetDoctorChecks(c.cfgDir)...)
 
 	results := make([]checkResult, 0, len(checks))
 	for _, ck := range checks {

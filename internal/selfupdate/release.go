@@ -105,6 +105,50 @@ func get(ctx context.Context, client *http.Client, url, token, accept string) (*
 // the form version.Version holds.
 func VersionOf(tag string) string { return strings.TrimPrefix(tag, "v") }
 
+// Compare orders two release versions ("1.2.3", a leading "v" allowed) by
+// their dotted numbers: -1, 0 or 1. A pre-release or build suffix after the
+// numbers is ignored, so "1.2.0-rc1" and "1.2.0" compare equal. ok is false
+// when either is not a version of that form.
+func Compare(a, b string) (c int, ok bool) {
+	pa, oka := numbers(a)
+	pb, okb := numbers(b)
+	if !oka || !okb {
+		return 0, false
+	}
+	for i := 0; i < max(len(pa), len(pb)); i++ {
+		var x, y int
+		if i < len(pa) {
+			x = pa[i]
+		}
+		if i < len(pb) {
+			y = pb[i]
+		}
+		if x != y {
+			if x < y {
+				return -1, true
+			}
+			return 1, true
+		}
+	}
+	return 0, true
+}
+
+func numbers(v string) ([]int, bool) {
+	v = strings.TrimPrefix(v, "v")
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	var out []int
+	for _, f := range strings.Split(v, ".") {
+		n, err := strconv.Atoi(f)
+		if err != nil || n < 0 || len(f) > 9 {
+			return nil, false
+		}
+		out = append(out, n)
+	}
+	return out, len(out) > 0 && len(out) <= 4
+}
+
 // AssetName is the archive GoReleaser publishes for one target, mirroring
 // the name_template in .goreleaser.yaml: tenant_<version>_<os>_<arch>.tar.gz,
 // .zip on Windows, with amd64 and arm64 spelled x86_64 and aarch64.
