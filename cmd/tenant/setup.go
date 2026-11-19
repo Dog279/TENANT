@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/mattn/go-isatty"
+
+	"tenant/internal/version"
 )
 
 // cmdSetup is the onboarding wizard — the one place an operator configures
@@ -248,6 +250,9 @@ func runSetup(ctx context.Context, args []string, in *bufio.Reader, offerService
 	// own work is saved.
 	if offerService && interactive && yes(ask(in, "\nRun Tenant in the background when you log in? [Y/n]", "y")) {
 		spec, err := newServiceSpec(c, false)
+		if err == nil { // the service has nobody to ask (protectiongate.go)
+			err = acknowledgeProtection(c.cfgDir, c.agent, protection, version.Version, in, os.Stderr, true)
+		}
 		if err == nil {
 			err = installService(ctx, spec)
 		}

@@ -244,7 +244,7 @@ func buildSecurityAuditReport(c *commonFlags, pf *pluginFlags, permissions effec
 			DashboardAuth:   dashboardAuthStorage(c.lc),
 		},
 		Execution:         auditExecution(c, permissions.Execution.Enabled, modelBackend),
-		ProcessProtection: auditProcessProtection(c.lc),
+		ProcessProtection: auditProcessProtection(c),
 	}
 	return report
 }

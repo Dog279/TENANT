@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"tenant/internal/procprotect"
+	"tenant/internal/version"
 )
 
 // serviceSpec is everything a unit needs. Paths are absolute: a supervisor
@@ -83,6 +84,15 @@ func cmdService(ctx context.Context, args []string) error {
 	spec, err := newServiceSpec(c, *system || verb != "install" && actsOnSystem(ctx))
 	if err != nil {
 		return err
+	}
+	// A process protection this system cannot apply is asked about here, at
+	// the terminal the command was typed in: the service has nobody to ask,
+	// and does not start until someone has said yes (TEN-535).
+	if verb == "start" || verb == "restart" || verb == "install" && !*print {
+		in, out, interactive := ackConsole()
+		if err := acknowledgeProtection(c.cfgDir, c.agent, protection, version.Version, in, out, interactive); err != nil {
+			return err
+		}
 	}
 	base := attachBaseURL("", c.lc)
 	token, _ := dashboardClientToken(c.cfgDir, c.lc, true) // "" when none yet; the hub then just isn't reachable

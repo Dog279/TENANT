@@ -153,8 +153,12 @@ func applySettingsFile(cfgDir, agentID string, broker *approvalBroker, rules *to
 	// Exec profiles: keep stg tracking the FILE (invalid entries included) so a
 	// later save never clobbers the operator's hand edit, and reload the live set
 	// only when its valid content changed.
+	// The acknowledgements of a missing process protection too (TEN-535):
+	// `tenant service restart` and `tenant update` record one from another
+	// process, and this one's next save must not drop it.
 	mu.Lock()
 	stg.ExecProfiles, stg.ExecExceptions = fresh.ExecProfiles, fresh.ExecExceptions
+	stg.ProtectionAcknowledged = fresh.ProtectionAcknowledged
 	mu.Unlock()
 	if wanted, _ := validExecProfiles(fresh.ExecProfiles); !execProfilesEqual(wanted, defaultExecProfiles.Snapshot()) {
 		n, skipped := defaultExecProfiles.Load(fresh.ExecProfiles)

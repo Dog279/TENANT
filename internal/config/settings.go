@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"tenant/internal/fsperm"
 )
@@ -48,6 +49,51 @@ type Settings struct {
 	// the operator removes one by deleting it. Like exec_profiles, no agent
 	// tool writes it and the running hub re-reads it.
 	ExecExceptions map[string][]string `json:"exec_exceptions,omitempty"`
+	// ProtectionAcknowledged records each time the operator let Tenant start
+	// without a process protection the system could not apply (TEN-535):
+	// which control, the system's reason, and for which version of Tenant. A
+	// start that meets the same three goes ahead with a warning; a different
+	// control, reason or version is asked about again. Tenant writes it when
+	// the operator answers yes at a terminal. No agent tool writes it, and the
+	// file tools refuse this file.
+	ProtectionAcknowledged []ProtectionAck `json:"protection_acknowledged,omitempty"`
+}
+
+// ProtectionAck is one entry under "protection_acknowledged".
+type ProtectionAck struct {
+	Control string    `json:"control"` // the control's id, such as linux.dumpable
+	Reason  string    `json:"reason"`  // why the system could not apply it
+	Version string    `json:"version"` // the version of Tenant it was acknowledged for
+	At      time.Time `json:"at"`      // when the operator said yes
+}
+
+// maxProtectionAcks bounds the list: an install where a control can never
+// apply adds one entry per version, and the older versions' entries are what
+// a rollback starts on.
+const maxProtectionAcks = 16
+
+// Acknowledged returns the acknowledgement of control failing for reason in
+// version, when there is one. All three must match.
+func (s *Settings) Acknowledged(control, reason, version string) (ProtectionAck, bool) {
+	for _, a := range s.ProtectionAcknowledged {
+		if a.Control == control && a.Reason == reason && a.Version == version {
+			return a, true
+		}
+	}
+	return ProtectionAck{}, false
+}
+
+// Acknowledge records that the operator let version start without control,
+// which the system refused for reason. One already recorded keeps its time.
+// The newest maxProtectionAcks are kept.
+func (s *Settings) Acknowledge(control, reason, version string, at time.Time) {
+	if _, ok := s.Acknowledged(control, reason, version); ok {
+		return
+	}
+	s.ProtectionAcknowledged = append(s.ProtectionAcknowledged, ProtectionAck{Control: control, Reason: reason, Version: version, At: at.UTC().Truncate(time.Second)})
+	if n := len(s.ProtectionAcknowledged) - maxProtectionAcks; n > 0 {
+		s.ProtectionAcknowledged = s.ProtectionAcknowledged[n:]
+	}
 }
 
 // ExecProfile is one operator override under "exec_profiles", keyed by a

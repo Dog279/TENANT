@@ -7,7 +7,9 @@ import (
 	"runtime"
 	"strings"
 
+	"tenant/internal/config"
 	"tenant/internal/procprotect"
+	"tenant/internal/version"
 )
 
 // processprotection.go (TEN-535): what `tenant doctor` and `tenant security
@@ -33,12 +35,45 @@ type processProtectionAudit struct {
 	// CrashDump is GOTRACEBACK when it asks the Go runtime for a memory dump
 	// at a crash (crash, or wer on Windows), which Tenant cannot lower.
 	CrashDump string `json:"crash_dump_requested,omitempty"`
+	// Acknowledged are the operator's acknowledgements of the controls that
+	// are off, for this version (protection_acknowledged in the settings
+	// file). A control that is off and not here stops serve and the TUI
+	// until someone says yes at a terminal (protectiongate.go).
+	Acknowledged []config.ProtectionAck `json:"acknowledged,omitempty"`
 }
 
-// auditProcessProtection fills the section for this process.
-func auditProcessProtection(lc *launchConfig) processProtectionAudit {
-	return newProcessProtectionAudit(protection, runtime.GOOS, procprotect.System(),
-		exposedSecretEnv(runtime.GOOS, lc, os.Getenv), os.Getenv("GOTRACEBACK"))
+// auditProcessProtection fills the section for this process, and for the
+// acknowledgements in c's settings file.
+func auditProcessProtection(c *commonFlags) processProtectionAudit {
+	a := newProcessProtectionAudit(protection, runtime.GOOS, procprotect.System(),
+		exposedSecretEnv(runtime.GOOS, c.lc, os.Getenv), os.Getenv("GOTRACEBACK"))
+	if missing := a.missing(); len(missing) > 0 {
+		stg, _ := loadSettings(c.cfgDir, c.agent) // unreadable: nothing counts as acknowledged
+		for _, m := range missing {
+			if ack, ok := stg.Acknowledged(m.ID, m.Reason, version.Version); ok {
+				a.Acknowledged = append(a.Acknowledged, ack)
+			}
+		}
+	}
+	return a
+}
+
+// acknowledgedAt is when the operator acknowledged c being off, "" if never.
+func (a processProtectionAudit) acknowledgedAt(c procprotect.Control) string {
+	for _, k := range a.Acknowledged {
+		if k.Control == c.ID && k.Reason == c.Reason {
+			return k.At.UTC().Format("2006-01-02 15:04 UTC")
+		}
+	}
+	return ""
+}
+
+// ackNote says whether c being off was acknowledged, and what follows.
+func (a processProtectionAudit) ackNote(c procprotect.Control) string {
+	if at := a.acknowledgedAt(c); at != "" {
+		return "Acknowledged " + at + ": Tenant starts, with a warning in its log"
+	}
+	return "Not acknowledged: `tenant tui` and `tenant serve` ask at a terminal, and a service does not start"
 }
 
 func newProcessProtectionAudit(r procprotect.Report, goos string, system, secretEnv []string, gotraceback string) processProtectionAudit {
@@ -72,7 +107,7 @@ func (a processProtectionAudit) crashDumpNote(goos string) (note string, covered
 // build has protection compiled out, a secret sits in the environment on
 // macOS, or a crash dump was asked for on Windows.
 func checkProcessProtection(_ context.Context, e *doctorEnv) checkResult {
-	return processProtectionCheck(auditProcessProtection(e.c.lc), runtime.GOOS)
+	return processProtectionCheck(auditProcessProtection(e.c), runtime.GOOS)
 }
 
 func processProtectionCheck(a processProtectionAudit, goos string) checkResult {
@@ -85,11 +120,15 @@ func processProtectionCheck(a processProtectionAudit, goos string) checkResult {
 	}
 	r := checkResult{Status: statusOK}
 	var lines, fixes []string
+	unacknowledged := false
 	for _, c := range a.Controls {
 		switch {
 		case !c.OK:
 			r.Status = statusWarn
-			lines = append(lines, "OFF: "+c.Name+": "+c.Reason+". That leaves this open: "+c.Leaves)
+			lines = append(lines, "OFF: "+c.Name+": "+c.Reason+". That leaves this open: "+c.Leaves+". "+a.ackNote(c))
+			if a.acknowledgedAt(c) == "" {
+				unacknowledged = true
+			}
 		case c.Note != "":
 			lines = append(lines, "on:  "+c.Name+" ("+c.Note+")")
 		default:
@@ -98,6 +137,9 @@ func processProtectionCheck(a processProtectionAudit, goos string) checkResult {
 	}
 	if len(a.missing()) > 0 {
 		fixes = append(fixes, "the reason above is the system's own; `tenant security audit` lists it as a finding")
+	}
+	if unacknowledged {
+		fixes = append(fixes, "to run without it, `tenant service start` (or `tenant serve`) at a terminal asks, and records your yes")
 	}
 	lines = append(lines, a.System...)
 	if a.StillReadable != "" {
@@ -137,6 +179,9 @@ func printProcessProtection(a processProtectionAudit) {
 			state = "OFF"
 		}
 		fmt.Printf("  %s %-24s %s\n", state, c.ID, c.Name)
+		if !c.OK {
+			fmt.Printf("      %s\n", a.ackNote(c))
+		}
 	}
 	for _, ln := range a.System {
 		fmt.Println("  " + ln)
@@ -153,7 +198,7 @@ func processProtectionFindings(a processProtectionAudit, add func(id, area strin
 	}
 	for _, c := range a.missing() {
 		add("process."+c.ID, "process_protection", auditWarning,
-			"process protection is off: "+c.Name+": "+c.Reason+". "+c.Leaves,
+			"process protection is off: "+c.Name+": "+c.Reason+". "+c.Leaves+". "+a.ackNote(c),
 			"read the reason, which is the system's own; `tenant doctor` shows every control")
 	}
 	if len(a.SecretEnv) > 0 {

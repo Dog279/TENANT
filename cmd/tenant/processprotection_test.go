@@ -128,7 +128,7 @@ func TestProcessProtectionReportsThisProcess(t *testing.T) {
 	if r.Status != statusWarn || !strings.Contains(r.Detail, "OFF: memory reads refused") {
 		t.Errorf("doctor: %+v", r)
 	}
-	a := auditProcessProtection(nil)
+	a := auditProcessProtection(&commonFlags{})
 	if len(a.missing()) != 1 || a.missing()[0].ID != "linux.dumpable" {
 		t.Errorf("audit: %+v", a)
 	}
@@ -144,14 +144,14 @@ func TestProcessProtectionReportsThisProcess(t *testing.T) {
 	if out := printed(func() { _ = cmdVersion(context.Background(), nil) }); !strings.Contains(out, debugAttachNote) {
 		t.Errorf("`tenant version` of a debugattach build:\n%s", out)
 	}
-	if out := printed(func() { printProcessProtection(auditProcessProtection(nil)) }); !strings.Contains(out, "compiled out (-tags debugattach)") {
+	if out := printed(func() { printProcessProtection(auditProcessProtection(&commonFlags{})) }); !strings.Contains(out, "compiled out (-tags debugattach)") {
 		t.Errorf("the audit's section of a debugattach build:\n%s", out)
 	}
 	protection = procprotect.Report{}
 	if out := printed(func() { _ = cmdVersion(context.Background(), nil) }); strings.Contains(out, "debugattach") {
 		t.Errorf("`tenant version` of an ordinary build:\n%s", out)
 	}
-	if out := printed(func() { printProcessProtection(auditProcessProtection(nil)) }); !strings.Contains(out, "no controls on this system") {
+	if out := printed(func() { printProcessProtection(auditProcessProtection(&commonFlags{})) }); !strings.Contains(out, "no controls on this system") {
 		t.Errorf("the audit's section with no controls:\n%s", out)
 	}
 }

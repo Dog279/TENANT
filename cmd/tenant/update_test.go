@@ -436,3 +436,124 @@ func TestUpdateLive(t *testing.T) {
 		t.Fatalf("%s version: %v\n%s", rel.Tag, err, out)
 	}
 }
+
+// `tenant update` asks about the new binary's process protection (TEN-535):
+// the smoke test's run of the new binary carries its report, a control it
+// could not apply is put to the operator before anything changes, and the
+// yes is recorded for the new version. With no terminal the update stops and
+// the running version stays. --yes answers the update's own question only.
+func TestUpdateAsksAboutTheNewBinarysProtection(t *testing.T) {
+	bin := buildFakeBin(t)
+	archive := releaseArchive(t, bin)
+	t.Setenv("TENANT_FAKE_VERSION", "9.9.9")
+	prevPoll, prevHealth := updatePoll, updateHealth
+	updatePoll, updateHealth = 5*time.Millisecond, 100*time.Millisecond
+	t.Cleanup(func() { updatePoll, updateHealth = prevPoll, prevHealth })
+
+	const off = `{"controls":[{"id":"linux.dumpable","name":"memory reads refused","ok":false,"reason":"operation not permitted","leaves":"another program can read Tenant's memory"},{"id":"linux.core-limit","name":"no core file","ok":true,"leaves":"a core file"}]}`
+	const question = "Continue without it? [y/N]"
+	for _, tc := range []struct {
+		name       string
+		report     string // what the new binary prints as its report; "" prints none
+		opts       updateOpts
+		stdin      string
+		noTerminal bool
+		acked      string // a version the control was acknowledged for beforehand
+		code       int
+		errText    []string
+		out        []string
+		quiet      bool // the question must not be asked
+		swapped    bool
+		recorded   []string // the versions acknowledged afterwards
+	}{
+		{name: "asked, and --yes is not the answer", report: off, opts: updateOpts{yes: true}, stdin: "y\n",
+			out:     []string{"Tenant 9.9.9 could not apply", "memory reads refused (linux.dumpable)", "operation not permitted", "another program can read Tenant's memory", question, "updated 1.0.0 -> 9.9.9"},
+			swapped: true, recorded: []string{"9.9.9"}},
+		{name: "both questions at one terminal", report: off, stdin: "y\ny\n",
+			out: []string{question, "Update 1.0.0 -> 9.9.9?", "updated 1.0.0 -> 9.9.9"}, swapped: true, recorded: []string{"9.9.9"}},
+		{name: "yes to the protection, no to the update", report: off, stdin: "y\n\n", code: 2, errText: []string{"not confirmed"},
+			out: []string{question}, recorded: []string{"9.9.9"}},
+		{name: "no", report: off, opts: updateOpts{yes: true}, stdin: "n\n", code: 2,
+			errText: []string{"not updated", "1.0.0 keeps running", "not acknowledged"}, out: []string{question}},
+		{name: "unattended", report: off, opts: updateOpts{yes: true}, noTerminal: true, code: 2, quiet: true,
+			errText: []string{"not updated", "1.0.0 keeps running", "9.9.9 cannot apply a process protection", "no terminal", "linux.dumpable", "operation not permitted", "another program can read Tenant's memory", "`tenant update` at a terminal"}},
+		{name: "unattended, acknowledged for the new version", report: off, opts: updateOpts{yes: true}, noTerminal: true, acked: "9.9.9",
+			quiet: true, out: []string{"updated 1.0.0 -> 9.9.9"}, swapped: true, recorded: []string{"9.9.9"}},
+		{name: "unattended, acknowledged for the running version only", report: off, opts: updateOpts{yes: true}, noTerminal: true, acked: "1.0.0",
+			code: 2, quiet: true, errText: []string{"1.0.0 keeps running"}, recorded: []string{"1.0.0"}},
+		{name: "every control on", report: `{"controls":[{"id":"linux.dumpable","ok":true}]}`, opts: updateOpts{yes: true}, noTerminal: true,
+			quiet: true, swapped: true},
+		{name: "a debugattach build", report: `{"disabled":true,"controls":null}`, opts: updateOpts{yes: true}, noTerminal: true,
+			quiet: true, swapped: true},
+		{name: "a binary from before process protection", opts: updateOpts{yes: true}, noTerminal: true, quiet: true, swapped: true},
+		{name: "a report that cannot be read", report: `{"controls":[{"id":`, opts: updateOpts{yes: true}, stdin: "y\n", code: 2, quiet: true,
+			errText: []string{"not updated", "1.0.0 keeps running", "could not be read"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			releaseBuild(t, "1.0.0")
+			t.Setenv("TENANT_FAKE_PROTECTION", tc.report)
+			f := newFakeRelease(t, "v9.9.9", archive)
+			f.hubVersion = "9.9.9"
+			in := newInstall(t)
+			u := in.env(f, tc.stdin)
+			u.c.agent = "main"
+			if tc.noTerminal {
+				null, err := os.Open(os.DevNull)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer null.Close()
+				u.stdin = null
+			}
+			if tc.acked != "" {
+				stg, _ := loadSettings(in.cfg, "main")
+				stg.Acknowledge("linux.dumpable", "operation not permitted", tc.acked, time.Now())
+				if err := stg.Save(in.cfg, "main"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := runUpdate(context.Background(), u, tc.opts)
+			if exitCodeOf(err) != tc.code {
+				t.Fatalf("exit %d (%v), want %d\n%s", exitCodeOf(err), err, tc.code, in.out.String())
+			}
+			for _, want := range tc.errText {
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("err = %v, want it to say %q", err, want)
+				}
+			}
+			for _, want := range tc.out {
+				if !strings.Contains(in.out.String(), want) {
+					t.Errorf("stdout lacks %q:\n%s", want, in.out.String())
+				}
+			}
+			if tc.quiet && strings.Contains(in.out.String(), question) {
+				t.Errorf("asked, with nobody to ask or nothing to ask about:\n%s", in.out.String())
+			}
+			got, rerr := os.ReadFile(in.exe)
+			if rerr != nil {
+				t.Fatalf("the binary must exist at every outcome: %v", rerr)
+			}
+			if swapped := bytes.Equal(got, bin); swapped != tc.swapped {
+				t.Errorf("binary swapped = %v, want %v", swapped, tc.swapped)
+			}
+			if !tc.swapped {
+				if string(got) != "old binary" || len(in.restarts) != 0 {
+					t.Errorf("a refused update touched the install: binary %q, restarts %v", got[:min(len(got), 16)], in.restarts)
+				}
+				if _, err := os.Stat(preUpdateBackupPath(in.data, "1.0.0")); err == nil {
+					t.Error("a refused update wrote the backup")
+				}
+			}
+			var versions []string
+			for _, a := range savedAcks(t, in.cfg) {
+				if a.Control != "linux.dumpable" || a.Reason != "operation not permitted" {
+					t.Errorf("recorded %+v", a)
+				}
+				versions = append(versions, a.Version)
+			}
+			if !slices.Equal(versions, tc.recorded) {
+				t.Errorf("acknowledged for %v, want %v", versions, tc.recorded)
+			}
+		})
+	}
+}

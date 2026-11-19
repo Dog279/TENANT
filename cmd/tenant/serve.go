@@ -86,7 +86,15 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	// stop` asks the same window. main says when serve
 	// has returned (sessionEndFinished), after every deferred close here:
 	// Windows may end the process once it hears that.
-	if err := c.resolve(); err != nil {
+	if err := c.resolveDirs(); err != nil {
+		return err
+	}
+	// A process protection that could not be applied is acknowledged before
+	// anything else is loaded: the config, a secret, a store (TEN-535).
+	if err := startGate(ctx, c, "serve", !*hidden); err != nil {
+		return err
+	}
+	if err := c.resolveConfig(); err != nil {
 		return err
 	}
 	sessionEnding, sessionErr := watchSessionEnd(c.dataDir)
@@ -172,6 +180,8 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	// reconnect monitor) logs its line itself.
 	sysCh := make(chan string, 64)
 	pushSys := func(s string) { feedLine(hub, sysCh, "system", s) }
+	// Every start that goes ahead without a process protection says so (TEN-535).
+	warnUnprotected(ctx, c, sysCh)
 	signInNotice = pushSys // a sign-in URL reaches the operator through the feed
 	hub.OnAlert(pushSys)   // logbook.db failing or back: a banner line in the feed
 	// Status feed → stdout (the supervisor's log). A daemon's setup/health/
