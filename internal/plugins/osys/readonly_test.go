@@ -536,6 +536,10 @@ var readOnlyRefused = []struct{ name, cmd string }{
 	{"grep -e after the operands (GNU permutes)", "grep //attacker -e pat"},
 	{"grep -ie gave the pattern", "grep -ie pat //attacker"},
 	{"a host as the second -e", "grep -e pat -e //attacker"},
+	// rg --files takes no pattern: every operand is a path to list.
+	{"rg --files HOST", "rg --files //attacker"},
+	{"rg --files -- HOST", "rg --files -- //attacker"},
+	{"rg --files after the host", "rg //attacker --files"},
 	{"wc --files0-from abbreviated", "wc --f=list"},
 	{"du --files0-from abbreviated", "du --files0=list"},
 	{"sort --files0-from abbreviated", "sort --fil=list"},
@@ -616,6 +620,7 @@ var readOnlyPlain = []string{
 	"cat ~/.gitconfig", "ls -d ~/.*", "ls */*", "cat /etc/hosts", "ls /usr/local/net", "wc -l *.go", "du -sh *",
 	"sort names.txt", "file README.md", "grep -f pats.txt x", "grep -e pat f g", "du -X skip.txt .",
 	"git log --stat -1",
+	"rg --files", "rg --files src", "rg --files -g '*.go'", "rg --files-with-matches TODO src",
 }
 
 func TestReadOnlyBypasses(t *testing.T) {
@@ -799,8 +804,9 @@ func readOnlyViolation(c string) string {
 				return "a file option names a host: " + given[i-1] + " " + a
 			}
 			// A pattern glued to -e, -f or --regexp=: every operand is a file.
-			if roHostAlone.MatchString(a) && (word == "grep" || word == "rg") && (i == 0 || !strings.HasPrefix(given[i-1], "-")) && slices.ContainsFunc(given, func(g string) bool {
-				return len(g) > 2 && (strings.HasPrefix(g, "-e") || strings.HasPrefix(g, "-f") || strings.HasPrefix(g, "--regexp="))
+			if roHostAlone.MatchString(a) && (word == "grep" || word == "rg") && (i == 0 || !strings.HasPrefix(given[i-1], "-") || given[i-1] == "--" || given[i-1] == "--files") && slices.ContainsFunc(given, func(g string) bool {
+				return (word == "rg" && g == "--files") ||
+					len(g) > 2 && (strings.HasPrefix(g, "-e") || strings.HasPrefix(g, "-f") || strings.HasPrefix(g, "--regexp="))
 			}) {
 				return "the pattern came from an option, so a host is a file: " + a
 			}
