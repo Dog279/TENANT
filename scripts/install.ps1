@@ -16,6 +16,9 @@
 #
 #   $env:TENANT_CHILD = 'user'; $env:TENANT_ENROLL_CODE = '<code>'; irm .../install.ps1 | iex
 #
+# (`tenant fleet enroll` prints this line with the code in, for 'user' and
+# for 'system'.)
+#
 #   TENANT_CHILD        user: the child runs as this account, from logon. system: as
 #                       SYSTEM from boot (run this from an elevated PowerShell;
 #                       tenant.exe then goes to %ProgramFiles%\Tenant, where only
