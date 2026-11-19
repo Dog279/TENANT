@@ -103,6 +103,7 @@ type Server struct {
 	agents       AgentControl        // TEN-209: named helpers; nil = "isn't available"
 	goal         GoalControl         // TEN-212: the goal loop; nil under serve
 	research     ResearchControl     // TEN-210: deep research; nil = "isn't available"
+	fleet        FleetControl        // TEN-533: the fleet's machines; nil = "isn't available"
 	broker       *agent.Broker
 	mux          *http.ServeMux
 	log          *slog.Logger
@@ -128,6 +129,10 @@ type Server struct {
 	// wait that doubles each time (auth_pages.go, TEN-403).
 	failMu sync.Mutex
 	fails  map[string]loginFails
+
+	// confirmMu takes a fleet machine's confirmations one at a time, so the
+	// wait after wrong codes can't be outrun by sending many at once (fleet.go).
+	confirmMu sync.Mutex
 }
 
 // loginFails is one address's wrong keys: how many in a row, and until when
@@ -360,6 +365,9 @@ func (s *Server) routes() {
 	s.mountAgentsSSR(s.mux)
 	s.mountGoalSSR(s.mux)
 	s.mountResearchSSR(s.mux)
+
+	// The fleet's machines (TEN-533). SetFleet wires after construction.
+	s.mountFleetSSR(s.mux)
 }
 
 // handleHealthz reports liveness as 200 JSON {"status":"ok"}.

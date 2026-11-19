@@ -1,0 +1,237 @@
+{{define "content"}}
+{{template "fleet-body" .}}
+{{end}}
+
+{{/* fleet.html: the Fleet page (TEN-533), the list at /fleet and one
+     machine at /fleet/<id>. fleet-body is the region a form re-renders in
+     place (formDone); every form posts to a fixed URL with the machine's id
+     in a field (F1), and revoking is a plain post: it can take the page's
+     own machine away. What a machine says about itself arrives escaped and in
+     quotes (the control does it) and is shown in element content only, under
+     words that say whose it is: class fl-said. */}}
+{{define "fleet-body"}}<div id="fleet-body">
+{{template "ui-flash" .}}
+{{if not .Configured}}
+{{template "ui-off" "The fleet isn't available on this Tenant."}}
+{{else if not .View.Master}}
+<div class="empty">This Tenant has no fleet yet. A fleet is the other computers your agent can work on from here: each runs a small Tenant service that connects to this one, and every approval is decided here. To add the first machine, run <code>tenant fleet enroll</code> and a name for it in a terminal on the computer running Tenant, then paste the line it prints on the new machine.</div>
+{{else if .One}}
+{{template "fleet-machine" .}}
+{{else}}
+{{template "fleet-list" .}}
+{{end}}
+</div>{{end}}
+
+{{define "fl-mode"}}{{if eq . "allow"}}Allow{{else if eq . "deny"}}Block{{else}}Ask first{{end}}{{end}}
+
+{{define "fl-rule-tag"}}<span class="{{if eq . "deny"}}act-errtag{{else if eq . "ask"}}risk{{else}}tag{{end}}">{{if eq . "deny"}}blocked{{else if eq . "ask"}}asks you first{{else}}runs without asking{{end}}</span>{{end}}
+
+{{define "fleet-list"}}
+<div class="card">
+  <div class="card-head">Who holds the fleet</div>
+  <div>{{.View.Holder}}</div>
+  {{if not .View.Here}}<div class="dim">Only the process that holds the fleet knows which machines are online. A change made on this page still reaches it within a few seconds.</div>{{end}}
+</div>
+{{if .Problem}}
+<div class="banner err" role="alert">{{.Problem}}</div>
+{{else}}
+<div class="card">
+  <div class="card-head">Machines</div>
+  {{if .View.Machines}}
+  <div class="table-wrap"><table class="ovtable fl-table">
+    <tr><th>Machine</th><th>State</th><th>Last call</th><th>System*</th><th>Runs as*</th><th>Version*</th><th>Memory</th><th>Approval settings</th></tr>
+    {{range .View.Machines}}
+    <tr>
+      <td><a class="linkbtn" href="{{.Href}}">{{.Name}}</a><div class="dim nm">{{.ID}}</div></td>
+      <td><span class="{{.Pill}}">{{.StateWords}}</span></td>
+      <td>{{if .Link}}{{.Link}}{{else}}<span class="dim">known to the process that holds the fleet</span>{{end}}</td>
+      <td class="fl-said">{{.OS}}</td>
+      <td class="fl-said">{{.User}}</td>
+      <td class="fl-said">{{.Version}}</td>
+      <td>{{.MemoryWords}}</td>
+      <td>{{.Approvals}}{{if .Drift}} <span class="dim">· differs from a fresh copy</span>{{end}}</td>
+    </tr>
+    {{end}}
+  </table></div>
+  <div class="dim mt">* Reported by the machine: its own words, in quotes. This Tenant has not checked them.</div>
+  {{else}}
+  {{template "ui-empty" "No machines yet. In a terminal on the computer running Tenant, run tenant fleet enroll and a name for the machine, then paste the line it prints on the new machine."}}
+  {{end}}
+</div>
+<div class="card">
+  <div class="card-head">The fleet's rules <span class="dim">· every newly confirmed machine starts with these, laid over the settings it copies from this Tenant</span></div>
+  {{range .View.Rules}}
+  <div class="ghead"><span class="nm">{{visibleText .Pattern}}</span> {{template "fl-rule-tag" .Mode}}</div>
+  {{else}}
+  {{template "ui-empty" "No fleet rules. A new machine starts with a copy of this Tenant's own settings."}}
+  {{end}}
+  <div class="dim mt">They are changed in the terminal on the computer running Tenant. Changing them moves no machine that is confirmed already; a machine's own page can apply them again.</div>
+</div>
+{{end}}
+{{end}}
+
+{{/* fl-start lists what a pending machine would start with. Its argument is
+     the page: the choice per category shows only where the form around it
+     can be sent (.Local). */}}
+{{define "fl-start"}}{{$local := .Local}}{{with .One.Start}}
+{{range .Perms}}
+<div class="perm">
+  <div class="perm-text"><strong>{{.Title}}</strong>: {{template "fl-mode" .Mode}}{{with .Note}} <span class="dim">{{.}}</span>{{end}}
+    <div class="dim">{{if eq .Mode "allow"}}Can {{.Can}} without asking you.{{else if eq .Mode "deny"}}Can't {{.Can}}. It won't ask.{{else}}Asks you before it can {{.Can}}.{{end}}</div></div>
+  {{if $local}}<select name="set" aria-label="{{.Title}}">
+    <option value="">Start as shown</option>
+    <option value="{{.Category}}=ask">Ask first</option>
+    <option value="{{.Category}}=allow">Allow</option>
+    <option value="{{.Category}}=deny">Block</option>
+  </select>{{end}}
+</div>
+{{end}}
+{{range .Rules}}
+<div class="perm"><div class="perm-text">Rule <span class="nm">{{visibleText .Pattern}}</span> {{template "fl-rule-tag" .Mode}}{{with .Note}} <span class="dim">{{.}}</span>{{end}}</div></div>
+{{end}}
+{{end}}{{end}}
+
+{{define "fleet-machine"}}{{$m := .One}}
+<p><a class="linkbtn" href="/fleet">All machines</a></p>
+<div class="card">
+  <div class="row"><div><strong>{{$m.Name}}</strong> <span class="{{$m.Pill}}">{{$m.StateWords}}</span></div></div>
+  <table class="ovtable fl-facts">
+    <tr><th>Id</th><td><span class="nm">{{$m.ID}}</span> <span class="dim">given by this Tenant. The name is the one it was enrolled under.</span></td></tr>
+    <tr><th>Certificate</th><td class="nm">{{$m.Certificate}}</td></tr>
+    {{with $m.Enrolled}}<tr><th>Enrolled</th><td>{{.}}</td></tr>{{end}}
+    {{with $m.Confirmed}}<tr><th>Confirmed</th><td>{{.}}</td></tr>{{end}}
+    {{with $m.Revoked}}<tr><th>Revoked</th><td>{{.}}</td></tr>{{end}}
+    <tr><th>Last call</th><td>{{if $m.Link}}{{$m.Link}}{{if $m.Online}}, from <span class="fl-said">{{$m.Remote}}</span>, link version {{$m.LinkVersion}}, requests in progress: {{$m.Calls}}{{end}}{{else}}<span class="dim">known to the process that holds the fleet</span>{{end}}</td></tr>
+    {{with $m.LastEnded}}<tr><th>Last ended</th><td class="fl-said">{{.}}</td></tr>{{end}}
+    <tr><th>Memory</th><td>{{$m.MemoryWords}}{{with $m.MemoryDetail}} <span class="dim">{{visibleText .}}</span>{{end}}</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <div class="card-head">Reported by the machine <span class="dim">· its own words, in quotes. This Tenant has not checked them.</span></div>
+  <table class="ovtable fl-facts">
+    <tr><th>System</th><td class="fl-said">{{$m.OS}}</td></tr>
+    <tr><th>Runs as</th><td class="fl-said">{{$m.User}}</td></tr>
+    <tr><th>Version</th><td class="fl-said">{{$m.Version}}</td></tr>
+    <tr><th>Sandbox</th><td class="fl-said">{{$m.Sandbox}}</td></tr>
+    <tr><th>Its own limit</th><td class="fl-said">{{$m.Ceiling}}</td></tr>
+  </table>
+</div>
+
+{{if eq $m.State "pending"}}
+<div class="card">
+  <div class="card-head">Confirm this machine</div>
+  {{if not $m.Start}}
+  <div class="dim">The settings this machine would start with can't be worked out right now: the fleet's rules can't be read. Until they can, it can't be confirmed.</div>
+  {{else}}
+  <p>{{if $m.Start.Kept}}It starts with the approval settings kept under its id from the machine that had this id before. Nothing is copied from this Tenant.{{else}}It starts with a copy of this Tenant's own approval settings. Run commands, Change files, Irreversible actions, Send messages and Leave the sandbox start no looser than Ask first, whatever this Tenant allows. The fleet's rules are laid over the copy, and they win.{{end}} After this the two are independent: a later change here does not move this machine.</p>
+  {{if .Local}}
+  <form method="POST" action="/fleet/confirm" data-on:submit__prevent__throttle.1s="@post('/fleet/confirm', {contentType:'form', retryMaxCount:0})">
+    <input type="hidden" name="machine" value="{{$m.ID}}">
+    {{template "fl-start" .}}
+    <p class="mt">Until you confirm it, this Tenant sends the machine nothing. Confirm it only if the six digits on the machine's own screen are the ones you type here: they tie this record to that machine, and to no other that got hold of its enrollment code.</p>
+    <div class="cronactions">
+      <input type="text" name="code" class="cinput short" inputmode="numeric" autocomplete="off" maxlength="11" pattern="[0-9 ]{6,11}" placeholder="six digits" aria-label="The six digits the machine shows" required>
+      <button type="submit" class="btn on">Confirm this machine</button>
+    </div>
+  </form>
+  {{else}}
+  {{template "fl-start" .}}
+  <div class="banner info mt">A machine is confirmed on the computer running Tenant: open the dashboard there at its 127.0.0.1 address, sign in, and type the six digits the machine shows on its own screen. The terminal on that computer can confirm it too. This browser can't.</div>
+  {{end}}
+  {{end}}
+</div>
+{{else if ne $m.State "revoked"}}
+<div class="card">
+  <div class="card-head">What your agent may do on this machine <span class="dim">· the machine's own settings; a change on this Tenant does not move them</span></div>
+  {{if not $m.HasScheme}}
+  <div class="banner err" role="alert">This machine has no approval settings that can be read, so every request to it is refused. Copy again, below, gives it a fresh copy of this Tenant's.</div>
+  {{else}}
+  <div class="dim">With Run commands on Ask first, every command on this machine asks, until a rule below lets it run.</div>
+  {{range $m.Perms}}
+  <div class="perm">
+    <div class="perm-text"><strong>{{or .Title .Category}}</strong>
+      <div class="dim">{{if eq .Mode "allow"}}Can {{.Can}} without asking you.{{else if eq .Mode "deny"}}Can't {{.Can}}. It won't ask.{{else}}Asks you before it can {{.Can}}.{{end}}</div></div>
+    <div class="cronactions">
+      {{if ne .Mode "ask"}}<form method="POST" action="/fleet/permission" class="inline" data-on:submit__prevent__throttle.1s="@post('/fleet/permission', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="machine" value="{{$m.ID}}"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="mode" value="ask"><button type="submit" class="btn sm">Ask first</button></form>{{end}}
+      {{if ne .Mode "allow"}}{{template "ui-confirm" (inline (confirmGo "/fleet/permission" "Allow" (printf "Your agent can %s without asking you. This is for this machine only." .Can) "machine" $m.ID "category" .Category "mode" "allow"))}}{{end}}
+      {{if ne .Mode "deny"}}<form method="POST" action="/fleet/permission" class="inline" data-on:submit__prevent__throttle.1s="@post('/fleet/permission', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="machine" value="{{$m.ID}}"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="mode" value="deny"><button type="submit" class="btn sm">Block</button></form>{{end}}
+    </div>
+  </div>
+  {{end}}
+  {{end}}
+</div>
+
+{{if $m.HasScheme}}
+<div class="card">
+  <div class="card-head">Rules for this machine <span class="dim">· for one tool or one command, whatever the settings above say. Answering a request for this machine with always adds one here.</span></div>
+  {{range $m.Rules}}
+  <div class="ghead">
+    <span class="nm">{{visibleText .Pattern}}</span>
+    {{template "fl-rule-tag" .Mode}}
+    <span class="sp"></span>
+    {{if eq .Mode "allow"}}
+    <form method="POST" action="/fleet/rules/remove" class="inline" data-on:submit__prevent__throttle.1s="@post('/fleet/rules/remove', {contentType:'form', retryMaxCount:0})">
+      <input type="hidden" name="machine" value="{{$m.ID}}">
+      <input type="hidden" name="pattern" value="{{.Pattern}}">
+      <button type="submit" class="btn sm">Remove</button>
+    </form>
+    {{else}}
+    {{template "ui-confirm" (inline (confirmGo "/fleet/rules/remove" "Remove" "What this rule matched then follows this machine's safety settings, which may let your agent do it without asking you." "machine" $m.ID "pattern" .Pattern))}}
+    {{end}}
+  </div>
+  {{else}}
+  {{template "ui-empty" "No rules for this machine yet."}}
+  {{end}}
+  <form method="POST" action="/fleet/rules/add" class="cronactions mt" data-on:submit__prevent__throttle.1s="@post('/fleet/rules/add', {contentType:'form', retryMaxCount:0})">
+    <input type="hidden" name="machine" value="{{$m.ID}}">
+    <input type="text" name="pattern" class="cinput wide" placeholder="a tool name, or a command rule as a request for this machine shows it" required>
+    <input type="hidden" name="confirm" value="yes">
+    <button type="submit" name="mode" value="ask" class="btn sm">Ask first</button>
+    <button type="submit" name="mode" value="deny" class="btn sm">Block</button>
+    <details class="confirm-step go"><summary class="btn sm"><span class="c-open">Don't ask</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Don't ask"><p>On this machine your agent can do what this rule matches without asking you, whatever the safety settings above say.</p><button type="submit" name="mode" value="allow" class="btn sm">Yes, don't ask</button></div></details>
+  </form>
+</div>
+{{end}}
+
+<div class="card">
+  <div class="card-head">Compared with a fresh copy <span class="dim">· what this machine would start with if you confirmed it now</span></div>
+  {{if .View.NoFresh}}
+  <div class="dim">A fresh copy can't be worked out right now: the fleet's rules can't be read. Until they can, this machine's settings can't be compared or copied again.</div>
+  {{else}}
+  {{range $m.Drift}}
+  <div class="perm"><div class="perm-text"><strong>{{if .Rule}}Rule <span class="nm">{{visibleText .Key}}</span>{{else}}{{.Title}}{{end}}</strong>: {{.Words}}</div></div>
+  {{else}}
+  {{if $m.HasScheme}}{{template "ui-empty" "No differences: this machine's approval settings are what a fresh copy would be."}}{{end}}
+  {{end}}
+  {{if or $m.Drift (not $m.HasScheme)}}
+  <div class="cronactions mt">
+    {{template "ui-confirm" (inline (confirm "/fleet/scheme" "Copy again" "This machine's approval settings are replaced by a fresh copy of this Tenant's, with the fleet's rules. Every difference listed here goes, and so does anything you set or allowed for this machine alone." "machine" $m.ID "from" "master"))}}
+    {{if $m.HasScheme}}{{template "ui-confirm" (inline (confirmGo "/fleet/scheme" "Apply fleet rules" "The fleet's rules are laid over this machine's approval settings again. A rule of its own that a fleet rule covers is replaced; its safety settings stay as they are." "machine" $m.ID "from" "defaults"))}}{{end}}
+  </div>
+  {{end}}
+  {{end}}
+</div>
+{{end}}
+
+<div class="card">
+  <div class="card-head">Name and removal</div>
+  {{if ne $m.State "revoked"}}
+  <form method="POST" action="/fleet/rename" class="cronactions" data-on:submit__prevent__throttle.1s="@post('/fleet/rename', {contentType:'form', retryMaxCount:0})">
+    <input type="hidden" name="machine" value="{{$m.ID}}">
+    <input type="text" name="name" class="cinput" maxlength="63" placeholder="a new name" aria-label="A new name for this machine" required>
+    <button type="submit" class="btn sm">Rename</button>
+  </form>
+  <div class="dim mt">The name is a label. The machine's id, its approval settings and everything else stay with it.</div>
+  <div class="cronactions mt">
+    {{template "ui-confirm" (confirm "/fleet/revoke" "Revoke, keep its settings" "This machine can no longer connect, and its link closes within a second. Its approval settings stay under its id, for a machine enrolled later to take over." "machine" $m.ID "settings" "keep")}}
+    {{template "ui-confirm" (confirm "/fleet/revoke" "Revoke and delete" "This machine can no longer connect, and its record and approval settings are deleted. To use it again it has to be enrolled again." "machine" $m.ID "settings" "delete")}}
+  </div>
+  {{else}}
+  <div class="dim">This machine is revoked: it can no longer connect.{{if $m.HasScheme}} Its approval settings are kept under its id, for a machine enrolled later to take over.{{end}}</div>
+  <div class="cronactions mt">
+    {{template "ui-confirm" (confirm "/fleet/revoke" "Delete its record" "Its record and approval settings are deleted, and no machine enrolled later can take over its id." "machine" $m.ID "settings" "delete")}}
+  </div>
+  {{end}}
+</div>
+{{end}}

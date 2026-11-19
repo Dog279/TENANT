@@ -4773,7 +4773,7 @@ Writes the `security` log.
 
 **What it means.** The operator changed how one category of gated actions is approved on one surface (broker: local, discord or imessage) or for one fleet machine (broker: fleet: followed by the machine's id): ask, allow or deny.
 
-**Why it happens.** /permissions, /relay permissions or /imessage permissions in the terminal, or the dashboard's Access page. An Always grant sets allow too; its record is the grant (4102).
+**Why it happens.** /permissions, /relay permissions or /imessage permissions in the terminal, tenant fleet permissions, or the dashboard's Access page or, for a fleet machine, its Fleet page. An Always grant sets allow too; its record is the grant (4102).
 
 **What to do.** None when intended.
 
@@ -4951,9 +4951,9 @@ Writes the `security` log.
 - **Keywords:** `audit.success`
 - **Find it:** `provider:security id:4323`
 
-**What it means.** The operator changed the fleet: change is initialised (this Tenant became a master), code issued, confirmed, renamed, revoked or removed (revoked, and its record and approval scheme deleted). For a confirmed machine, detail is what the machine reported about itself (its own words) and the categories the operator loosened.
+**What it means.** The operator changed the fleet: change is initialised (this Tenant became a master), code issued, confirmed, renamed, revoked, removed (revoked, and its record and approval scheme deleted) or scheme changed (the machine's approval scheme was replaced by a fresh copy of the master's, or the fleet's rules were laid over it again; detail says which). For a confirmed machine, detail is what the machine reported about itself (its own words) and the categories the operator loosened. surface is where the operator was: cli, tui or dashboard.
 
-**Why it happens.** tenant fleet init, enroll, confirm, rename or revoke, or /fleet confirm or revoke in the terminal.
+**Why it happens.** tenant fleet init, enroll, confirm, rename, revoke or permissions --from; /fleet confirm or revoke in the terminal; or the dashboard's Fleet page.
 
 **What to do.** None when intended. Otherwise tenant fleet revoke the machine.
 
@@ -4966,11 +4966,11 @@ Writes the `security` log.
 - **Keywords:** `audit.failure`
 - **Find it:** `provider:security id:4324`
 
-**What it means.** A confirmation of a pending fleet machine was refused, and the machine stays pending.
+**What it means.** A confirmation of a pending fleet machine was refused, and the machine stays pending. On the dashboard the actor is the operator when a browser signed in on the computer running Tenant asked, and otherwise the address the request came from.
 
-**Why it happens.** The six digits typed are not the ones that machine shows (a typo, or the pending machine is not the one in front of you), or the machine is not waiting for confirmation.
+**Why it happens.** The six digits typed are not the ones that machine shows (a typo, or the pending machine is not the one in front of you), or the machine is not waiting for confirmation. On the dashboard also: the request did not come from a browser signed in on the computer running Tenant (it came with the API key, by a tailnet or proxy name, through a proxy or from another address), or too many attempts for that machine failed and the next ones have to wait.
 
-**What to do.** Read the six digits from the machine's own screen and try again. If they never match, the pending machine is not yours: tenant fleet revoke it.
+**What to do.** Read the six digits from the machine's own screen and try again. If they never match, the pending machine is not yours: tenant fleet revoke it. A machine is confirmed in the terminal, or in a browser on the computer running Tenant at the dashboard's 127.0.0.1 address; a refusal from an address you don't know means someone who can reach the dashboard tried.
 
 ### security 4501
 
