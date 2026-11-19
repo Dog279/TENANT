@@ -60,9 +60,15 @@ func (p Policy) gateExec(ctx context.Context, command string) error {
 	// Action id encodes the category for the approval broker: a destructive
 	// command is "os_exec_dangerous" regardless of AllowExec, so it maps to
 	// the destructive category and isn't blanket-approved by an exec grant.
+	// The broker reads the command back out of the detail (approval.execCommand,
+	// TEN-534): an os_exec detail is the command and nothing else, and the
+	// danger note ends an os_exec_dangerous one. The reason can quote the
+	// command (a path), so its blanks are folded: with no two spaces in a row
+	// it cannot hold the note's own marker, and the last marker in the detail
+	// is always the one written here.
 	action, detail := "os_exec", command
 	if dangerous {
-		action, detail = "os_exec_dangerous", command+"  [DANGER: "+reason+"]"
+		action, detail = "os_exec_dangerous", command+"  [DANGER: "+strings.Join(strings.Fields(reason), " ")+"]"
 	}
 	// Fast path: a plainly-allowed, non-destructive command needs no asking.
 	if p.AllowExec && !dangerous {
