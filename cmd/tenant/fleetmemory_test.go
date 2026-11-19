@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"tenant/internal/fleet"
 	"tenant/internal/fleet/shadow"
@@ -705,4 +707,35 @@ func childCopyName(t *testing.T, s *shadow.ChildStore, gen uint64) string {
 	}
 	t.Fatalf("no copy of generation %d", gen)
 	return ""
+}
+
+// FuzzRecordedMemoryState: the record of every machine's memory state the
+// holder keeps for other processes, as `tenant fleet show` reads it: what it
+// shows is a known state and one line of printable text, whatever the file.
+func FuzzRecordedMemoryState(f *testing.F) {
+	for _, seed := range []string{
+		`{"m0123456789abcdef":{"state":"in_step","detail":"generation 2 on both sides","at":"2026-11-19T10:00:00Z"}}`,
+		`{"m0123456789abcdef":{"state":"\u001b[2Jowned","detail":"\u001b]0;title\u0007\nsecond line","at":"x"}}`,
+		`{"m0123456789abcdef":null}`, `[]`, `null`, ``, `{`, strings.Repeat("A", 5<<20),
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		data := t.TempDir()
+		if err := os.MkdirAll(fleetShadowDir(data), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fleetMemoryStatesPath(data), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		state, detail := recordedMemoryState(data, "m0123456789abcdef")
+		switch state {
+		case memoryUnknown, memoryInStep, memoryBehind, memoryNeedsKey:
+		default:
+			t.Fatalf("an unknown state is shown: %q", state)
+		}
+		if strings.ContainsFunc(detail, func(r rune) bool { return !unicode.IsPrint(r) }) || !utf8.ValidString(detail) {
+			t.Fatalf("the detail is not one line of printable text: %q", detail)
+		}
+	})
 }

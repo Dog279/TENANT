@@ -32,6 +32,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"tenant/internal/datalock"
 	"tenant/internal/fleet"
@@ -546,6 +547,7 @@ func reembedShadow(ctx context.Context, shadows *shadow.Store, id string, emb mo
 // set records a machine's state, and writes the record for the other
 // processes when it changed.
 func (m *fleetMemory) set(id, state, detail string) {
+	detail = printableDetail(detail)
 	m.mu.Lock()
 	old := m.states[id]
 	changed := old.State != state || old.Detail != detail
@@ -699,7 +701,27 @@ func recordedMemoryState(dataDir, id string) (string, string) {
 	if !ok {
 		return memoryUnknown, "not compared yet"
 	}
-	return st.State, st.Detail + " (as the process that holds the fleet recorded it at " + st.At.Local().Format(time.DateTime) + ")"
+	switch st.State {
+	case memoryInStep, memoryBehind, memoryNeedsKey:
+	default:
+		st.State = memoryUnknown
+	}
+	return st.State, printableDetail(st.Detail) + " (as the process that holds the fleet recorded it at " + st.At.Local().Format(time.DateTime) + ")"
+}
+
+// printableDetail keeps a state's detail to one line of printable text, at
+// most 1 KiB: it can quote what a machine said, and it is shown on a screen.
+func printableDetail(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if !unicode.IsPrint(r) {
+			return ' '
+		}
+		return r
+	}, strings.ToValidUTF8(s, "?"))
+	if len(s) > 1024 {
+		s = strings.ToValidUTF8(s[:1024], "") + "..."
+	}
+	return s
 }
 
 // memoryWords is a state as a screen says it.
