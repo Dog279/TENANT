@@ -33,10 +33,13 @@ var scopedAlways sync.Map // action → func(context.Context)
 // asking call's ctx, which carries what to save; it records the outcome itself.
 func OnAlways(action string, save func(ctx context.Context)) { scopedAlways.Store(action, save) }
 
-// saveScoped runs action's OnAlways hook and reports whether it has one.
+// saveScoped runs action's OnAlways hook and reports whether it has one. A
+// hook saves on this computer (a folder its sandbox may write to), so for a
+// fleet machine's action it does not run: "always" there approves the one
+// request, and still never opens the category.
 func saveScoped(ctx context.Context, action string) bool {
 	f, ok := scopedAlways.Load(action)
-	if ok {
+	if ok && ctx.Value(hostKey{}) == nil {
 		f.(func(context.Context))(ctx)
 	}
 	return ok

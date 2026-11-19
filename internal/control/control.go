@@ -41,6 +41,11 @@ type ApprovalRequest struct {
 	Action   string // specific action id (os_exec, web_transact, …)
 	Detail   string // human-readable description of exactly what will run
 	Reply    chan ApprovalDecision
+	// Host and HostName name the fleet machine the action lands on: the id
+	// the master gave it, and its label escaped to plain ASCII (the machine may
+	// have chosen it). Both are empty for an action on this computer. Detail
+	// starts with the same two, so no surface shows such a request without them.
+	Host, HostName string
 }
 
 // PendingApproval is one still-pending approval, as the dashboard lists it.
@@ -55,6 +60,10 @@ type PendingApproval struct {
 	// restart. False where it only covers this request (a tool rule forced
 	// the prompt, or a pairing or an alert asked).
 	SessionOK bool `json:"session_ok,omitempty"`
+	// Host and HostName are ApprovalRequest's: the fleet machine the action
+	// lands on, empty for this computer.
+	Host     string `json:"host,omitempty"`
+	HostName string `json:"host_name,omitempty"`
 }
 
 // PermissionInfo is one safety category's mode, as /permissions lists it.
