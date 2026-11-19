@@ -3097,6 +3097,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 
 	// The fleet (TEN-531): the terminal app holds the fleet's links unless
 	// `tenant serve` already does, and /fleet says which (fleethub.go).
+	setFleetEmbedder(peerEmb) // re-embeds a machine's memory rebuilt from its copy (TEN-532)
 	life.AddFunc(lifecycle.Intake, "fleet listener", startFleetHub(ctx, c, "tui", broker, pushSys, log.With("source", "fleet")))
 	fleetCtl := newFleetTUIControl(c, stg, &stgMu)
 

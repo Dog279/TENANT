@@ -17,6 +17,7 @@ import (
 	xterm "github.com/charmbracelet/x/term"
 
 	"tenant/internal/backup"
+	"tenant/internal/fleet"
 	"tenant/internal/improve"
 	"tenant/internal/logs"
 	"tenant/internal/logs/catalog"
@@ -265,6 +266,12 @@ func cmdBackupCreate(ctx context.Context, args []string, out io.Writer) error {
 	// leaves holding deleted data.
 	if err := privacy.NoteBackup(privacy.Data{DataDir: c.dataDir}, res.Path, res.Manifest.CreatedAt); err != nil {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("could not record this backup for `tenant privacy status`: %v", err))
+	}
+	// A fleet master's plain backup (TEN-532): without its secrets a master
+	// restored from it is a stranger to its machines.
+	if !res.Manifest.Encrypted && exists(fleet.MasterIdentityPath(c.cfgDir)) {
+		res.Warnings = append(res.Warnings, "this Tenant is a fleet master, and a backup that is not encrypted leaves out its fleet certificate, fleet.json and fleet key: "+
+			"a master restored from it is a stranger to its machines (each needs `tenant child rehome`) and cannot read their memory without the recovery identity. Back up with --encrypt")
 	}
 	_ = catalog.BackupWritten.Audit(ctx, "path", res.Path, "bytes", res.Bytes, "encrypted", res.Manifest.Encrypted, "actor", actorOperator, "surface", surfaceCLI)
 	if *asJSON {
