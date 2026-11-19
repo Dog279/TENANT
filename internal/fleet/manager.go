@@ -423,7 +423,11 @@ func (m *Manager) Call(ctx context.Context, id string, c Call) (Result, error) {
 // result bounds what a machine sent as a tool result, whatever it promised.
 func (r callResult) result(callID string) Result {
 	text, clipped := cut(r.Text, maxResultText)
-	return Result{CallID: callID, Text: text, IsError: r.IsError, Clipped: r.Clipped || clipped}
+	res := Result{CallID: callID, Text: text, IsError: r.IsError, Clipped: r.Clipped || clipped}
+	if _, err := parseFingerprint(r.Audit); err == nil {
+		res.Audit = r.Audit
+	}
+	return res
 }
 
 // Result asks a machine for the result of an earlier call, by its id: the
