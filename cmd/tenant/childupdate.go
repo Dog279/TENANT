@@ -59,6 +59,7 @@ import (
 
 	"tenant/internal/fleet"
 	"tenant/internal/fsperm"
+	"tenant/internal/procprotect"
 	"tenant/internal/selfupdate"
 	"tenant/internal/version"
 )
@@ -222,7 +223,7 @@ func (u *childUpdater) stage(ctx context.Context, archive, want string) (string,
 	}
 	smoke, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	out, err := childCommand(smoke, bin, "version").Output()
+	out, err := procprotect.Output(childCommand(smoke, bin, "version"))
 	if err != nil {
 		return "", fmt.Errorf("the new binary does not run on this machine (%s/%s): %v", runtime.GOOS, runtime.GOARCH, err)
 	}
@@ -364,14 +365,17 @@ func (t *tailBuffer) last() string {
 func startChildProc(exe, dir string, mode string) (*childProc, error) {
 	ctx, kill := context.WithCancel(context.Background())
 	cmd := childCommand(ctx, exe, "child", "run", "--dir", dir, mode)
-	in, err := cmd.StdinPipe()
-	if err != nil {
-		kill()
-		return nil, err
-	}
 	said := &tailBuffer{}
 	cmd.Stderr = said
-	if err := cmd.Start(); err != nil {
+	var in io.WriteCloser
+	var err error
+	procprotect.Child(cmd)
+	procprotect.Ordinary(func() { // the pipes, its input and its standard error, are made here
+		if in, err = cmd.StdinPipe(); err == nil {
+			err = cmd.Start()
+		}
+	})
+	if err != nil {
 		kill()
 		return nil, err
 	}
