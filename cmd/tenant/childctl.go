@@ -434,8 +434,17 @@ func updatesLine(c fleet.Child) string {
 	if c.Rule() == fleet.UpdatesMaster {
 		return "updates:  master: an update is taken on the SHA-256 the master names (`tenant child updates release` verifies the release's signature here instead)"
 	}
-	if repo := childReleaseRepo(); repo != "" {
+	keys, err := selfupdate.ParseKeys(version.ReleaseKeys)
+	repo := childReleaseRepo()
+	switch {
+	case err != nil:
+		return "updates:  release, refused: this build's project key does not read (" + err.Error() + ")"
+	case repo != "" && len(keys) > 0:
+		return "updates:  release: an update is taken only if its signature verifies here, with the project key this Tenant carries or as " + repo + "'s release"
+	case repo != "":
 		return "updates:  release: an update is taken only if its signature verifies here as " + repo + "'s release"
+	case len(keys) > 0:
+		return "updates:  release: an update is taken only if its signature verifies here with the project key this Tenant carries"
 	}
 	return "updates:  release, refused: " + errNoReleaseIdentity
 }

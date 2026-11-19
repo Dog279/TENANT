@@ -52,7 +52,16 @@ func TestChildProjectKeyRefusals(t *testing.T) {
 		// None sent: cosign only, and it says so when cosign is not there.
 		"no signature for a binary that carries a key": {pub1, withSig(sums, bundle, nil), true, "sent no project signature with the release"},
 		"neither signature nor bundle":                 {pub1, withSig(sums, nil, nil), false, "neither a project signature nor a signature bundle"},
-		// A good signature does not make a wrong archive name right.
+		// A good signature does not make a wrong archive, or a wrong name, right.
+		"a good signature over checksums that do not list this archive": {pub1, func() fleet.Update {
+			other := bytes.ReplaceAll(sums, []byte(asset), []byte("tenant_3.0.0_plan9_arm.tar.gz"))
+			return withSig(other, nil, projectSign(priv1, other))
+		}(), true, "list no " + asset},
+		"a good signature, the master's hash for another archive": {pub1, func() fleet.Update {
+			p := withSig(sums, nil, good)
+			p.SHA256 = shaOf([]byte("a tampered archive"))
+			return p
+		}(), true, "list another SHA-256"},
 		"a good signature, another system's archive": {pub1, func() fleet.Update {
 			p := withSig(sums, nil, good)
 			p.Asset = "tenant_3.0.0_plan9_arm.tar.gz"
@@ -82,6 +91,16 @@ func TestChildProjectKeyRefusals(t *testing.T) {
 		})
 	}
 
+	t.Run("a key, no repository, and no signature sent", func(t *testing.T) {
+		u, dir := releaseChild(t)
+		carryKeys(t, pub1)
+		childReleaseRepo = func() string { return "" }
+		if _, err := u.piece(ctx, withSig(sums, bundle, nil)); err == nil || !strings.Contains(err.Error(), "names no release for cosign") {
+			t.Fatalf("%v", err)
+		}
+		nothingArrived(t, u, dir, "a key and no repository")
+	})
+
 	for name, tc := range map[string]struct {
 		keys, repo string
 		p          fleet.Update
@@ -109,6 +128,26 @@ func TestChildProjectKeyRefusals(t *testing.T) {
 				t.Fatalf("a piece: %+v, %v", ack, err)
 			}
 		})
+	}
+}
+
+// Status says what the default rule verifies with on this build.
+func TestUpdatesLineProjectKey(t *testing.T) {
+	_, pub := projectKey(1)
+	prev := childReleaseRepo
+	t.Cleanup(func() { childReleaseRepo = prev })
+	for _, tc := range []struct{ keys, repo, want string }{
+		{"", "acme/tenant", "signature verifies here as acme/tenant's release"},
+		{pub, "acme/tenant", "with the project key this Tenant carries or as acme/tenant's release"},
+		{pub, "", "verifies here with the project key this Tenant carries"},
+		{pub + ",", "acme/tenant", "refused: this build's project key does not read"},
+		{"", "", "refused: this build of Tenant names no release"},
+	} {
+		carryKeys(t, tc.keys)
+		childReleaseRepo = func() string { return tc.repo }
+		if got := updatesLine(fleet.Child{}); !strings.Contains(got, tc.want) {
+			t.Errorf("keys %q repo %q: %s", tc.keys, tc.repo, got)
+		}
 	}
 }
 
