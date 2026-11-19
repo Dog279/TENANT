@@ -120,6 +120,7 @@ func TestFleetE2EProcess(t *testing.T) {
 		return "", err
 	}
 	if spec.Scratch != "" {
+		_ = os.MkdirAll(spec.Scratch, 0o700)
 		_ = os.Setenv("TENANT_CHILD_HELPER_UNITS", filepath.Join(spec.Scratch, "units"))
 	}
 	childHelperSeams()
@@ -592,6 +593,7 @@ type e2eMaster struct {
 	cfg, data string
 	flags     []string // serve's own, beside the dirs
 	scripted  bool     // on the scripted model, with a dashboard: it takes turns
+	master    bool     // its dirs hold a fleet: serve listens for it as it starts
 	shipped   bool     // the intervals a shipped Tenant runs with
 	proc      *e2eProc
 	dash      string // the dashboard's base URL
@@ -626,7 +628,7 @@ func (m *e2eMaster) serve() {
 		m.dash = strings.TrimSpace(line[strings.Index(line, "http://"):])
 	}
 	m.proc.await(0, "running 24/7", "serve is up")
-	if _, _, ok := m.proc.out.find(0, "fleet: listening on "); ok {
+	if m.master {
 		m.listening(0)
 	}
 }
@@ -667,6 +669,7 @@ func (m *e2eMaster) init(dial string) {
 	from := m.proc.out.count()
 	// --listen before anything else: the default is every interface.
 	m.must(nil, "fleet", "init", "--listen", "127.0.0.1:0", "--wait", "60s")
+	m.master = true
 	m.listening(from)
 	if dial == "" {
 		dial = m.fleet

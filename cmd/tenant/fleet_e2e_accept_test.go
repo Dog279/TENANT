@@ -452,6 +452,7 @@ func TestFleetEndToEnd(t *testing.T) {
 		from := second.proc.out.count()
 		m.proc.stop()
 		second.listening(from)
+		second.master = true
 		wire.to(second.fleet)
 		alpha.state("connected to the master")
 		if res, _ := second.one("fleet_read", map[string]any{"host": "alpha", "path": noteFile}, ""); !strings.Contains(res, fileMark) {
