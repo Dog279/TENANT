@@ -70,16 +70,25 @@ func (b *Broker) SetReadOnly(f func(command string) bool) {
 	b.mu.Unlock()
 }
 
-// execCommand is the shell command behind an os_exec approval: the detail,
-// without the danger note the dispatcher appends to a destructive one.
+// execCommand is the shell command behind an exec approval, exactly as the
+// dispatcher will run it (TEN-534): the rules and the read-only judgement must
+// see all of it. An os_exec detail is the command and nothing else, so nothing
+// is cut from it: a command may itself contain "  [DANGER: ". Only an
+// os_exec_dangerous detail carries the dispatcher's note, appended after the
+// command, so the note begins at the LAST marker: the note holds no marker of
+// its own (osys folds the blanks of its reason), and whatever markers the
+// command wrote come before it.
 func execCommand(action, detail string) (string, bool) {
-	if action != "os_exec" && action != "os_exec_dangerous" {
-		return "", false
+	switch action {
+	case "os_exec":
+		return detail, true
+	case "os_exec_dangerous":
+		if i := strings.LastIndex(detail, "  [DANGER: "); i >= 0 {
+			return detail[:i], true
+		}
+		return detail, true
 	}
-	if i := strings.Index(detail, "  [DANGER: "); i >= 0 {
-		detail = detail[:i]
-	}
-	return detail, true
+	return "", false
 }
 
 // NewBroker builds the host's broker: every category asks, and "ask" prompts

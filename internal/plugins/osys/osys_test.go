@@ -793,20 +793,67 @@ func TestReadFileRanged(t *testing.T) {
 	}
 }
 
+// TEN-534: the broker reads the command back out of the approval's detail, so
+// the detail must hold the whole command however the command is written: an
+// os_exec detail is the command itself, and in an os_exec_dangerous one the
+// dispatcher's note starts at the LAST "  [DANGER: ", right after the command.
+func TestExecGate_DetailHoldsTheWholeCommand(t *testing.T) {
+	for _, cmd := range []string{
+		"echo hi  [DANGER: x]; touch y",                 // not destructive, with a note of its own making
+		"echo hi  [DANGER: x]; rm -rf /",                // destructive, the same
+		"rm -rf /  [DANGER: ",                           // destructive, ending with the marker
+		"rm -rf ~/a  [DANGER: recursive delete of ~/a]", // destructive, ending with a whole forged note
+	} {
+		var action, detail string
+		d, _ := newDisp(t, Policy{Confirm: func(_ context.Context, a, det string) bool { action, detail = a, det; return false }}, "")
+		d.Dispatch(context.Background(), call("os_exec", map[string]any{"command": cmd}))
+		if dangerous, _ := Classify(cmd); !dangerous {
+			if action != "os_exec" || detail != cmd {
+				t.Errorf("%q: sent %s %q, want os_exec and the command itself", cmd, action, detail)
+			}
+			continue
+		}
+		if i := strings.LastIndex(detail, "  [DANGER: "); action != "os_exec_dangerous" || i != len(cmd) || detail[:i] != cmd {
+			t.Errorf("%q: sent %s %q, want os_exec_dangerous and the note right after the command", cmd, action, detail)
+		}
+	}
+}
+
+// TEN-534: the working directory is not in the text the broker judges, so a
+// read-only command could be sent to run on a network share (`Get-ChildItem`
+// with workdir \\host\share), where even a look opens a session with that host
+// and offers it the user's credentials. Such a workdir is refused before
+// anything is asked or run; the model can `cd` there in the command, which
+// then goes through approval.
+func TestExec_NetworkWorkdirIsRefused(t *testing.T) {
+	for _, dir := range []string{`\\attacker.example\share`, `//attacker.example/share/repo`, `\\?\UNC\attacker.example\share`,
+		// Round three: the NT namespace form, and an automount that picks the
+		// host from the path (/net on macOS and with Linux autofs).
+		`\??\UNC\attacker.example\share`, `/??/UNC/attacker.example/share`, "/net/attacker.example/x", "/./net/attacker.example"} {
+		asked := 0
+		d, rr := newDisp(t, Policy{AllowExec: true, Confirm: func(context.Context, string, string) bool { asked++; return true }}, "ok")
+		out, isErr, _ := d.Dispatch(context.Background(), call("os_exec", map[string]any{"command": "ls", "workdir": dir}))
+		if !isErr || !strings.Contains(out, "network path") || asked != 0 || len(rr.calls) != 0 {
+			t.Errorf("workdir %q: isErr=%v asked=%d ran=%d %q; want a refusal before anything is asked or run", dir, isErr, asked, len(rr.calls), out)
+		}
+	}
+}
+
 // TEN-491: a command that only looks runs without a prompt; anything that
-// writes, acts, redirects or escalates does not, in any segment.
+// writes, acts, redirects or escalates does not, in any segment. TEN-534: nor
+// does a read-only word behind an assignment or a path (readonly_test.go).
 func TestReadOnly(t *testing.T) {
 	for cmd, want := range map[string]bool{
 		"ls -la":                               true,
 		"git status && git log -3":             true,
 		"cat x | grep y | wc -l":               true,
 		"echo $(whoami)":                       true,
-		"FOO=1 env":                            true,
+		"FOO=1 env":                            false,
 		"git branch -a":                        true,
 		"brew list":                            true,
 		"find . -name '*.go'":                  true,
 		"Get-ChildItem C:\\ | Select-String x": true,
-		"/usr/bin/grep -r x .":                 true,
+		"/usr/bin/grep -r x .":                 false,
 		"ls > out.txt":                         false,
 		"rm -rf x":                             false,
 		"ls; rm x":                             false,
