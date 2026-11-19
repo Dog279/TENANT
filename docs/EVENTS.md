@@ -5441,7 +5441,7 @@ Writes the `system` log.
 | [2020](#system-2020) | warning | Shutdown | `Shutdown step {stage}/{step} failed: {err}` |
 | [2021](#system-2021) | warning | Shutdown | `Shutdown step {stage}/{step} did not finish within the stop budget; abandoned after {after}` |
 | [2022](#system-2022) | warning | Shutdown | `Shutdown step {stage}/{step} skipped: the stop budget ran out` |
-| [2030](#system-2030) | warning | Lifecycle | `Running without a process protection: {name} ({control}) could not be applied: {reason}` |
+| [2030](#system-2030) | warning | Lifecycle | `{command} running without a process protection: {name} ({control}) could not be applied: {reason}` |
 | [2101](#system-2101) | warning | Component | `{component} is degraded: {err}` |
 | [2102](#system-2102) | warning | Component | `Child process {component} failed: {err}` |
 | [2110](#system-2110) | warning | Component | `{component} unavailable ({effect}): {err}` |
@@ -5716,16 +5716,16 @@ Writes the `system` log.
 
 ### system 2030
 
-`Running without a process protection: {name} ({control}) could not be applied: {reason}`
+`{command} running without a process protection: {name} ({control}) could not be applied: {reason}`
 
 - **Level:** warning · **Channel:** operational · **Task:** Lifecycle · **Log:** system
-- **Fields:** `control`, `name`, `reason`, `leaves`, `acknowledged`, `version`
+- **Fields:** `control`, `name`, `reason`, `leaves`, `acknowledged`, `version`, `command`
 - **Keywords:** `lifecycle`
 - **Find it:** `provider:system id:2030`
 
-**What it means.** Tenant started although the operating system could not apply one of its process protections, because the operator acknowledged exactly that at a terminal. It is written at every such start. leaves says what the missing control leaves open; acknowledged is when the operator said yes.
+**What it means.** A Tenant command started although the operating system could not apply one of its process protections. It is written once at every such start, by every command that opens Tenant's data (serve and the TUI, which first ask at a terminal and go ahead only on an acknowledgement, and every other command, which is not asked: chat, os, the plugin commands, eval and the rest); help, version, completion and a plain doctor or security audit open nothing and write nothing. command is the command; leaves says what the missing control leaves open; acknowledged is when the operator said yes for this control, reason and version, empty when nobody did.
 
-**Why it happens.** The system refuses the control for the reason given, and a person answered yes to "Continue without it?" for this control, this reason and this version.
+**Why it happens.** The system refuses the control for the reason given. For serve and the TUI a person answered yes to "Continue without it?"; another command runs without asking.
 
 **What to do.** None if that is accepted. Removing the cause named in reason restores the protection at the next start; tenant doctor shows every control.
 

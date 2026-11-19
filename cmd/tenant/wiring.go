@@ -147,6 +147,7 @@ func (c *commonFlags) resolveDirs() error {
 	}
 	if openCommandLog != nil {
 		openCommandLog(c)
+		logUnprotected(context.Background(), c) // a control not in force, in the log book (protectiongate.go)
 	}
 	return nil
 }

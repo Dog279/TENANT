@@ -34,6 +34,7 @@ func runWindowsService() bool {
 			return errors.New("the service's command line must be `tenant serve …`")
 		}
 		holdDataDir = lockDataDirForProcess
+		runningCommand = "serve"
 		killChildrenOnExit()
 		var err error
 		procprotect.Ordinary(func() { err = cmdServe(ctx, os.Args[2:]) }) // as main runs a command
