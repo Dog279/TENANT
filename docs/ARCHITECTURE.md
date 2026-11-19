@@ -28,10 +28,10 @@ block for drift.
 | Measure | Result |
 |---|---:|
 | Go packages | 103 |
-| Go files | 1,387 |
-| Test files | 671 |
-| Production Go LOC | 185,006 |
-| Test Go LOC | 139,454 |
+| Go files | 1,391 |
+| Test files | 674 |
+| Production Go LOC | 186,023 |
+| Test Go LOC | 141,775 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -1390,6 +1390,19 @@ when no surface can reach the operator. It knows no plugin and no surface:
 plugin registry's; an action neither knows is destructive) and the launch flags'
 grants, and the commands wire in persistence, the event stream and each
 channel's backend.
+
+**A fleet machine's approvals** (`internal/approval/fleet.go`, TEN-531). An
+action that lands on a child machine is checked twice, and both checks must
+pass: by the origin of its turn (`approval.Origin`: this computer, a relay, a
+scheduled job) and by that machine's own scheme. `approval.Fleet` holds a scheme
+per machine id as a `Broker` and a `Rules` of its own, and keeps them in the
+settings file (`fleet_schemes`, and `fleet_rules` for what new machines start
+with). `Fleet.For(origin, machine).Confirm` decides through `Broker.Confirm`'s
+own ladder: deny beats ask beats allow, an origin with nobody to ask turns ask
+into deny, "always" saves into that machine's scheme alone, the read-only
+command judgement is never asked, and the request and every Security record
+name the machine. An origin that was not opened for the fleet reaches no
+machine at all (`Decider.Reach`).
 
 ### 5.13 `cmd/tenant` — CLI (main.go + wiring.go + commands.go)
 

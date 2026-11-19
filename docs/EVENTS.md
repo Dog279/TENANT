@@ -4688,13 +4688,13 @@ Writes the `security` log.
 `Approval requested: {action} ({category})`
 
 - **Level:** info · **Channel:** operational · **Task:** Approval · **Log:** security
-- **Fields:** `category`, `action`, `detail`, `origin`
+- **Fields:** `category`, `action`, `detail`, `origin`, `host`, `host_name`
 - **Keywords:** `audit.success`
 - **Find it:** `provider:security id:4101`
 
 **What it means.** A gated action is waiting for the operator's decision.
 
-**Why it happens.** The agent, a job or a peer asked for an action whose category needs approval.
+**Why it happens.** The agent, a job or a peer asked for an action whose category needs approval. For an action on a fleet machine, host and host_name say which machine, and detail starts with them.
 
 **What to do.** Approve or deny it where it was asked; it expires when nobody answers.
 
@@ -4703,7 +4703,7 @@ Writes the `security` log.
 `Approval granted {grant}: {action} ({category})`
 
 - **Level:** info · **Channel:** operational · **Task:** Approval · **Log:** security
-- **Fields:** `category`, `action`, `detail`, `origin`, `grant`, `via`, `nonce`
+- **Fields:** `category`, `action`, `detail`, `origin`, `grant`, `via`, `nonce`, `host`, `host_name`
 - **Keywords:** `audit.success`
 - **Find it:** `provider:security id:4102`
 
@@ -4718,13 +4718,13 @@ Writes the `security` log.
 `Approval denied: {action} ({category})`
 
 - **Level:** warning · **Channel:** operational · **Task:** Approval · **Log:** security
-- **Fields:** `category`, `action`, `detail`, `origin`, `via`, `nonce`
+- **Fields:** `category`, `action`, `detail`, `origin`, `via`, `nonce`, `host`, `host_name`
 - **Keywords:** `audit.failure`
 - **Find it:** `provider:security id:4103`
 
 **What it means.** A gated action was denied, so it did not run.
 
-**Why it happens.** The operator denied it (via operator), a standing setting did (the category's mode, a tool rule, the surface's lock: the Discord relay's exec mode, or the cron-exec approver), or no operator could be reached (no_surface).
+**Why it happens.** The operator denied it (via operator), a standing setting did (the category's mode, a tool rule, the surface's lock: the Discord relay's exec mode, or the cron-exec approver), or no operator could be reached (no_surface). For an action on a fleet machine (host): the origin's own rules refused it (origin), the origin may not reach that machine or the request was not fit to show (fleet), or the machine asked too often (rate_limit).
 
 **What to do.** None when intended; otherwise check the category's approval mode.
 
@@ -4733,7 +4733,7 @@ Writes the `security` log.
 `Approval denied at shutdown: {action} ({category})`
 
 - **Level:** warning · **Channel:** operational · **Task:** Approval · **Log:** security
-- **Fields:** `category`, `action`, `detail`, `origin`
+- **Fields:** `category`, `action`, `detail`, `origin`, `host`, `host_name`
 - **Keywords:** `audit.failure`
 - **Find it:** `provider:security id:4104`
 
@@ -4748,7 +4748,7 @@ Writes the `security` log.
 `Approval expired unanswered: {action} ({category})`
 
 - **Level:** warning · **Channel:** operational · **Task:** Approval · **Log:** security
-- **Fields:** `category`, `action`, `detail`, `origin`, `nonce`
+- **Fields:** `category`, `action`, `detail`, `origin`, `nonce`, `host`, `host_name`
 - **Keywords:** `audit.failure`
 - **Find it:** `provider:security id:4105`
 
@@ -4767,7 +4767,7 @@ Writes the `security` log.
 - **Keywords:** `audit.success`
 - **Find it:** `provider:security id:4106`
 
-**What it means.** The operator changed how one category of gated actions is approved on one surface (broker: local, discord or imessage): ask, allow or deny.
+**What it means.** The operator changed how one category of gated actions is approved on one surface (broker: local, discord or imessage) or for one fleet machine (broker: fleet: followed by the machine's id): ask, allow or deny.
 
 **Why it happens.** /permissions, /relay permissions or /imessage permissions in the terminal, or the dashboard's Access page. An Always grant sets allow too; its record is the grant (4102).
 

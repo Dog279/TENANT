@@ -149,6 +149,8 @@ func (r *registry) Pending() []control.PendingApproval {
 			AgeSecs:   int(now.Sub(p.at).Seconds()),
 			Origin:    p.origin,
 			SessionOK: p.sticky,
+			Host:      p.req.Host,
+			HostName:  p.req.HostName,
 		})
 	}
 	return out

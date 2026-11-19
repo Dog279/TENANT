@@ -48,6 +48,21 @@ type Settings struct {
 	// the operator removes one by deleting it. Like exec_profiles, no agent
 	// tool writes it and the running hub re-reads it.
 	ExecExceptions map[string][]string `json:"exec_exceptions,omitempty"`
+	// FleetSchemes holds each fleet machine's approval scheme, keyed by the id
+	// the master gave the machine: an object with the same two keys as above,
+	// "permissions" (category modes) and "tool_rules" (tool and command rules).
+	// "Always" on a machine's card saves here, under that machine alone. Each
+	// entry is kept as written and read by internal/approval, which is stricter
+	// than for the master's own keys: an entry with anything it can't read
+	// leaves that machine with no scheme, so every call to it is refused until
+	// the entry is fixed. Editable by hand, re-read like tool_rules.
+	FleetSchemes map[string]json.RawMessage `json:"fleet_schemes,omitempty"`
+	// FleetRules are the tool and command rules every newly confirmed fleet
+	// machine starts with, laid over the scheme it inherits (pattern → mode, as
+	// tool_rules). Changing them moves no machine that already has a scheme.
+	// Kept as written, like a FleetSchemes entry: unreadable, no new machine
+	// can be given a scheme.
+	FleetRules json.RawMessage `json:"fleet_rules,omitempty"`
 }
 
 // ExecProfile is one operator override under "exec_profiles", keyed by a
