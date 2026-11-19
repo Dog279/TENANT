@@ -59,6 +59,9 @@ var attempts = []attempt{
 // TestWhatAProcessSeesOfItself: after Protect the soft core limit is 0, and a
 // command the process starts inherits it.
 func TestWhatAProcessSeesOfItself(t *testing.T) {
+	if Disabled {
+		t.Skip("built with -tags debugattach: the controls are compiled out")
+	}
 	v := startVictim(t, "protected")
 	if got := v.Self["core soft limit is 0"]; got != "true <nil>" {
 		t.Errorf("victim: core soft limit is 0 = %q", got)

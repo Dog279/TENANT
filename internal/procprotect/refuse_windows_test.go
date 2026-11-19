@@ -407,6 +407,9 @@ const restricted = "D:(A;;0x1fffff;;;SY)(A;;0x1fffff;;;BA)(A;;0x101001;;;OW)"
 // a process it starts the way Tenant starts a command is the same as one an
 // unprotected process starts, and can run commands of its own.
 func TestWhatAProcessSeesOfItself(t *testing.T) {
+	if Disabled {
+		t.Skip("built with -tags debugattach: the controls are compiled out")
+	}
 	plain, v := startVictim(t, "plain"), startVictim(t, "protected")
 	want := map[string]string{
 		"process access list":         restricted,

@@ -161,6 +161,9 @@ var attempts = []attempt{
 // it starts is ordinary again (the kernel resets the flag at exec) and
 // inherits the soft limit, which it may raise.
 func TestWhatAProcessSeesOfItself(t *testing.T) {
+	if Disabled {
+		t.Skip("built with -tags debugattach: the controls are compiled out")
+	}
 	v := startVictim(t, "protected")
 	want := map[string]string{"dumpable": "0 <nil>", "core soft limit is 0": "true <nil>"}
 	if os.Geteuid() != 0 {
@@ -205,6 +208,9 @@ func TestProtectThisProcess(t *testing.T) {
 	// The process still starts commands and reads their output.
 	if out, err := Output(exec.Command("sh", "-c", "echo ok")); err != nil || strings.TrimSpace(string(out)) != "ok" {
 		t.Fatalf("a command after Protect: %q, %v", out, err)
+	}
+	if err := Run(exec.Command("sh", "-c", "true")); err != nil {
+		t.Fatalf("Run after Protect: %v", err)
 	}
 }
 

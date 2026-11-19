@@ -240,6 +240,9 @@ func TestForcedFailureIsReported(t *testing.T) {
 	if len(controlIDs) == 0 {
 		t.Skip("no controls on this system")
 	}
+	if Disabled {
+		t.Skip("built with -tags debugattach: the controls are compiled out")
+	}
 	v := startVictim(t, "forced")
 	missing := v.Report.Missing()
 	if len(missing) != len(controlIDs) {
@@ -273,6 +276,13 @@ func TestReportMissingAndStillOpen(t *testing.T) {
 	}
 	if StillOpen("plan9") != "" {
 		t.Error("a system with no controls has nothing to say")
+	}
+	if len(controlIDs) > 0 && len(System()) == 0 {
+		t.Error("System() says nothing on a system that has controls")
+	}
+	// A control whose system call fails is reported with the system's reason.
+	if c := apply(Control{ID: "x"}, func() error { return errors.New("operation not permitted") }); c.OK || c.Reason != "operation not permitted" {
+		t.Errorf("a failed control = %+v", c)
 	}
 	for _, tc := range []struct {
 		what, out string
