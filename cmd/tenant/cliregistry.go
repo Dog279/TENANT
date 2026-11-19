@@ -243,7 +243,8 @@ func cliCommands() []*cliCommand {
 			Summary: "own other machines from this one: enroll a machine as a child, confirm it, set what the agent may do there",
 			Rows: []cmdreg.Row{
 				{Syntax: "fleet init [--listen ADDR] [--address HOST:PORT]...", Desc: "make this Tenant a fleet master (once); set where the fleet port listens and the addresses its machines dial"},
-				{Syntax: "fleet enroll <name> [--ttl 15m] [--adopt ID]", Desc: "print a one-time code and the line to paste on the new machine (runs init first if needed)"},
+				{Syntax: "fleet enroll <name> [--ttl 15m] [--adopt ID]", Desc: "print a one-time code and the line to paste on the new machine, with Tenant on it or with nothing on it (runs init first if needed)"},
+				{Syntax: "fleet address [list | add HOST:PORT | remove HOST:PORT]", Desc: "the addresses a code tells a new machine to dial, one at a time; warns when another site cannot dial any of them"},
 				{Syntax: "fleet list | show <name>", Desc: "the machines and which process holds the fleet; one machine in full, with what it reported marked as its own words"},
 				{Syntax: "fleet confirm <name> [--set category=mode]...", Desc: "confirm a pending machine: read what it reported and the scheme it starts with, then type the six digits it shows"},
 				{Syntax: "fleet rename <name> <new-name>", Desc: "relabel a machine; its id and what is kept under it stay"},

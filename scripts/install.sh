@@ -16,7 +16,11 @@
 # the script goes straight on to `tenant child install`.
 #
 #   curl -fsSL .../install.sh | TENANT_CHILD=user TENANT_ENROLL_CODE='<code>' sh
-#   curl -fsSL .../install.sh | sudo TENANT_CHILD=system TENANT_ENROLL_CODE='<code>' sh
+#   curl -fsSL .../install.sh | TENANT_CHILD=system TENANT_ENROLL_CODE='<code>' sudo --preserve-env=TENANT_CHILD,TENANT_ENROLL_CODE sh
+#
+# (`sudo VAR=value sh` would put the code on sudo's command line, which the
+# process list shows; set before sudo and preserved, it stays in the
+# environment. `tenant fleet enroll` prints these lines with the code in.)
 #
 #   TENANT_CHILD        user: the child runs as this account. system: as root from
 #                       boot (run the script as root; the binary then goes to

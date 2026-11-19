@@ -22,6 +22,8 @@ package dashboard
 // more or cannot be undone.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -69,7 +71,33 @@ type FleetControl interface {
 	// for its own. identity is zeroed when Recover returns. It says what it
 	// did.
 	Recover(machine, was string, identity []byte) (string, error)
+	// Enroll makes the one-time code that adds a machine as name (`tenant
+	// fleet enroll`), with the lines to paste on it: boot for a child that
+	// runs as root or SYSTEM from boot, else as the user. by says who asked,
+	// for the Security record, which never holds the code. The dashboard calls
+	// it from one place, for a signed-in browser (handleFleetAdd).
+	Enroll(name string, boot bool, by string) (FleetEnrollment, error)
 }
+
+// FleetEnrollment is a code just made, render-ready. Code is a secret while
+// it lives: it is in the answer to the request that made it and nowhere else,
+// not in a flash, a URL, the page's state or a log.
+type FleetEnrollment struct {
+	Name, Code string
+	Expires    string // when the code stops working, as the page shows a time
+	Boot       bool
+	Addresses  []string // what the code tells the machine to dial
+	// Warning is the plain warning when none of them can be dialled from
+	// another site; "" with none.
+	Warning string
+	Lines   []FleetPasteLine
+	// Note says why the line that installs Tenant too is missing; "" when it
+	// is there.
+	Note string
+}
+
+// FleetPasteLine is one line to paste on the new machine, and where it runs.
+type FleetPasteLine struct{ For, Line string }
 
 // The memory states of the spec's section 7 (cmd/tenant's memory* constants
 // are the same strings). FleetMemoryUnknown comes with a detail saying why.
@@ -279,6 +307,10 @@ func (s *Server) mountFleetSSR(mux *http.ServeMux) {
 	// step. Revoking, replacing a machine's settings, and anything that lets
 	// the agent do more on it ask first (DESIGN.md §5).
 	mux.HandleFunc("POST /fleet/confirm", s.handleFleetConfirm)
+	// A code joins nothing by itself: the machine that spends it waits until
+	// its six digits are typed on this computer. Making one needs a signed-in
+	// browser, never the API key (handleFleetAdd).
+	mux.HandleFunc("POST /fleet/add", s.handleFleetAdd)
 	mux.HandleFunc("POST /fleet/rename", s.handleFleetRename)
 	mux.HandleFunc("POST /fleet/revoke", needConfirm(nil, s.handleFleetRevoke))
 	mux.HandleFunc("POST /fleet/permission", needConfirm(confirmUnless("mode", "ask", "deny"), s.handleFleetPermission))
@@ -302,6 +334,10 @@ const (
 	// fleetNotHere is the 403 a confirmation gets from anywhere but a browser
 	// signed in on the computer running Tenant.
 	fleetNotHere = "Nothing changed: a machine is confirmed in a browser on the computer running Tenant, signed in to the dashboard at its 127.0.0.1 or localhost address, or in the terminal."
+	// fleetAddSignIn is the 403 a request to make a code gets without a
+	// signed-in browser behind it.
+	fleetAddSignIn = "No code was made: a code for a new machine is made from the Fleet page in a signed-in browser, or with tenant fleet enroll in a terminal on the computer running Tenant."
+	fleetAddName   = "No code was made. A name is up to 63 letters, digits, dots, dashes or underscores, starts with a letter or a digit, doesn't look like a machine id (m and 16 hex digits), and isn't another machine's."
 )
 
 type fleetPageData struct {
@@ -312,6 +348,8 @@ type fleetPageData struct {
 	One        *FleetMachine // a machine's own page; nil is the list
 	Local      bool          // this browser may confirm a machine (atThisComputer)
 	Msg, Err   string
+	// Added is the code this request made, shown in this answer only.
+	Added *FleetEnrollment
 }
 
 // fleetData reads the page's state; id picks one machine's page.
@@ -458,6 +496,64 @@ func (s *Server) handleFleetConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	s.loginOK(tries)
 	s.fleetDone(w, r, m.ID, m.Name+" is confirmed. Your agent can work on it now, as its approval settings say.", "")
+}
+
+// maxFleetName bounds the name field before it reaches the fleet, which
+// takes 63 characters at most (the same check `tenant fleet enroll` makes).
+const maxFleetName = 63
+
+// handleFleetAdd is POST /fleet/add (name, runs=user|boot): Add machine. It
+// makes the one-time code for a new machine and answers with the lines to
+// paste on it, in this response and nowhere else: never a redirect, so the
+// code is in no URL, no flash and no browser history entry, and it is not
+// stored. The fleet's Security record says a code was made, for which name,
+// by which session; it never holds the code.
+//
+// It takes a signed-in browser's session only, with the page's anti-forgery
+// check (an Origin equal to the dashboard's): the API key makes no code. A
+// code is the first half of a machine joining; the other half, the six
+// digits, stays at this computer (handleFleetConfirm).
+func (s *Server) handleFleetAdd(w http.ResponseWriter, r *http.Request) {
+	if s.fleet == nil {
+		s.fleetDone(w, r, "", "", "")
+		return
+	}
+	c, err := r.Cookie(dashCookieName)
+	if err != nil || !s.validSession(c.Value) || r.Header.Get("Origin") == "" || !s.checkOrigin(r) {
+		refused(r, "fleet code without a signed-in browser", "POST /fleet/add")
+		http.Error(w, fleetAddSignIn, http.StatusForbidden)
+		return
+	}
+	name, runs := strings.TrimSpace(r.FormValue("name")), r.FormValue("runs")
+	switch {
+	case name == "" || len(name) > maxFleetName:
+		s.fleetDone(w, r, "", "", fleetAddName)
+		return
+	case runs != "user" && runs != "boot":
+		s.fleetDone(w, r, "", "", "Choose whether it runs as you or from boot. No code was made.")
+		return
+	}
+	e, err := s.fleet.Enroll(name, runs == "boot", "dashboard session "+sessionTag(c.Value)+" from "+r.RemoteAddr)
+	if err != nil {
+		s.fleetDone(w, r, "", "", s.flashFor(r.Context(), "fleet add", err, fleetAddName))
+		return
+	}
+	d := s.fleetData(r, "")
+	d.Added = &e
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Header.Get("Datastar-Request") != "" {
+		s.formReply(w, r, "/fleet", "A code for "+e.Name+" is below. It is shown this once.", "",
+			func() (string, error) { return part(s.tmpl.fleet, "fleet-body", d) })
+		return
+	}
+	s.render(w, s.tmpl.fleet, d)
+}
+
+// sessionTag names a signed-in session in a record without being its key:
+// the first eight hex digits of its SHA-256.
+func sessionTag(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return hex.EncodeToString(sum[:4])
 }
 
 func (s *Server) handleFleetRename(w http.ResponseWriter, r *http.Request) {

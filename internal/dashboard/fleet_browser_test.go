@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,6 +87,36 @@ func TestFleetPageInChrome(t *testing.T) {
 		t.Errorf("the open Copy again step at 390px: %s", b)
 	}
 	if got := f.called(); len(got) != 4 || got[2] != "permission|"+fleetConfirmed+"|exec|deny" || got[3] != "recopy|"+fleetConfirmed+"|master" {
+		t.Errorf("the control got %q", got)
+	}
+
+	// Add machine (TEN-541): the form answers in place with the lines, which
+	// fit the phone, and the code is in no address the browser keeps.
+	add := `form[action="/fleet/add"]`
+	var paste, href string
+	bad = nil
+	err = run(ctx,
+		visit(srv.URL+"/fleet"),
+		chromedp.WaitVisible(add+` input[name=name]`, chromedp.ByQuery),
+		chromedp.SendKeys(add+` input[name=name]`, "web9", chromedp.ByQuery),
+		chromedp.Click(add+` input[name=runs][value=boot]`, chromedp.ByQuery),
+		chromedp.Click(add+` button[type=submit]`, chromedp.ByQuery),
+		toastSays("ok", "shown this once"),
+		chromedp.WaitVisible(`#fleet-body code.fl-paste`, chromedp.ByQuery),
+		chromedp.Text(`#fleet-body code.fl-paste`, &paste, chromedp.ByQuery),
+		chromedp.Evaluate(`location.href`, &href),
+		chromedp.Evaluate(fitsJS, &bad),
+	)
+	if err != nil {
+		t.Fatalf("Add machine: %v (the control got %q)", err, f.called())
+	}
+	if !strings.Contains(paste, fakeEnrollCode) || strings.Contains(href, fakeEnrollCode) {
+		t.Errorf("Add machine: the line %q, the address %q", paste, href)
+	}
+	for _, b := range bad {
+		t.Errorf("Add machine's answer at 390px: %s", b)
+	}
+	if got := f.called(); len(got) != 5 || !strings.HasPrefix(got[4], "enroll|web9|true|dashboard session ") {
 		t.Errorf("the control got %q", got)
 	}
 }

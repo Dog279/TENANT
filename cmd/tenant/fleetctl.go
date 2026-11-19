@@ -510,7 +510,7 @@ func cmdFleet(_ context.Context, args []string) error {
 		"init": fleetInitCmd, "enroll": fleetEnrollCmd, "list": fleetListCmd, "ls": fleetListCmd, "show": fleetShowCmd,
 		"confirm": fleetConfirmCmd, "rename": fleetRenameCmd, "revoke": fleetRevokeCmd,
 		"permissions": fleetPermissionsCmd, "perms": fleetPermissionsCmd, "relay": fleetRelayCmd,
-		"update": fleetUpdateCmd, "recover": fleetRecoverCmd,
+		"update": fleetUpdateCmd, "recover": fleetRecoverCmd, "address": fleetAddressCmd,
 	}[args[0]]
 	if run == nil {
 		return fleetUsage()
@@ -525,7 +525,10 @@ func fleetUsage() error {
                           make this Tenant a fleet master (once); set where the fleet
                           port listens and the addresses its machines dial
   enroll <name> [--ttl 15m] [--adopt ID]
-                          print a one-time code and the line to paste on the new machine
+                          print a one-time code and the line to paste on the new machine,
+                          with Tenant on it or with nothing on it
+  address [list | add HOST:PORT | remove HOST:PORT]
+                          the addresses a code tells a new machine to dial, one at a time
   list                    the machines, and which process holds the fleet
   show <name>             everything known about one machine
   confirm <name> [--set category=mode]...
@@ -768,9 +771,12 @@ func fleetInitCmd(args []string) error {
 	addrs, _ := cli.store.Addresses()
 	fmt.Printf("  certificate    %s\n  listens on     %s   (fleet.listen)\n", id.Fingerprint, cmp.Or(cli.c.lc.Fleet.Listen, defaultFleetListen))
 	if len(addrs) == 0 {
-		fmt.Println("  machines dial  nothing yet: tenant fleet init --address HOST:PORT")
+		fmt.Println("  machines dial  nothing yet: tenant fleet address add HOST:PORT")
 	} else {
-		fmt.Printf("  machines dial  %s   (change: tenant fleet init --address HOST:PORT)\n", strings.Join(addrs, ", "))
+		fmt.Printf("  machines dial  %s   (change: tenant fleet address add|remove HOST:PORT)\n", strings.Join(addrs, ", "))
+		if w := addressWarning(addrs); w != "" {
+			fmt.Println("  " + w)
+		}
 	}
 	fmt.Println("  fleet key      " + fleetKeyWords(cli.c.cfgDir))
 	recErr := ensureRecovery(cli.store)
@@ -1083,25 +1089,16 @@ func fleetEnrollCmd(args []string) error {
 		return errors.New("usage: tenant fleet enroll <name> [--ttl 15m] [--adopt ID]")
 	}
 	name := cli.pos[0]
-	id, _, err := initFleet(cli, "", nil)
+	if _, _, err := initFleet(cli, "", nil); err != nil {
+		return err
+	}
+	e, err := cli.ops.issueCode(name, *ttl, *adopt, "")
 	if err != nil {
 		return err
 	}
-	if addrs, err := cli.store.Addresses(); err == nil && len(addrs) == 0 {
-		return errors.New("the master has no address for a machine to dial yet: tenant fleet init --address HOST:PORT")
-	}
-	code, err := cli.store.CreateEnrollment(id.Fingerprint, name, *ttl, *adopt)
-	if err != nil {
-		return err
-	}
-	cli.ops.audit(fleet.Machine{Name: name, ID: *adopt}, "code issued", "valid for "+ttl.String())
-	fmt.Println(code)
+	fmt.Println(e.Code)
 	w := fleetNotes
-	fmt.Fprintf(w, "\nThe code above enrolls one machine as %s. It works once and expires in %s.\n", fleetName(name), *ttl)
-	fmt.Fprintf(w, "On the new machine, with Tenant installed, paste one line (add --system, from an elevated shell, for a service that starts at boot):\n")
-	fmt.Fprintf(w, "  Linux, macOS:  printf '%%s\\n' '%s' | tenant child install\n", code)
-	fmt.Fprintf(w, "  PowerShell:    '%s' | tenant child install\n", code)
-	fmt.Fprintf(w, "It prints six digits. Then, here:  tenant fleet confirm %s\n", fleetName(name))
+	fmt.Fprintln(w, "\n"+enrollText(e))
 	if *adopt == "" {
 		// A new machine under an old name starts clean unless the operator adopts the old id.
 		if all, err := cli.store.Machines(); err == nil {

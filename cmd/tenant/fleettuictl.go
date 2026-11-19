@@ -170,6 +170,17 @@ func (f fleetTUIControl) Confirm(name, code string, pairs []string) (string, err
 	return fmt.Sprintf("confirmed %s (%s). The master may call it from now on; its scheme: /permissions fleet %s", fleetName(m.Name), m.ID, fleetName(m.Name)), nil
 }
 
+// Enroll makes a code for a new machine and says what `tenant fleet enroll`
+// says: the code, then the lines to paste and the next step.
+func (f fleetTUIControl) Enroll(name string) (string, error) {
+	e, err := f.ops.issueCode(name, 0, "", "")
+	if err != nil {
+		return "", err
+	}
+	text := strings.ReplaceAll(enrollText(e), "tenant fleet confirm ", "/fleet confirm ")
+	return e.Code + "\n\n" + text, nil
+}
+
 func (f fleetTUIControl) Revoke(name, scheme string) (string, error) {
 	m, err := f.ops.machine(name)
 	if err != nil {

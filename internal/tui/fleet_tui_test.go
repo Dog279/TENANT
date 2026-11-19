@@ -72,6 +72,7 @@ func (f *fakeFleet) Show(name string) (string, error) {
 func (f *fakeFleet) Confirm(name, code string, set []string) (string, error) {
 	return f.note(append([]string{"confirm", name, "code=" + code}, set...)...), nil
 }
+func (f *fakeFleet) Enroll(name string) (string, error) { return f.note("enroll", name), nil }
 func (f *fakeFleet) Revoke(name, scheme string) (string, error) {
 	return f.note("revoke", name, "scheme="+scheme), nil
 }
@@ -149,7 +150,7 @@ func TestSlashFleetChangesNeedTheKeyboard(t *testing.T) {
 	f := newFakeFleet()
 	m := newFleetModel(f)
 	for _, line := range []string{
-		"/fleet confirm web1 123456", "/fleet confirm web1 123 456 exec=allow", "/fleet revoke web1 delete", "/fleet revoke web1 keep", "/fleet relay discord on",
+		"/fleet enroll web2", "/fleet confirm web1 123456", "/fleet confirm web1 123 456 exec=allow", "/fleet revoke web1 delete", "/fleet revoke web1 keep", "/fleet relay discord on",
 	} {
 		slash(m, line)
 		if len(f.calls) != 0 {
@@ -175,6 +176,7 @@ func TestSlashFleetChangesNeedTheKeyboard(t *testing.T) {
 	for line, want := range map[string]string{
 		"/fleet confirm web1 123 456 exec=allow send=ask": "confirm web1 code=123456 exec=allow send=ask",
 		"/fleet revoke web1 DELETE":                       "revoke web1 scheme=delete",
+		"/fleet enroll web2":                              "enroll web2",
 		"/fleet relay imessage on":                        "relay imessage on",
 	} {
 		f.calls = nil
@@ -186,7 +188,7 @@ func TestSlashFleetChangesNeedTheKeyboard(t *testing.T) {
 			t.Fatal("the keyboard mark outlived the line it was set for")
 		}
 	}
-	for _, line := range []string{"/fleet bogus", "/fleet show", "/fleet confirm", "/fleet revoke", "/fleet revoke a b c", "/fleet relay a b c"} {
+	for _, line := range []string{"/fleet bogus", "/fleet show", "/fleet enroll", "/fleet enroll a b", "/fleet confirm", "/fleet revoke", "/fleet revoke a b c", "/fleet relay a b c"} {
 		f.calls = nil
 		typeLine(m, line)
 		if len(f.calls) != 0 || !strings.Contains(lastMsg(m), "usage: /fleet") {
