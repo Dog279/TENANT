@@ -75,7 +75,19 @@ func childUpdaterRig(t *testing.T) (*childUpdater, string) {
 	if err := os.MkdirAll(filepath.Dir(exe), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// These tests are about taking and staging an archive on the hash the
+	// master names; childrelease_test.go has the default rule.
+	rigChild(t, dir, fleet.UpdatesMaster)
 	return newChildUpdater(dir, exe, quietLog), dir
+}
+
+// rigChild writes a child.json in dir with the update rule rule.
+func rigChild(t *testing.T, dir string, rule fleet.UpdateRule) {
+	t.Helper()
+	if err := fleet.SaveChild(fleet.ChildPath(dir), fleet.Child{ID: "m0123456789abcdef", Name: "box", MasterAddresses: []string{"127.0.0.1:9"},
+		MasterFingerprint: strings.Repeat("ab", 32), Sandbox: "host", Ceiling: fleet.CeilingFull, Updates: rule}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // helperCommands makes childCommand start this test binary as a helper
@@ -146,7 +158,7 @@ func TestChildUpdateRefusals(t *testing.T) {
 		u, dir := childUpdaterRig(t)
 		archive := bytes.Repeat([]byte("x"), 100)
 		p := fleet.Update{Version: "2.0.0", SHA256: shaOf(archive), Size: 100, Data: archive[:40]}
-		if ack, err := u.piece(ctx, p); err != nil || ack != (fleet.UpdateAck{Received: 40}) {
+		if ack, err := u.piece(ctx, p); err != nil || ack != (fleet.UpdateAck{Received: 40, Rule: "master"}) {
 			t.Errorf("the first piece: %+v, %v", ack, err)
 		}
 		noStage(t, u, "a truncated transfer")
@@ -213,7 +225,7 @@ func TestChildUpdateRefusals(t *testing.T) {
 	t.Run("a whole, checked archive of a Tenant that runs is staged", func(t *testing.T) {
 		u, _ := childUpdaterRig(t)
 		ack, err := send(t, u, "3.0.0", archive, fleet.MaxUpdateChunk)
-		if err != nil || ack != (fleet.UpdateAck{Received: int64(len(archive)), Applying: true}) {
+		if err != nil || ack != (fleet.UpdateAck{Received: int64(len(archive)), Applying: true, Rule: "master"}) {
 			t.Fatalf("%+v, %v", ack, err)
 		}
 		s := <-u.ready

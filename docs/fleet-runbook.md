@@ -193,6 +193,36 @@ or `web1: rolled back to "1.3.2": "<why, in the machine's words>"`, `web1: refus
 not confirmed, an older version without `--allow-older`), or `web1: failed` with the reason.
 The exit is 0 only when every machine runs the version asked for.
 
+**Whose word the machine takes (decision A71).** By default a machine installs only a release
+it verified itself: with the archive the master sends the release's `checksums.txt` and its
+signature bundle, on the first message of the transfer, before any of the archive. The machine,
+with no network, checks the archive's name against its own system, processor and the version
+named; verifies the signature over the checksums with `cosign verify-blob --offline` against
+the release workflow of the repository its own binary was built from (never a name the master
+or the environment gives it); and checks that the verified checksums list the archive with the
+SHA-256 the master named. The whole archive is then checked against that hash. Anything that
+does not hold is refused before the archive is sent, nothing is kept, and the master shows the
+machine's reason. So a master, or a master's disk, that changed an archive cannot install it.
+This needs `cosign` on the machine's PATH, a release that carries a signature bundle, and a
+release build of Tenant on the machine; a development build names no release, and refuses every
+update on the default rule (its `tenant child status` says so).
+
+To run a build of your own on a machine, set it to take its master's hash instead:
+
+```
+tenant child install --updates master        # at enrollment
+tenant child updates master                  # later, on the machine, with its child stopped
+tenant child updates release                 # back to the default
+tenant child updates                         # which one is in force (also in `tenant child status`)
+```
+
+The rule is in `child.json` (`"updates": "master"`; the default is written as nothing). It is
+set only on the machine, never over the link; `tenant child rehome` keeps it; a change is a
+record in the machine's audit log. `tenant fleet update` says for each machine which rule it
+applied. A machine from before this setting takes its master's hash. Downgrades are refused on
+the master unless `--allow-older`, as before; a signed older release is still a genuine release,
+and a machine on the default rule takes it.
+
 On the machine: the archive goes to `<dir>-data/update/<sha256>.part` (a dropped link resumes
 there), and nothing else is touched until it is whole and hashes right. The binary is unpacked
 beside the installed one (`.tenant-child-update/`) and run once with `version`. Then the child

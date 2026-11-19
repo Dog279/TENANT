@@ -100,6 +100,18 @@ Releases page.
     ones, also once a machine that was offline is back, and applies it again to a memory rebuilt
     from a copy made before it. Copies a machine keeps under an earlier fleet key are not deleted;
     you are told. Retention pruning does not reach the machines' memory.
+- **A fleet machine verifies an update's release itself** (TEN-533, decision A71). `tenant fleet
+  update` now sends the release's checksums and signature bundle with the archive, before any of
+  it; a machine checks, offline, that the signature is the release workflow's of the repository
+  its own binary was built from, that the checksums list the archive with the hash it was sent,
+  and that the archive is its own system's and processor's for the version named, and refuses
+  anything else before the archive is on the wire. A master that was taken over, or whose copy
+  of an archive was changed, can no longer install it on its machines. This needs `cosign` on
+  the machine and a signed release; a development build refuses every update on this rule and
+  says so. `tenant child install --updates master` (or later, on the machine,
+  `tenant child updates master`) makes a machine take its master's hash instead, to run a build
+  of your own; it is set only on the machine, kept by rehome, shown by `tenant child status`, and
+  recorded in the audit log. `tenant fleet update` says which rule each machine applied.
 - **A fleet survives losing its master** (TEN-533). `tenant child rehome`, run on a machine with
   its child stopped, gives it another master: a master restored from a plain backup or rebuilt
   from nothing. It takes a code from the new master's `tenant fleet enroll` as `child install`

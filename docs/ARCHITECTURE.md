@@ -1434,6 +1434,15 @@ reads the newest copy under another key with `shadow.Store.AdoptAs` (which
 accepts a copy naming the machine's old id only under a recovery identity)
 and pushes the result as a generation under the new key.
 
+**Whose word an update is taken on** (decision A71). `fleet.Update` carries the release's
+`Asset`, `Checksums` and `Bundle` on the opening piece of each send (`sendPieces`). A child on
+the default rule (`child.json` `updates` empty or `release`) runs `childUpdater.verifyRelease`
+before it takes a byte: the asset name for its own target, `cosign verify-blob --offline`
+(`selfupdate.CosignArgs`) against `childReleaseRepo`, which is the binary's own `version.Repo`, and
+the verified checksums' entry for the asset equal to the SHA-256 sent. `updates: master` keeps
+the master's hash. The rule is set only by `tenant child install --updates` and `tenant child
+updates`; `TestChildUpdateRuleIsNotSetOverTheLink` pins `fleet/addresses` to the addresses.
+
 ### 5.13 `cmd/tenant` — CLI (main.go + wiring.go + commands.go)
 
 A real subcommand CLI (stdlib `flag`, no cobra). Runs fully offline on
