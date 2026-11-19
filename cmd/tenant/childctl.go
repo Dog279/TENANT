@@ -256,6 +256,13 @@ func childInstall(ctx context.Context, in io.Reader, out io.Writer, dir string, 
 			fmt.Fprintf(out, "note: %v (the audit lines still reach the system log, under a longer heading)\n", err)
 		}
 	}
+	// macOS: the binary the unit runs gets the hardened-runtime flag, as for
+	// `tenant service install` (codesign.go); a failure is said, and it stays.
+	if signsBinaries {
+		if err := installHardened(ctx, exe); err != nil {
+			fmt.Fprintln(out, unsignedNote(exe, err))
+		}
+	}
 	if err := spec.install(ctx); err != nil {
 		return fmt.Errorf("this machine is enrolled, but its service was not installed: %w\n"+
 			"`tenant child run --dir %q` holds the link from this terminal; `tenant child uninstall` undoes the enrollment", err, dir)

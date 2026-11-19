@@ -221,6 +221,12 @@ func (u *childUpdater) stage(ctx context.Context, archive, want string) (string,
 	if err := selfupdate.ExtractBinary(named, bin, exeName()); err != nil {
 		return "", fmt.Errorf("the archive is not a Tenant for this machine (%s/%s): %w", runtime.GOOS, runtime.GOARCH, err)
 	}
+	// macOS: as `tenant update` does (codesign.go), before it first runs.
+	if signsBinaries {
+		if err := signHardened(ctx, bin); err != nil {
+			return "", fmt.Errorf("the new binary could not be signed with the hardened runtime: %w", err)
+		}
+	}
 	smoke, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	out, err := procprotect.Output(childCommand(smoke, bin, "version"))
