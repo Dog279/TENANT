@@ -134,7 +134,7 @@ var (
 		}
 		cmd := exec.CommandContext(ctx, path, args...)
 		childNoWindow(cmd)
-		if out, err := cmd.CombinedOutput(); err != nil {
+		if out, err := procprotect.CombinedOutput(cmd); err != nil {
 			said, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
 			return fmt.Errorf("%v: %s", err, fleetQuote(said))
 		}
