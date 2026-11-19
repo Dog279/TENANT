@@ -95,6 +95,7 @@ func TestFleetE2EProcess(t *testing.T) {
 	for k, v := range spec.Env {
 		_ = os.Setenv(k, v)
 	}
+	e2eUpdateSeams(spec) // fleet_update_e2e_test.go: what an update of a machine needs here
 	if spec.Hold {
 		fmt.Printf("E2E-PID %d\n", os.Getpid())
 		go e2eHold()
@@ -603,10 +604,11 @@ type e2eMaster struct {
 	t         *testing.T
 	host      *e2eHost
 	cfg, data string
-	flags     []string // serve's own, beside the dirs
-	scripted  bool     // on the scripted model, with a dashboard: it takes turns
-	master    bool     // its dirs hold a fleet: serve listens for it as it starts
-	shipped   bool     // the intervals a shipped Tenant runs with
+	flags     []string          // serve's own, beside the dirs
+	scripted  bool              // on the scripted model, with a dashboard: it takes turns
+	master    bool              // its dirs hold a fleet: serve listens for it as it starts
+	shipped   bool              // the intervals a shipped Tenant runs with
+	env       map[string]string // for its serve process
 	proc      *e2eProc
 	dash      string // the dashboard's base URL
 	token     string
@@ -631,7 +633,7 @@ func (m *e2eMaster) serve() {
 	} else {
 		argv = append(argv, "--backend", "echo", "--dashboard=false")
 	}
-	m.proc = m.host.start("serve", e2eSpec{Argv: argv, Model: m.scripted, Shipped: m.shipped})
+	m.proc = m.host.start("serve", e2eSpec{Argv: argv, Model: m.scripted, Shipped: m.shipped, Env: m.env})
 	m.turns, m.fleet = 0, ""
 	if m.scripted {
 		_, line := m.proc.await(0, "E2E-TOKEN ", "serve has a dashboard token")
