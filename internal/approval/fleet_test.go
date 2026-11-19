@@ -512,6 +512,7 @@ func TestFleet_FleetRulesAndCopyAgain(t *testing.T) {
 		"os_exec(rm *)":               "deny",
 		"x_post":                      "deny",
 		"delete_*":                    "deny",
+		"pager_sen?":                  "ask",
 	} {
 		if err := r.fleet.Rules().Set(p, m); err != nil {
 			t.Fatal(err)
@@ -529,6 +530,8 @@ func TestFleet_FleetRulesAndCopyAgain(t *testing.T) {
 			"mcp:h:1:delete_all":              "ask",   // so is this id
 			"delete_c*":                       "ask",   // and this narrower glob, which would have won
 			"*_cache":                         "deny",  // a glob that only partly overlaps: it stays
+			"pager_*":                         "deny",  // the fleet's "pager_sen?" may not hold all of it: it stays
+			"pager_sent":                      "deny",  // one tool that pattern does hold: it goes
 			"gsuite_send":                     "deny",  // nothing to do with the fleet's rules
 		},
 	}
@@ -536,6 +539,7 @@ func TestFleet_FleetRulesAndCopyAgain(t *testing.T) {
 	want := map[string]string{
 		"os_exec(systemctl status *)": "allow", "os_exec(rm *)": "deny", "x_post": "deny", "delete_*": "deny",
 		"os_exec(systemctl *)": "ask", "*_cache": "deny", "gsuite_send": "deny",
+		"pager_sen?": "ask", "pager_*": "deny",
 	}
 	if !maps.Equal(got.ToolRules, want) {
 		t.Fatalf("rules = %v\nwant    %v", got.ToolRules, want)
@@ -1311,5 +1315,100 @@ func TestFleet_MalformedEntriesFailClosed(t *testing.T) {
 	}
 	if _, err := r.fleet.Scheme("aaaa"); err == nil {
 		t.Fatal("a refused Put left a scheme behind")
+	}
+}
+
+// A hand-written key or value of any length makes a problem of bounded
+// length: it is told to the operator on one line.
+func TestFleet_ProblemsAreShort(t *testing.T) {
+	long := strings.Repeat("k", 5000)
+	r := newFleetRig(t)
+	_, problems := r.fleet.Load(raws(
+		"aaaa", `{"`+long+`":{}}`,
+		"bbbb", `{"permissions":{"exec":"`+long+`"}}`,
+		long, `{}`,
+	), json.RawMessage(`{"`+long+`":"allow"}`))
+	if len(problems) != 4 {
+		t.Fatalf("%d problem(s), want 4: %q", len(problems), problems)
+	}
+	for _, p := range problems {
+		if len(p) > 700 {
+			t.Errorf("a problem of %d bytes: %s...", len(p), p[:120])
+		}
+	}
+}
+
+// twice finds a key written twice in one object, at any depth, and nothing
+// else: the same key in two objects, or in two elements of a list, is fine.
+func TestFleet_KeysWrittenTwice(t *testing.T) {
+	for raw, want := range map[string]bool{
+		`{}`:                                  false,
+		`{"a":1,"b":2}`:                       false,
+		`{"a":1,"a":2}`:                       true,
+		`{"a":{"x":1},"b":{"x":2}}`:           false,
+		`{"a":{"x":1,"x":2}}`:                 true,
+		`{"a":[{"x":1},{"x":2}],"b":[1,2,2]}`: false,
+		`{"a":[{"x":1,"x":2}]}`:               true,
+		`{"a":[[],{}],"a":0}`:                 true,
+		`{"a":"a","b":"a"}`:                   false,
+		`{"a":1,"A":2}`:                       false, // unless the keys are a struct's
+		`[{"a":1},{"a":2}]`:                   false,
+		`7`:                                   false,
+	} {
+		if got := twice(json.RawMessage(raw), false) != nil; got != want {
+			t.Errorf("twice(%s) = %v, want %v", raw, got, want)
+		}
+	}
+	if twice(json.RawMessage(`{"a":1,"A":2}`), true) == nil {
+		t.Error("a struct's keys match in any case: a and A are one key")
+	}
+	if twice(json.RawMessage(`{"m":{"a":1,"A":2}}`), true) != nil {
+		t.Error("only the outermost object's keys are a struct's")
+	}
+}
+
+// The zero Decider belongs to no fleet: it reaches nothing and approves nothing.
+func TestFleet_ZeroDecider(t *testing.T) {
+	var d Decider
+	if d.Reach() == nil || d.Confirm(context.Background(), "os_exec", "uptime") {
+		t.Fatal("the zero Decider let a call through")
+	}
+}
+
+// A rule that says ask, on a machine: it prompts past the machine's own
+// category allow, a no is a no, "once" leaves it asking, and "always" turns
+// that one rule to allow on that machine and nowhere else.
+func TestFleet_AskRulesOnAMachine(t *testing.T) {
+	r := newFleetRig(t, "bbbb")
+	rules := map[string]string{"os_exec(git push)": "ask", "os_write": "ask"}
+	if err := r.fleet.Put("aaaa", Scheme{Permissions: map[string]string{CatExec: "allow", CatWrite: "allow"}, ToolRules: rules}); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range [][2]string{{"os_exec", "git push"}, {"os_write", "write x"}} {
+		pattern := map[string]string{"os_exec": "os_exec(git push)", "os_write": "os_write"}[a[0]]
+		for _, step := range []struct {
+			answer   control.ApprovalDecision
+			ok       bool
+			prompts  int
+			ruleThen string
+		}{
+			{control.DenyOnce, false, 1, "ask"},
+			{control.ApproveOnce, true, 1, "ask"},
+			{control.ApproveSession, true, 1, "ask"},
+			{control.ApproveAlways, true, 1, "allow"},
+			{control.DenyOnce, true, 0, "allow"}, // nobody is asked any more
+		} {
+			r.answer = step.answer
+			ok, n := r.confirm(r.attended(), "aaaa", a[0], a[1])
+			if got := r.scheme("aaaa").ToolRules[pattern]; ok != step.ok || n != step.prompts || got != step.ruleThen {
+				t.Fatalf("%s answered %v: ok %v, %d prompt(s), rule %q; want %v, %d, %q", a[0], step.answer, ok, n, got, step.ok, step.prompts, step.ruleThen)
+			}
+		}
+	}
+	if b := r.scheme("bbbb"); len(b.ToolRules) != 0 {
+		t.Fatalf("the other machine gained rules: %v", b.ToolRules)
+	}
+	if got := r.master.Snapshot(); len(got) != 0 {
+		t.Fatalf("the master gained rules: %v", got)
 	}
 }
