@@ -18,6 +18,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -28,6 +29,7 @@ import (
 	"time"
 
 	"tenant/internal/fleet"
+	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
 )
 
@@ -59,6 +61,9 @@ func e2eMemory(cmd string) string {
 				var facts []string
 				bare := 0
 				for _, f := range all {
+					if o, _, _ := p.Semantic.Origin(ctx, f.ID); o.Job == originInventory {
+						continue // taken at confirmation, when there is an embedder (TEN-532)
+					}
 					facts = append(facts, f.Fact)
 					if len(f.Embedding) == 0 {
 						bare++
@@ -69,6 +74,29 @@ func e2eMemory(cmd string) string {
 			}
 		}
 		p.Release()
+		if err != nil {
+			out["error"] = err.Error()
+		}
+	case "memory": // everything in the machine's memory, as text
+		p, err := fleetShadow(ctx, id)
+		if err != nil {
+			out["error"] = err.Error()
+			break
+		}
+		var b strings.Builder
+		eps, err := p.Episodic.List(ctx, episodic.ListFilter{IncludeTombstoned: true})
+		for _, e := range eps {
+			fmt.Fprintf(&b, "episode %s | %s | %v\n", e.Prompt, e.Response, e.ToolCalls)
+		}
+		if err == nil {
+			var all []*semantic.Fact
+			all, err = p.Semantic.List(ctx, semantic.ListFilter{IncludeTombstoned: true, IncludeSuperseded: true})
+			for _, f := range all {
+				fmt.Fprintf(&b, "fact %s\n", f.Fact)
+			}
+		}
+		p.Release()
+		out["text"] = b.String()
 		if err != nil {
 			out["error"] = err.Error()
 		}

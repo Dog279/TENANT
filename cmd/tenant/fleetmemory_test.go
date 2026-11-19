@@ -398,6 +398,11 @@ func (l *memLab) facts() (string, int) {
 	var out []string
 	bare := 0
 	for _, f := range all {
+		// The inventory taken at confirmation (TEN-532, fleetrecall.go) is in
+		// every confirmed machine's memory; these tests are about the rest.
+		if o, _, _ := p.Semantic.Origin(context.Background(), f.ID); o.Job == originInventory {
+			continue
+		}
 		out = append(out, f.Fact)
 		if len(f.Embedding) == 0 {
 			bare++

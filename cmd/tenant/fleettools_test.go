@@ -60,6 +60,7 @@ func everyFleetCall(host string) map[string]map[string]any {
 		"fleet_copy":     {"host": host, "direction": "from_host", "local_path": "/tmp/l", "remote_path": "/tmp/r"},
 		"fleet_tools":    {"host": host},
 		"fleet_call":     {"host": host, "tool": "os_sysinfo"},
+		"fleet_note":     {"host": host, "fact": "a fact"},
 	}
 }
 

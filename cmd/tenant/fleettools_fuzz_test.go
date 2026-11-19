@@ -65,7 +65,12 @@ func TestFleetArgs(t *testing.T) {
 		{"fleet_call", `{"host":"web1"}`, "tool must be"},
 		{"fleet_call", `{"host":"web1","tool":"fleet_read"}`, "serves no fleet_* tool"},
 		{"fleet_call", `{"host":"web1","tool":"x","arguments":[1]}`, "arguments must be an object"},
-		{"fleet_note", `{"host":"web1"}`, "unknown fleet tool"},
+		{"fleet_note", `{"host":"web1"}`, "fact is required"},
+		{"fleet_note", `{"host":"web1","fact":" \n\t "}`, "fact is required"},
+		{"fleet_note", `{"host":"web1","fact":"` + strings.Repeat("x", fleetNoteMax+1) + `"}`, "a note is at most"},
+		{"fleet_note", `{"host":"web1","fact":"right‮left"}`, "plain text"},
+		{"fleet_note", `{"host":"web1","fact":"zero​width"}`, "plain text"},
+		{"fleet_nope", `{"host":"web1"}`, "unknown fleet tool"},
 	} {
 		if _, err := parseFleetArgs(tc.tool, json.RawMessage(tc.args)); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s %s: %v, want an error saying %q", tc.tool, tc.args, err, tc.want)
@@ -74,7 +79,7 @@ func TestFleetArgs(t *testing.T) {
 	// Every tool's schema is JSON, requires what the parser requires, and
 	// names no argument the parser does not read.
 	known := map[string]bool{}
-	raw, _ := json.Marshal(fleetArgs{CreateDirs: new(bool), Arguments: json.RawMessage(`{}`), Host: "h", Command: "c", Workdir: "w", Timeout: 1, Background: true, Action: "a", ID: "i", Offset: 1, Limit: 1, Input: "i", Path: "p", ReplaceAll: true, Direction: "d", LocalPath: "l", RemotePath: "r", Tool: "t"})
+	raw, _ := json.Marshal(fleetArgs{CreateDirs: new(bool), Arguments: json.RawMessage(`{}`), Host: "h", Command: "c", Workdir: "w", Timeout: 1, Background: true, Action: "a", ID: "i", Offset: 1, Limit: 1, Input: "i", Path: "p", ReplaceAll: true, Direction: "d", LocalPath: "l", RemotePath: "r", Tool: "t", Fact: "f"})
 	var fields map[string]json.RawMessage
 	_ = json.Unmarshal(raw, &fields)
 	for k := range fields {
