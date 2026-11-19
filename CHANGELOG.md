@@ -5,6 +5,47 @@ Releases page.
 
 ## Unreleased
 
+- **Process protection: other programs running as you are kept out of a running Tenant.** Until
+  now a program running as the same user (malware, a tool, a command the agent was talked into
+  running) could read Tenant's memory, where its keys are while it runs. Tenant now asks the
+  operating system to refuse that, first thing at every start, for every command (TEN-535). What
+  that amounts to on each system, no wider than it is:
+  - **Linux:** `ptrace` (a debugger), `/proc/<pid>/mem`, `/proc/<pid>/environ`,
+    `process_vm_readv`, `pidfd_getfd` and `perf_event_open` are refused, and a crash leaves no
+    memory dump, in a file or with a crash collector. The command line and `/proc/<pid>/status`
+    stay readable. Run on WSL2, kernel 6.18.
+  - **Windows:** reading the memory, writing a dump (Task Manager's "Create dump file" now says
+    access is denied), attaching a debugger, and opening, suspending or redirecting any of its
+    threads are refused, and so is rewriting the access list that says so. Task Manager still
+    lists Tenant and ends it. The command line, the program's path and the account stay readable.
+    Tenant also puts its file name on your Windows Error Reporting exclusion list. Run on Windows
+    11, not elevated; an actual crash dump by Windows Error Reporting was not attempted.
+  - **macOS:** Tenant denies a later debugger attach and turns core files off. This was compiled
+    and not yet run on a Mac, and what the call stops on its own is not measured, so doctor
+    reports it as "attach denied, not verified". Signing the installed binary, which is the
+    stronger control, comes with the install step. The command line and the environment Tenant
+    started with stay readable to your other programs, so a key set in an environment variable is
+    reported: a warning in the system log at start, and a finding in `tenant security audit`.
+    Save keys with `/configure <plugin>` or the dashboard's keys page.
+
+  This is one layer. It protects the running process, not the files on disk, which a program
+  running as you can still read; and it does not stop an administrator or root, or a program that
+  starts Tenant itself. `tenant doctor` has a new "process protection" check that shows each
+  control as on or off, what the system says about itself (`kernel.yama.ptrace_scope`, whether
+  the process is elevated, System Integrity Protection and FileVault), and what stays readable;
+  `tenant security audit` raises a finding when a control is off.
+
+  There is no switch to turn it off: a program running as you could restart Tenant with it set.
+  To attach a debugger, build with `-tags debugattach`; `tenant version`, doctor and the audit
+  say when a build was made that way. With `GOTRACEBACK=crash` (or `wer` on Windows) the Go
+  runtime asks for a memory dump at a crash, which Tenant cannot lower from inside; doctor points
+  it out.
+
+  For people working on the code: on Windows the protection changes a default that every object
+  the process creates inherits, so a command must be started through `internal/procprotect`
+  (`Start`, `Run`, `Output`, `CombinedOutput`, or `Child` with the call inside `Ordinary`). A
+  command started any other way fails with "pipe: Access is denied" for a user who is not an
+  administrator. A test in `internal/archtest` holds the source to it.
 - **Fixed: a power cut could leave more files than `config.json` unreadable.** The fix that
   flushes a saved file to the disk before it replaces the old one now covers every file Tenant
   saves that way: the user profile, a research run's manifest, the Claude Code session ledger, the

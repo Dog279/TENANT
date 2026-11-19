@@ -243,6 +243,48 @@ If you rely on cron, leave **`cron.catchup` OFF** (the default). With catchup on
 restart after downtime fires every missed job at once. Federation resumes from its
 persisted peer cursor, so a restart does not re-pull the world.
 
+## Process protection
+
+At every start, before anything else, Tenant asks the operating system to keep other programs
+that run as the same user out of its process (TEN-535, `internal/procprotect`). It does this
+for every command, the service included. `tenant doctor` shows each control under "process
+protection"; `tenant security audit` raises a finding when one is off.
+
+| | Refused to the user's other programs | Still readable |
+|---|---|---|
+| Linux | a debugger (`ptrace`), `/proc/<pid>/mem`, `/proc/<pid>/environ`, `process_vm_readv`, `pidfd_getfd`, `perf_event_open`; no crash dump, to a file or to a crash collector | the command line, `/proc/<pid>/status` |
+| Windows | reading memory, a dump (Task Manager, procdump), a debugger, opening or redirecting a thread, rewriting the access list | the command line, the program's path, the account |
+| macOS | a later debugger attach (reported as "attach denied, not verified"), core files | the command line, and the environment Tenant started with |
+
+It is one layer. The files on disk are as readable as before, an administrator or root is not
+stopped, and neither is a program that started Tenant itself. The Linux and Windows rows were
+run on real machines (WSL2 kernel 6.18, Windows 11); the macOS row has not been run on a Mac.
+
+What an operator meets:
+
+- **Stopping a stuck Tenant still works.** `kill`, `systemctl stop`, Task Manager's "End task"
+  and `tenant service stop` are not affected.
+- **Dumps and debuggers are refused, to you too.** `gdb -p`, `dlv attach`, `strace -p`,
+  `gcore`, Task Manager's "Create dump file" and `procdump` fail with a permission error unless
+  run as root or from an elevated prompt. To debug Tenant, build it with `-tags debugattach`:
+  that build has no protection, and `tenant version`, doctor and the audit say so. On macOS a
+  protected Tenant started under a debugger is ended by the kernel at start.
+- **`GOTRACEBACK=crash`** (or `wer` on Windows) in Tenant's environment asks the Go runtime for
+  a memory dump at a crash, and Tenant cannot lower it from inside. On Linux no dump is written
+  anyway; doctor says which control stops it, and warns on Windows.
+- **Windows keeps one value in the registry.** Tenant puts its file name on the user's Windows
+  Error Reporting exclusion list:
+  `HKCU\Software\Microsoft\Windows\Windows Error Reporting\ExcludedApplications`, a value
+  named `tenant.exe`. It is by file name and it stays after an uninstall; delete the value to
+  undo it.
+- **macOS: keep keys out of environment variables.** macOS shows a user's programs each
+  other's starting environment. A key that arrives that way is reported in the system log at
+  start (system 5020) and by the audit. Save it with `/configure <plugin>` or the dashboard's
+  keys page instead.
+- **Commands the agent runs are ordinary processes.** They are not protected, they see none of
+  Tenant's secret variables unless an exec profile passes one by name, and on Linux they inherit
+  a core-file limit of 0, which they may raise (`ulimit -c`).
+
 ## Health
 
 `tenant doctor` includes a **serve liveness** check: when a hub is reachable it probes

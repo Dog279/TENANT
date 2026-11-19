@@ -128,10 +128,12 @@ type securityAuditReport struct {
 	SecretStorage secretStorageAudit    `json:"secret_storage"`
 	Execution     executionAudit        `json:"execution"`
 	Logbook       logbookAudit          `json:"logbook"`
-	Findings      []securityFinding     `json:"findings"`
-	Critical      int                   `json:"critical"`
-	Warnings      int                   `json:"warnings"`
-	Safe          bool                  `json:"safe"`
+	// ProcessProtection is this process's, as serve's would be (TEN-535).
+	ProcessProtection processProtectionAudit `json:"process_protection"`
+	Findings          []securityFinding      `json:"findings"`
+	Critical          int                    `json:"critical"`
+	Warnings          int                    `json:"warnings"`
+	Safe              bool                   `json:"safe"`
 }
 
 func cmdSecurity(ctx context.Context, args []string) error {
@@ -241,7 +243,8 @@ func buildSecurityAuditReport(c *commonFlags, pf *pluginFlags, permissions effec
 			MCPTokenCache:   filepath.Join(c.cfgDir, "mcp", "mcp-*.json"),
 			DashboardAuth:   dashboardAuthStorage(c.lc),
 		},
-		Execution: auditExecution(c, permissions.Execution.Enabled, modelBackend),
+		Execution:         auditExecution(c, permissions.Execution.Enabled, modelBackend),
+		ProcessProtection: auditProcessProtection(c.lc),
 	}
 	return report
 }
@@ -395,6 +398,7 @@ func evaluateSecurityAudit(report *securityAuditReport) {
 		}
 	}
 	logbookFindings(report, add)
+	processProtectionFindings(report.ProcessProtection, add)
 
 	report.Critical, report.Warnings = 0, 0
 	for _, finding := range report.Findings {
@@ -614,6 +618,7 @@ func printSecurityAudit(report securityAuditReport) {
 		fmt.Println()
 	}
 	printLogbookAudit(report.Logbook)
+	printProcessProtection(report.ProcessProtection)
 	fmt.Println("\nfindings:")
 	if len(report.Findings) == 0 {
 		fmt.Println("  none")

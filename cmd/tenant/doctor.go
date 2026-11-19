@@ -178,6 +178,8 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		// because other checks read e.lc.
 		{"launch config", checkLaunchConfig},
 		{"secret storage protection", checkSecretProtection},
+		// TEN-535: what the operating system was asked to refuse other programs.
+		{"process protection", checkProcessProtection},
 		// credentials.json schema + every keyed provider has a resolvable
 		// secret (env-var present OR stored in creds).
 		{"credentials", checkCredentials},
