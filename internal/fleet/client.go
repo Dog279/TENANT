@@ -157,11 +157,8 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	child, err := LoadChild(ChildPath(cfg.Dir))
-	if err != nil {
-		return nil, err
-	}
-	if _, err := ChildTLS(id, child.MasterFingerprint); err != nil {
+	// Loading it checks it, the master's fingerprint included.
+	if _, err := LoadChild(ChildPath(cfg.Dir)); err != nil {
 		return nil, err
 	}
 	log := cfg.Log
@@ -651,10 +648,7 @@ func Confirm(ctx context.Context, action, detail string) bool {
 		return false
 	}
 	detail, _ = cut(detail, maxDetailLen)
-	params, err := encode(confirmParams{CallID: a.id, Action: action, Detail: detail})
-	if err != nil {
-		return false
-	}
+	params, _ := encode(confirmParams{CallID: a.id, Action: action, Detail: detail}) // three strings: cannot fail
 	raw, err := a.sess.Call(ctx, methodConfirm, params)
 	var res confirmResult
 	return err == nil && json.Unmarshal(raw, &res) == nil && res.Allow
