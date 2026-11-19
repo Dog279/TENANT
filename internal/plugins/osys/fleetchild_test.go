@@ -31,7 +31,8 @@ func TestClassifyTenantChild(t *testing.T) {
 }
 
 // TEN-531: `tenant fleet …` on a master changes which machines it owns and
-// what the agent may do on them (permissions, relay, revoke, enroll), so an
+// what the agent may do on them (permissions, relay, revoke, enroll), or
+// what runs there (update), so an
 // agent with host exec on allow does not run it unasked; an ordinary mention
 // of the words is not that. The pattern matches at the start of a command
 // only, as it does for `tenant service`.
@@ -46,6 +47,8 @@ func TestClassifyTenantFleet(t *testing.T) {
 		{"tenant fleet enroll web2", true},
 		{"tenant fleet init --listen 0.0.0.0:9777", true},
 		{"tenant fleet list", true},
+		{"tenant fleet update web1 --version v9.9.9", true}, // TEN-533: a new Tenant on a machine
+		{"tenant fleet update --all --allow-older", true},
 		{`C:\Tenant\tenant.exe fleet permissions --defaults add "os_exec(*)" allow`, true},
 		{"./tenant fleet confirm web1", true},
 		{"TENANT FLEET RELAY IMESSAGE ON", true},

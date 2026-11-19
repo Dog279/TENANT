@@ -130,6 +130,15 @@ func fleetHeldElsewhere() string {
 	return (&fleet.HeldError{Holder: h.holder}).Error()
 }
 
+// fleetUpdater is this process's updates of fleet machines: nil in a
+// command-line process.
+func fleetUpdater() *fleetUpdates {
+	if h := theFleet.Load(); h != nil {
+		return h.updates
+	}
+	return nil
+}
+
 type fleetMachinesKey struct{}
 
 // withFleetMachines stamps an unattended turn with the fleet machines it may
@@ -189,6 +198,7 @@ type fleetHub struct {
 	log             *slog.Logger
 	store           *fleet.Store
 	comp            *lifecycle.Comp
+	updates         *fleetUpdates // `tenant fleet update`, run here while this process holds the fleet
 
 	mu      sync.Mutex
 	mgr     *fleet.Manager
@@ -217,7 +227,7 @@ func startFleetHub(ctx context.Context, c *commonFlags, role string, local *appr
 		tell = func(string) {}
 	}
 	h := &fleetHub{cfgDir: c.cfgDir, dataDir: c.dataDir, role: role, local: local, tell: tell, log: log,
-		store: fleet.Open(c.cfgDir), listen: defaultFleetListen, relays: map[string]bool{}}
+		store: fleet.Open(c.cfgDir), listen: defaultFleetListen, relays: map[string]bool{}, updates: newFleetUpdates(c.dataDir)}
 	theFleet.Store(h)
 	ctx, cancel := context.WithCancel(ctx)
 	h.tick(ctx)

@@ -50,8 +50,13 @@ import (
 // outside ASCII as its escape. It can then draw nothing, hide nothing, pass
 // for nothing by look-alike letters, and neither end the line it stands on
 // nor start a label of its own.
-func fleetQuote(s string) string {
-	const most = 64
+func fleetQuote(s string) string { return fleetQuoteN(s, 64) }
+
+// fleetSaid is fleetQuote for a machine's longer words: why it refused or
+// rolled back an update.
+func fleetSaid(s string) string { return fleetQuoteN(s, 512) }
+
+func fleetQuoteN(s string, most int) string {
 	cut := len(s) > utf8.UTFMax*most
 	if cut {
 		s = s[:utf8.UTFMax*most] // more than most characters either way
@@ -487,6 +492,7 @@ func cmdFleet(_ context.Context, args []string) error {
 		"init": fleetInitCmd, "enroll": fleetEnrollCmd, "list": fleetListCmd, "ls": fleetListCmd, "show": fleetShowCmd,
 		"confirm": fleetConfirmCmd, "rename": fleetRenameCmd, "revoke": fleetRevokeCmd,
 		"permissions": fleetPermissionsCmd, "perms": fleetPermissionsCmd, "relay": fleetRelayCmd,
+		"update": fleetUpdateCmd,
 	}[args[0]]
 	if run == nil {
 		return fleetUsage()
@@ -514,7 +520,10 @@ func fleetUsage() error {
   permissions --defaults [add <pattern> <mode> | rm <pattern>]
                           the rules every newly confirmed machine starts with
   relay [discord|imessage [on|off]]
-                          whether a turn from that relay may reach the fleet at all (off by default)`)
+                          whether a turn from that relay may reach the fleet at all (off by default)
+  update <name> | --all [--version vX.Y.Z] [--allow-older] [--arch amd64|arm64]
+                          send a machine a newer Tenant over its link, through the running
+                          Tenant that holds the fleet; the machine rolls back if it fails`)
 }
 
 // fleetCLI is what a `tenant fleet` command works with.

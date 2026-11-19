@@ -252,6 +252,7 @@ func cliCommands() []*cliCommand {
 				{Syntax: "fleet permissions <name> --from defaults|master", Desc: "lay the fleet's rules over one machine again, or copy the master's local scheme again"},
 				{Syntax: "fleet permissions --defaults [add <pattern> <mode> | rm <pattern>]", Desc: "the rules every newly confirmed machine starts with"},
 				{Syntax: "fleet relay [discord|imessage [on|off]]", Desc: "whether a turn from that relay may reach the fleet at all (off by default)"},
+				{Syntax: "fleet update <name> | --all [--version vX.Y.Z] [--allow-older]", Desc: "send machines a newer Tenant over their links, fetched and verified here; each restarts into it, or rolls back if it does not reach the master within a minute"},
 			}},
 		{Names: []string{"child"}, Section: "connect", Run: cmdChild, Sub: []string{"install", "status", "pause", "resume", "audit", "uninstall", "run"},
 			Flags:   []string{"--system", "--ceiling", "--sandbox", "--dir"},
