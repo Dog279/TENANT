@@ -5441,7 +5441,7 @@ Writes the `system` log.
 | [2020](#system-2020) | warning | Shutdown | `Shutdown step {stage}/{step} failed: {err}` |
 | [2021](#system-2021) | warning | Shutdown | `Shutdown step {stage}/{step} did not finish within the stop budget; abandoned after {after}` |
 | [2022](#system-2022) | warning | Shutdown | `Shutdown step {stage}/{step} skipped: the stop budget ran out` |
-| [2030](#system-2030) | warning | Lifecycle | `{command} running without a process protection: {name} ({control}) could not be applied: {reason}` |
+| [2030](#system-2030) | warning | Lifecycle | `Running without a process protection ({command}): {name} ({control}) could not be applied: {reason}` |
 | [2101](#system-2101) | warning | Component | `{component} is degraded: {err}` |
 | [2102](#system-2102) | warning | Component | `Child process {component} failed: {err}` |
 | [2110](#system-2110) | warning | Component | `{component} unavailable ({effect}): {err}` |
@@ -5716,7 +5716,7 @@ Writes the `system` log.
 
 ### system 2030
 
-`{command} running without a process protection: {name} ({control}) could not be applied: {reason}`
+`Running without a process protection ({command}): {name} ({control}) could not be applied: {reason}`
 
 - **Level:** warning · **Channel:** operational · **Task:** Lifecycle · **Log:** system
 - **Fields:** `control`, `name`, `reason`, `leaves`, `acknowledged`, `version`, `command`
