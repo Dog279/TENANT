@@ -179,7 +179,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	sysCh := make(chan string, 64)
 	pushSys := func(s string) { feedLine(hub, sysCh, "system", s) }
 	// Every start that goes ahead without a process protection says so (TEN-535).
-	warnUnprotected(ctx, c, sysCh)
+	warnUnprotected(ctx, c, hub, sysCh)
 	signInNotice = pushSys // a sign-in URL reaches the operator through the feed
 	hub.OnAlert(pushSys)   // logbook.db failing or back: a banner line in the feed
 	// Status feed → stdout (the supervisor's log). A daemon's setup/health/

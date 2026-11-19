@@ -57,10 +57,12 @@ func fileIsTerminal(f *os.File) bool {
 
 // systemLog writes one line to the operating system's own log: the
 // Application event log on Windows, syslog elsewhere, which is the journal
-// under systemd (systemlog_<os>.go). It is the one thing Tenant writes there
-// (docs/design/logging-v2.md keeps everything else in the log book): a
-// Tenant that did not start cannot show its own log, and the operator of a
-// service that is not running looks at the system's. Tests swap it.
+// under systemd (systemlog_<os>.go). Tenant writes two things there
+// (docs/design/logging-v2.md keeps everything else in the log book): the
+// reason serve or the TUI did not start, since a Tenant that did not start
+// cannot show its own log and the operator of a service that is not running
+// looks at the system's; and a start without a process protection whose
+// record could not be written to the log book (unrecorded). Tests swap it.
 var systemLog = writeSystemLog
 
 // testBuildNote is what `tenant version` says about a build made with -tags
@@ -277,7 +279,8 @@ func reportNotStarted(ctx context.Context, c *commonFlags, role string, why erro
 // toLogbook writes events into Tenant's log book, logbook.db, which `tenant
 // logs` and the dashboard read, through a hub of its own that is closed
 // again. Nothing else is loaded for it: the log folder's place is the one
-// key read from config.json.
+// key read from config.json. Its error says the events are not in
+// logbook.db: the folder, the store or the commit failed.
 func toLogbook(ctx context.Context, c *commonFlags, evs ...*event.Event) error {
 	root := filepath.Join(c.dataDir, "logs")
 	var cfg struct {
@@ -296,12 +299,45 @@ func toLogbook(ctx context.Context, c *commonFlags, evs ...*event.Event) error {
 		return err
 	}
 	// If logbook.db does not open, the day file under <root>/system still
-	// gets the line.
-	_, _ = hub.OpenStore(nil)
+	// gets the line, and the error says the store did not.
+	_, err = hub.OpenStore(nil)
 	for _, e := range evs {
 		hub.Emit(ctx, e)
 	}
-	return hub.Close()
+	if err == nil {
+		err = logBookWritten(hub)
+	}
+	return errors.Join(err, hub.Close())
+}
+
+// logBookWritten commits what hub has queued and says whether it reached
+// logbook.db: nil when it did.
+func logBookWritten(hub *logs.Hub) error {
+	if hub.Root() == "" {
+		return errors.New("the log folder could not be opened")
+	}
+	if why := hub.Degraded(); why != "" {
+		return errors.New(why)
+	}
+	return hub.Flush()
+}
+
+// unrecorded is a start without the controls in missing whose record could
+// not be written to the log book (why). It says so where it still can,
+// whoever reads stderr: one line there per control, and the record in the
+// operating system's log, which another program of the same user cannot
+// delete from on Windows.
+func unrecorded(missing []procprotect.Control, why error) {
+	for _, m := range missing {
+		tail := fmt.Sprintf("; the record could not be written to the log book (%v)", why)
+		if err := systemLog(fmt.Sprintf("Tenant %s (%s) is running without a process protection: %s (%s) could not be applied: %s. That leaves this open: %s. The record could not be written to its log book: %v",
+			version.Version, runningCommand, m.Name, m.ID, m.Reason, m.Leaves, why)); err != nil {
+			tail += fmt.Sprintf(" nor to the system's log (%v)", err)
+		} else {
+			tail += " and is in the system's log"
+		}
+		fmt.Fprintf(os.Stderr, "process protection: running without %s: %s. `tenant doctor` says what that leaves open%s\n", m.ID, m.Reason, tail)
+	}
 }
 
 // borrowCommandLog opens the one-shot commands' log book for serve or the
@@ -330,20 +366,26 @@ var sysNotStartedUnprotected = catalog.System.Event(3030, event.Error, "Lifecycl
 
 var sysStartedUnprotected = catalog.System.Event(2030, event.Warning, "Lifecycle", "Running without a process protection ({command}): {name} ({control}) could not be applied: {reason}", "control", "name", "reason", "leaves", "acknowledged", "version", "command").
 	Keywords("lifecycle").
-	Doc("A Tenant command started although the operating system could not apply one of its process protections. It is written once at every such start, by every command that opens Tenant's data (serve and the TUI, which first ask at a terminal and go ahead only on an acknowledgement, and every other command, which is not asked: chat, os, the plugin commands, eval and the rest); help, version, completion and a plain doctor or security audit open nothing and write nothing. command is the command; leaves says what the missing control leaves open; acknowledged is when the operator said yes for this control, reason and version, empty when nobody did.",
+	Doc("A Tenant command started although the operating system could not apply one of its process protections. It is written once at every such start, by every command that opens Tenant's data (serve and the TUI, which first ask at a terminal and go ahead only on an acknowledgement, and every other command, which is not asked: chat, os, the plugin commands, eval and the rest); help, version, completion and a plain doctor or security audit open nothing and write nothing, and neither do eval's smoke and ui subsets and eval --list, which load no key and run no model. When the log book cannot take it (the log folder is unwritable, logbook.db does not open or a write fails), the command says so on stderr, terminal or not, and the line goes to the system's own log instead: the Application event log on Windows, syslog or the journal elsewhere. command is the command; leaves says what the missing control leaves open; acknowledged is when the operator said yes for this control, reason and version, empty when nobody did.",
 		"The system refuses the control for the reason given. For serve and the TUI a person answered yes to \"Continue without it?\"; another command runs without asking.",
 		"None if that is accepted. Removing the cause named in reason restores the protection at the next start; tenant doctor shows every control.")
 
 // warnUnprotected files, at every start of serve or the TUI that goes ahead
 // without a protection, which one, and when that was acknowledged: an event
 // in the system log, and a line in the status feed (serve's stdout, which
-// the supervisor keeps; the TUI's feed pane).
-func warnUnprotected(ctx context.Context, c *commonFlags, feed chan<- string) {
+// the supervisor keeps; the TUI's feed pane). hub is the log book the event
+// goes to: when it does not reach logbook.db, unrecorded says so.
+func warnUnprotected(ctx context.Context, c *commonFlags, hub *logs.Hub, feed chan<- string) {
 	missing := protection.Missing()
 	if len(missing) == 0 {
 		return
 	}
 	stg, _ := loadSettings(c.cfgDir, c.agent) // never nil; the gate has read it once already
+	defer func() {
+		if err := logBookWritten(hub); err != nil {
+			unrecorded(missing, err)
+		}
+	}()
 	for _, m := range missing {
 		ack, _ := stg.Acknowledged(m.ID, m.Reason, version.Version)
 		sysStartedUnprotected.Log(ctx, "control", m.ID, "name", m.Name, "reason", m.Reason, "leaves", m.Leaves,
@@ -371,12 +413,18 @@ var stderrAtTerminal = func() bool { return fileIsTerminal(os.Stderr) }
 // warnUnprotected): the same event, sysStartedUnprotected, in the log book,
 // and a short line on stderr when that is a terminal. These commands are not
 // asked (decision A40-bis): the record is what the operator finds afterwards.
+// When the record cannot be written to the log book (a log folder the
+// user's programs made unwritable, a store that does not open), unrecorded
+// says so on stderr, terminal or not, and puts it in the system's log.
 //
 // It runs where every command that opens Tenant's data passes, once the
 // directories are known (commonFlags.resolveDirs), so a command added later
-// is covered without knowing of it. A command that opens no data (help,
-// version, completion, doctor and security audit without --fix) writes
-// nothing; with every control in force nothing is written either.
+// is covered without knowing of it. Every command that loads a secret or
+// runs an agent turn passes there first (protectionlog_test.go walks the
+// list). A command that opens no data (help, version, completion, doctor and
+// security audit without --fix, eval's smoke and ui subsets and --list,
+// which load no key and run no model) writes nothing; with every control in
+// force nothing is written either.
 func logUnprotected(ctx context.Context, c *commonFlags) {
 	missing := protection.Missing()
 	if len(missing) == 0 {
@@ -393,12 +441,15 @@ func logUnprotected(ctx context.Context, c *commonFlags) {
 			}
 			evs = append(evs, sysStartedUnprotected.Build(ctx, "control", m.ID, "name", m.Name, "reason", m.Reason, "leaves", m.Leaves,
 				"acknowledged", at, "version", version.Version, "command", runningCommand))
+		}
+		if err := toLogbook(ctx, c, evs...); err != nil {
+			unrecorded(missing, err)
+			return
+		}
+		for _, m := range missing {
 			if atTerminal {
 				fmt.Fprintf(os.Stderr, "process protection: running without %s: %s. `tenant doctor` says what that leaves open\n", m.ID, m.Reason)
 			}
-		}
-		if err := toLogbook(ctx, c, evs...); err != nil {
-			slog.Warn("a missing process protection could not be written to the log book", "err", err)
 		}
 	})
 }
