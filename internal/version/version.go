@@ -14,4 +14,11 @@ var (
 	// by -X at release time (GITHUB_REPOSITORY); empty in dev builds, which is
 	// how `tenant update` tells a dev build from a release.
 	Repo = ""
+	// ReleaseKeys is the project's Ed25519 public key(s) the main releases'
+	// checksums.txt is signed with (TEN-542): standard base64 of each 32-byte
+	// key, up to three, comma-separated (selfupdate.ParseKeys). Set by -X at
+	// release time from the repository variable TENANT_RELEASE_PUBKEYS; empty
+	// in a fork's release and every development build, which then update as
+	// they did before. Nothing at run time sets or overrides it.
+	ReleaseKeys = ""
 )
