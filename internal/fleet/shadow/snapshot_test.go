@@ -47,7 +47,7 @@ func newSealed(t testing.TB, embeddings bool) *sealedFixture {
 	f.content = p.content(t)
 	f.ep, f.sem = p.images(t)
 	f.meta = meta{Host: testHost, KeyID: f.key.ID(), Gen: 7, Content: f.content, Embeddings: embeddings}
-	if f.blob, err = seal(f.meta, f.ep, f.sem, f.to); err != nil {
+	if f.blob, err = seal(f.meta, f.ep, f.sem, f.to, f.key); err != nil {
 		t.Fatal(err)
 	}
 	return f
@@ -58,7 +58,7 @@ func (f *sealedFixture) open(blob []byte, k *Key, host string) (*snapshot, error
 }
 
 // craft builds a snapshot by hand: any first line, any content.
-func craft(t testing.TB, header string, to []age.Recipient, level int, parts ...[]byte) []byte {
+func craft(t testing.TB, by *Key, header string, to []age.Recipient, level int, parts ...[]byte) []byte {
 	t.Helper()
 	var out bytes.Buffer
 	out.WriteString(header)
@@ -80,7 +80,22 @@ func craft(t testing.TB, header string, to []age.Recipient, level int, parts ...
 	if err := enc.Close(); err != nil {
 		t.Fatal(err)
 	}
-	return out.Bytes()
+	if by == nil { // made by someone who could encrypt and could not authenticate
+		return out.Bytes()
+	}
+	return authenticate(t, by, out.Bytes())
+}
+
+// authenticate appends by's authenticator to body, as seal does.
+func authenticate(t testing.TB, by *Key, body []byte) []byte {
+	t.Helper()
+	h, done, err := by.mac()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done()
+	h.Write(body)
+	return h.Sum(bytes.Clone(body))
 }
 
 func metaLine(t testing.TB, m meta, ep, sem []byte) []byte {
@@ -104,7 +119,7 @@ func TestSnapshot_RoundTrip(t *testing.T) {
 			t.Fatal("Hash is not a stable SHA-256")
 		}
 		// Encryption is randomized: the same memory sealed twice is two snapshots.
-		if again, _ := seal(f.meta, f.ep, f.sem, f.to); Hash(again) == Hash(f.blob) {
+		if again, _ := seal(f.meta, f.ep, f.sem, f.to, f.key); Hash(again) == Hash(f.blob) {
 			t.Fatal("two seals of the same memory are byte-identical")
 		}
 		for name, k := range map[string]*Key{"the fleet key": f.key, "the recovery identity": f.recovery} {
@@ -213,11 +228,11 @@ func TestSnapshot_Refusals(t *testing.T) {
 		// The key id says it is not ours. It is not tried, even though this
 		// one was in fact encrypted to our key and would have opened.
 		"another key's id on a snapshot that would open": {
-			craft(t, line(otherKeyID, 7), f.to, gzip.DefaultCompression, metaLine(t, meta{Host: testHost, KeyID: otherKeyID, Gen: 7}, f.ep, f.sem), f.ep, f.sem),
+			craft(t, nil, line(otherKeyID, 7), f.to, gzip.DefaultCompression, metaLine(t, meta{Host: testHost, KeyID: otherKeyID, Gen: 7}, f.ep, f.sem), f.ep, f.sem),
 			f.key, ErrForeignKey},
 		"another fleet key": {f.blob, other, ErrForeignKey},
 		"our key id pasted onto another key's snapshot": {
-			craft(t, ours, []age.Recipient{other.recipient()}, gzip.DefaultCompression, inner, f.ep, f.sem),
+			craft(t, f.key, ours, []age.Recipient{other.recipient()}, gzip.DefaultCompression, inner, f.ep, f.sem),
 			f.key, ErrDamaged},
 		"a recovery identity that is not this fleet's": {f.blob, func() *Key {
 			text, _ := testRecovery(t)
@@ -227,42 +242,42 @@ func TestSnapshot_Refusals(t *testing.T) {
 			return k
 		}(), ErrNotRecovery},
 		"generation changed in the first line": {
-			craft(t, line(f.key.ID(), 8), f.to, gzip.DefaultCompression, inner, f.ep, f.sem), f.key, ErrDamaged},
+			craft(t, f.key, line(f.key.ID(), 8), f.to, gzip.DefaultCompression, inner, f.ep, f.sem), f.key, ErrDamaged},
 		"generation changed inside": {
-			craft(t, ours, f.to, gzip.DefaultCompression, metaLine(t, gen8(f.meta), f.ep, f.sem), f.ep, f.sem), f.key, ErrDamaged},
+			craft(t, f.key, ours, f.to, gzip.DefaultCompression, metaLine(t, gen8(f.meta), f.ep, f.sem), f.ep, f.sem), f.key, ErrDamaged},
 		"another machine's": {
-			craft(t, ours, f.to, gzip.DefaultCompression, metaLine(t, hostB(f.meta), f.ep, f.sem), f.ep, f.sem), f.key, ErrDamaged},
+			craft(t, f.key, ours, f.to, gzip.DefaultCompression, metaLine(t, hostB(f.meta), f.ep, f.sem), f.ep, f.sem), f.key, ErrDamaged},
 		"a database that fails the integrity check": {
-			craft(t, ours, f.to, gzip.DefaultCompression, metaLine(t, f.meta, f.ep, corrupt), f.ep, corrupt), f.key, ErrDamaged},
+			craft(t, f.key, ours, f.to, gzip.DefaultCompression, metaLine(t, f.meta, f.ep, corrupt), f.ep, corrupt), f.key, ErrDamaged},
 		"a database that breaks its own constraints": {
-			craft(t, ours, f.to, gzip.DefaultCompression, metaLine(t, f.meta, f.ep, breaksItsRules), f.ep, breaksItsRules), f.key, ErrDamaged},
+			craft(t, f.key, ours, f.to, gzip.DefaultCompression, metaLine(t, f.meta, f.ep, breaksItsRules), f.ep, breaksItsRules), f.key, ErrDamaged},
 		"a database that is not one": {
-			craft(t, ours, f.to, gzip.DefaultCompression, metaLine(t, f.meta, f.ep, []byte("not a database at all")), f.ep, []byte("not a database at all")), f.key, ErrDamaged},
+			craft(t, f.key, ours, f.to, gzip.DefaultCompression, metaLine(t, f.meta, f.ep, []byte("not a database at all")), f.ep, []byte("not a database at all")), f.key, ErrDamaged},
 		"the two databases swapped": {
-			craft(t, ours, f.to, gzip.DefaultCompression, metaLine(t, f.meta, f.sem, f.ep), f.sem, f.ep), f.key, nil},
+			craft(t, f.key, ours, f.to, gzip.DefaultCompression, metaLine(t, f.meta, f.sem, f.ep), f.sem, f.ep), f.key, nil},
 		"a database cut short": {
-			craft(t, ours, f.to, gzip.DefaultCompression, inner, f.ep, f.sem[:len(f.sem)-pageSize]), f.key, ErrDamaged},
+			craft(t, f.key, ours, f.to, gzip.DefaultCompression, inner, f.ep, f.sem[:len(f.sem)-pageSize]), f.key, ErrDamaged},
 		"data after the databases": {
-			craft(t, ours, f.to, gzip.DefaultCompression, inner, f.ep, f.sem, []byte("more")), f.key, ErrDamaged},
+			craft(t, f.key, ours, f.to, gzip.DefaultCompression, inner, f.ep, f.sem, []byte("more")), f.key, ErrDamaged},
 		"a second compressed stream": {
-			craft(t, ours, f.to, math.MinInt, gzipped(inner, f.ep, f.sem), gzipped([]byte("more"))), f.key, ErrDamaged},
+			craft(t, f.key, ours, f.to, math.MinInt, gzipped(inner, f.ep, f.sem), gzipped([]byte("more"))), f.key, ErrDamaged},
 		"bytes after the compressed stream": {
-			craft(t, ours, f.to, math.MinInt, gzipped(inner, f.ep, f.sem), []byte("more")), f.key, ErrDamaged},
-		"not compressed": {craft(t, ours, f.to, math.MinInt, inner, f.ep, f.sem), f.key, ErrDamaged},
-		"nothing inside": {craft(t, ours, f.to, gzip.DefaultCompression), f.key, ErrDamaged},
-		"no line inside": {craft(t, ours, f.to, gzip.DefaultCompression, f.ep, f.sem), f.key, ErrDamaged},
+			craft(t, f.key, ours, f.to, math.MinInt, gzipped(inner, f.ep, f.sem), []byte("more")), f.key, ErrDamaged},
+		"not compressed": {craft(t, f.key, ours, f.to, math.MinInt, inner, f.ep, f.sem), f.key, ErrDamaged},
+		"nothing inside": {craft(t, f.key, ours, f.to, gzip.DefaultCompression), f.key, ErrDamaged},
+		"no line inside": {craft(t, f.key, ours, f.to, gzip.DefaultCompression, f.ep, f.sem), f.key, ErrDamaged},
 		"the line is not JSON": {
-			craft(t, ours, f.to, gzip.DefaultCompression, []byte("host=x\n"), f.ep, f.sem), f.key, ErrDamaged},
+			craft(t, f.key, ours, f.to, gzip.DefaultCompression, []byte("host=x\n"), f.ep, f.sem), f.key, ErrDamaged},
 		"the line is too long": {
-			craft(t, ours, f.to, gzip.DefaultCompression, bytes.Repeat([]byte(" "), maxMetaLine+1), inner, f.ep, f.sem), f.key, ErrDamaged},
+			craft(t, f.key, ours, f.to, gzip.DefaultCompression, bytes.Repeat([]byte(" "), maxMetaLine+1), inner, f.ep, f.sem), f.key, ErrDamaged},
 		"a field nobody wrote": {
-			craft(t, ours, f.to, gzip.DefaultCompression, []byte(strings.Replace(string(inner), "{", `{"admin":true,`, 1)), f.ep, f.sem), f.key, ErrDamaged},
+			craft(t, f.key, ours, f.to, gzip.DefaultCompression, []byte(strings.Replace(string(inner), "{", `{"admin":true,`, 1)), f.ep, f.sem), f.key, ErrDamaged},
 		"a size of zero": {
-			craft(t, ours, f.to, gzip.DefaultCompression, metaLine(t, f.meta, nil, f.sem), f.sem), f.key, ErrDamaged},
+			craft(t, f.key, ours, f.to, gzip.DefaultCompression, metaLine(t, f.meta, nil, f.sem), f.sem), f.key, ErrDamaged},
 		"a size past the limit": {
-			craft(t, ours, f.to, gzip.DefaultCompression, []byte(strings.Replace(string(inner), fmt.Sprintf(`"episodic":%d`, len(f.ep)), `"episodic":1099511627776`, 1)), f.ep, f.sem), f.key, ErrDamaged},
+			craft(t, f.key, ours, f.to, gzip.DefaultCompression, []byte(strings.Replace(string(inner), fmt.Sprintf(`"episodic":%d`, len(f.ep)), `"episodic":1099511627776`, 1)), f.ep, f.sem), f.key, ErrDamaged},
 		"a negative size": {
-			craft(t, ours, f.to, gzip.DefaultCompression, []byte(strings.Replace(string(inner), fmt.Sprintf(`"semantic":%d`, len(f.sem)), `"semantic":-1`, 1)), f.ep, f.sem), f.key, ErrDamaged},
+			craft(t, f.key, ours, f.to, gzip.DefaultCompression, []byte(strings.Replace(string(inner), fmt.Sprintf(`"semantic":%d`, len(f.sem)), `"semantic":-1`, 1)), f.ep, f.sem), f.key, ErrDamaged},
 	} {
 		s, err := openSnapshot(context.Background(), bytes.NewReader(tc.blob), tc.key, testHost)
 		if err == nil {
@@ -292,14 +307,14 @@ func TestSnapshot_Refusals(t *testing.T) {
 		"generation":        {Host: testHost, KeyID: f.key.ID(), Gen: maxGen + 1},
 		"content hash":      {Host: testHost, KeyID: f.key.ID(), Gen: 1, Content: "abc"},
 	} {
-		if _, err := seal(m, f.ep, f.sem, f.to); err == nil {
+		if _, err := seal(m, f.ep, f.sem, f.to, f.key); err == nil {
 			t.Errorf("seal with a bad %s: accepted", name)
 		}
 	}
-	if _, err := seal(f.meta, nil, f.sem, f.to); err == nil {
+	if _, err := seal(f.meta, nil, f.sem, f.to, f.key); err == nil {
 		t.Error("seal with an empty database: accepted")
 	}
-	if _, err := seal(f.meta, f.ep, f.sem, nil); err == nil {
+	if _, err := seal(f.meta, f.ep, f.sem, nil, f.key); err == nil {
 		t.Error("seal to nobody: accepted")
 	}
 }
@@ -341,7 +356,8 @@ func TestPeek(t *testing.T) {
 		snapMagic + " " + id[:30] + "zz 1\n",
 		snapMagic + "  " + id + " 1\n",
 		snapMagic + "\t" + id + " 1\n",
-		"tenant-fleet-snapshot/2 " + id + " 1\n",
+		"tenant-fleet-snapshot/1 " + id + " 1\n", // the format before the authenticator
+		"tenant-fleet-snapshot/3 " + id + " 1\n",
 		" " + good + "1\n",
 		good + "1" + strings.Repeat(" ", 200) + "\n",
 	} {
@@ -481,9 +497,17 @@ func FuzzOpenSnapshot(f *testing.F) {
 	f.Add(fx.blob[:header])
 	f.Add(fx.blob[:len(fx.blob)-1])
 	f.Add(append(bytes.Clone(fx.blob), 0))
-	f.Add(craft(f, string(appendHeader(nil, otherKeyID, 7)), fx.to, gzip.DefaultCompression, metaLine(f, fx.meta, fx.ep, fx.sem), fx.ep, fx.sem))
-	f.Add(craft(f, string(fx.blob[:header]), fx.to, gzip.DefaultCompression, []byte("{}\n")))
+	f.Add(craft(f, nil, string(appendHeader(nil, otherKeyID, 7)), fx.to, gzip.DefaultCompression, metaLine(f, fx.meta, fx.ep, fx.sem), fx.ep, fx.sem))
+	f.Add(craft(f, fx.key, string(fx.blob[:header]), fx.to, gzip.DefaultCompression, []byte("{}\n")))
 	f.Add([]byte{})
+	// Cut short, the authenticator moved to the front, a wrong authenticator,
+	// the first version's spelling, and a body signed by another key.
+	f.Add(fx.blob[:len(fx.blob)-macSize])
+	f.Add(append(bytes.Clone(fx.blob[len(fx.blob)-macSize:]), fx.blob[:len(fx.blob)-macSize]...))
+	f.Add(append(bytes.Clone(fx.blob[:len(fx.blob)-macSize]), make([]byte, macSize)...))
+	f.Add(append([]byte("tenant-fleet-snapshot/1"), fx.blob[len(snapMagic):]...))
+	f.Add(authenticate(f, testKey(f), fx.blob[:len(fx.blob)-macSize]))
+	f.Add(fx.blob[:macSize])
 	f.Fuzz(func(t *testing.T, blob []byte) {
 		s, err := openSnapshot(context.Background(), bytes.NewReader(blob), fx.key, testHost)
 		if err != nil {
@@ -494,7 +518,7 @@ func FuzzOpenSnapshot(f *testing.F) {
 		}
 		defer s.close()
 		got, err := contentHash(context.Background(), s.episodic.DB, s.semantic.DB)
-		if err != nil || got != fx.content || s.Gen != 7 || s.KeyID != fx.key.ID() {
+		if err != nil || got != fx.content || s.Gen != 7 || s.KeyID != fx.key.ID() || !s.authentic {
 			t.Fatalf("something else opened: generation %d, key %s, content %s (%v)", s.Gen, s.KeyID, got, err)
 		}
 	})

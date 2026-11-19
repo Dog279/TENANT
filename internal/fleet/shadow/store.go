@@ -3,6 +3,7 @@ package shadow
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -449,7 +450,7 @@ func (s *Store) flush(ctx context.Context, sh *shadow) error {
 	if err != nil {
 		return err
 	}
-	blob, err := seal(meta{Host: sh.host, KeyID: s.key.id, Gen: sh.gen, Content: sh.minted, Embeddings: true}, ep, sem, s.to)
+	blob, err := seal(meta{Host: sh.host, KeyID: s.key.id, Gen: sh.gen, Content: sh.minted, Embeddings: true}, ep, sem, s.to, s.key)
 	if err != nil {
 		return err
 	}
@@ -571,7 +572,7 @@ func (s *Store) mint(ctx context.Context, sh *shadow) (Copy, bool, error) {
 		return Copy{}, false, err
 	}
 	gen := sh.gen + 1
-	blob, err := seal(meta{Host: sh.host, KeyID: s.key.id, Gen: gen, Content: content}, ep, sem, s.to)
+	blob, err := seal(meta{Host: sh.host, KeyID: s.key.id, Gen: gen, Content: content}, ep, sem, s.to, s.key)
 	if err != nil {
 		return Copy{}, false, err
 	}
@@ -727,6 +728,27 @@ type Adopted struct {
 	// Reembed says the new shadow came without vectors: re-embed it, then
 	// Flush.
 	Reembed bool
+	// Recovered says the copy was read with a recovery identity and was not
+	// made by this master's fleet key: every fact's origin in it now starts
+	// with RecoveredOrigin (markRecovered).
+	Recovered bool
+}
+
+// RecoveredOrigin starts the origin (fact_origin.job) of every fact of a
+// copy this master did not make and read with a recovery identity. Such a
+// copy's genuineness rests on nothing but the recovery key's public half, so
+// nothing in it is the master's own word any more: a fact it says the master
+// recorded (the inventory, a note) is from now on the machine's, like the
+// rest of its memory.
+const RecoveredOrigin = "recovered:"
+
+// markRecovered is that: every origin in the facts database db is prefixed
+// with RecoveredOrigin, once. It is the one place a recovered copy's records
+// lose their standing, before the shadow is installed and anyone can read it.
+func markRecovered(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `UPDATE fact_origin SET job = ? || job WHERE substr(job, 1, ?) <> ?`,
+		RecoveredOrigin, len(RecoveredOrigin), RecoveredOrigin)
+	return err
 }
 
 // Adopt makes blob, a snapshot of host's memory, the shadow: the child's
@@ -762,32 +784,55 @@ func (s *Store) AdoptAs(ctx context.Context, host, was string, c Copy, blob []by
 	if was != host && (with == nil || !with.recovery) {
 		return Adopted{}, fmt.Errorf("%w: only the recovery identity reads a copy made as another machine", ErrDamaged)
 	}
+	if !validHost(host) {
+		return Adopted{}, fmt.Errorf("shadow: %q is not a machine id", host)
+	}
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return Adopted{}, ErrClosed
+	}
 	if len(blob) > MaxSnapshotBytes || Hash(blob) != c.Hash {
 		return Adopted{}, fmt.Errorf("%w: the bytes do not match the stated hash", ErrDamaged)
 	}
-	if keyID, gen, err := Peek(blob); err != nil || keyID != c.KeyID || gen != c.Gen {
-		return Adopted{}, fmt.Errorf("%w: the snapshot is not the generation it is stated to be", ErrDamaged)
-	}
-	sh, done, err := s.exclusive(host)
-	if err != nil {
-		return Adopted{}, err
-	}
-	defer done()
 	k := s.key
 	if with != nil {
 		k = with
 	}
-	snap, err := openSnapshot(ctx, bytes.NewReader(blob), k, was)
+	// The authenticator is checked first, with this master's key whoever
+	// reads; the first line is read only after it.
+	snap, err := readSnapshot(ctx, bytes.NewReader(blob), k, s.key, was)
 	if err != nil {
 		return Adopted{}, fmt.Errorf("shadow: %s: %w", host, err)
+	}
+	if snap.KeyID != c.KeyID || snap.Gen != c.Gen {
+		snap.close()
+		return Adopted{}, fmt.Errorf("%w: the snapshot is not the generation it is stated to be", ErrDamaged)
 	}
 	pair, err := openStores(snap.episodic, snap.semantic)
 	if err != nil {
 		return Adopted{}, fmt.Errorf("shadow: %s: %w", host, err)
 	}
+	var out Adopted
+	if !snap.authentic {
+		// Read with the recovery identity, from a copy no key of this
+		// master's made: whatever in it claims to be the master's own is
+		// the machine's from now on.
+		if err := markRecovered(ctx, pair.Semantic.DB()); err != nil {
+			snap.close()
+			return Adopted{}, fmt.Errorf("shadow: %s: %w", host, err)
+		}
+		out.Recovered = true
+	}
+	sh, done, err := s.exclusive(host)
+	if err != nil {
+		snap.close()
+		return Adopted{}, err
+	}
+	defer done()
 	// From here the old shadow gives way. It goes to disk as it is, and the
 	// file is moved aside.
-	var out Adopted
 	if sh.episodic != nil {
 		if err := s.flushIfChanged(ctx, sh); err != nil {
 			snap.close()

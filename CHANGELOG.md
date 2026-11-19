@@ -76,7 +76,13 @@ Releases page.
     and cannot read them. Each time a machine connects the two sides compare: the newer wins,
     the machine's copy rebuilds a master that lost or damaged its own, and a copy made under
     another fleet key marks the machine **needs recovery key** and nothing is overwritten.
-    A replaced memory is kept aside on the master for thirty days.
+    A replaced memory is kept aside on the master for thirty days. Each snapshot ends with an
+    authenticator only the fleet key's secret makes: a copy that names this master's key and
+    does not carry it is refused unread, so knowing the fleet key's or the recovery key's public
+    half is not enough to put a memory on the master. A copy read with the recovery identity
+    (`tenant fleet recover`) cannot be checked that way: whatever it says the master recorded
+    (the inventory, notes) is recalled from then on as the machine's own words, inside its frame,
+    and the master takes the machine's inventory again.
   - `/fleet` and `tenant fleet show` say each machine's memory: in step, behind, needs recovery
     key, or why it is not known. `tenant doctor` checks the fleet key (and that it is held in
     memory kept out of the swap file) and that the recovery key was proven. `tenant backup` warns
@@ -112,6 +118,11 @@ Releases page.
   `tenant child updates master`) makes a machine take its master's hash instead, to run a build
   of your own; it is set only on the machine, kept by rehome, shown by `tenant child status`, and
   recorded in the audit log. `tenant fleet update` says which rule each machine applied.
+    you are told. Retention pruning does not reach the machines' memory. The request, which
+    names what is forgotten, is kept sealed until every machine still in the fleet has had it,
+    has dropped its older copies and keeps none under another key; then it is deleted. A copy
+    older than the forget that comes back after that, from a backup of a machine's own disk, is
+    not purged, and a memory rebuilt from it holds what was forgotten again.
 - **A fleet survives losing its master** (TEN-533). `tenant child rehome`, run on a machine with
   its child stopped, gives it another master: a master restored from a plain backup or rebuilt
   from nothing. It takes a code from the new master's `tenant fleet enroll` as `child install`
