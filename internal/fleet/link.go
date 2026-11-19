@@ -214,19 +214,39 @@ type Result struct {
 
 // Update is one piece of a new Tenant for a child (fleet/update). The
 // archive is sent in order in pieces of at most MaxUpdateChunk; a piece with
-// no Data asks how far the child has got. Its wire shape is final.
+// no Data asks how far the child has got. Fields are only ever added to it:
+// a child of any age reads past the ones it does not know.
 type Update struct {
 	Version string `json:"version"` // what the archive installs
 	SHA256  string `json:"sha256"`  // of the whole archive, lowercase hex
 	Size    int64  `json:"size"`    // of the whole archive, in bytes
 	Offset  int64  `json:"offset"`  // where Data belongs in it
 	Data    []byte `json:"data"`
+	// The release's own material, for a child that verifies the release
+	// itself (Child.Updates, decision A71): the archive's name in the
+	// release, the release's checksums.txt and its signature bundle. The
+	// master sends them on the piece with no data that opens each send, so
+	// a child refuses before the archive is on the wire.
+	Asset     string `json:"asset,omitempty"`
+	Checksums []byte `json:"checksums,omitempty"`
+	Bundle    []byte `json:"bundle,omitempty"`
 }
+
+// The bounds of a release's material: a checksums.txt lists a few dozen
+// archives, a Sigstore bundle is a certificate chain and a log entry.
+const (
+	MaxReleaseChecksums = 64 << 10
+	MaxReleaseBundle    = 64 << 10
+	maxAssetLen         = 128
+)
 
 // UpdateAck answers an Update.
 type UpdateAck struct {
 	Received int64 `json:"received"` // how much of the archive the child holds: the next Offset
 	Applying bool  `json:"applying"` // the archive is whole and checked, and the child is restarting into it
+	// Rule is which rule the child applies to this update (UpdatesRelease or
+	// UpdatesMaster); an older child says none.
+	Rule string `json:"rule,omitempty"`
 }
 
 // What a child says of the last update it was sent (UpdateReport.State).
@@ -285,10 +305,17 @@ func Served(link int) bool { return speaks(LinkVersion, link) }
 
 func (u Update) validate() error {
 	if _, err := parseFingerprint(u.SHA256); err != nil || len(u.Version) == 0 || len(u.Version) > maxReportedLen || !printable(u.Version) ||
-		u.Size < 1 || u.Size > maxUpdateSize || u.Offset < 0 || len(u.Data) > MaxUpdateChunk || u.Offset+int64(len(u.Data)) > u.Size {
+		u.Size < 1 || u.Size > maxUpdateSize || u.Offset < 0 || len(u.Data) > MaxUpdateChunk || u.Offset+int64(len(u.Data)) > u.Size ||
+		len(u.Checksums) > MaxReleaseChecksums || len(u.Bundle) > MaxReleaseBundle || !validAsset(u.Asset) {
 		return errors.New("fleet: not a valid piece of an update")
 	}
 	return nil
+}
+
+// validAsset accepts "" and an archive's file name: printable, no path, no
+// leading dot.
+func validAsset(s string) bool {
+	return s == "" || len(s) <= maxAssetLen && printable(s) && !strings.ContainsAny(s, `/\: `) && !strings.HasPrefix(s, ".")
 }
 
 // --- wire shapes ---
