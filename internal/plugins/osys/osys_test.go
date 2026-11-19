@@ -794,19 +794,20 @@ func TestReadFileRanged(t *testing.T) {
 }
 
 // TEN-491: a command that only looks runs without a prompt; anything that
-// writes, acts, redirects or escalates does not, in any segment.
+// writes, acts, redirects or escalates does not, in any segment. TEN-534: nor
+// does a read-only word behind an assignment or a path (readonly_test.go).
 func TestReadOnly(t *testing.T) {
 	for cmd, want := range map[string]bool{
 		"ls -la":                               true,
 		"git status && git log -3":             true,
 		"cat x | grep y | wc -l":               true,
 		"echo $(whoami)":                       true,
-		"FOO=1 env":                            true,
+		"FOO=1 env":                            false,
 		"git branch -a":                        true,
 		"brew list":                            true,
 		"find . -name '*.go'":                  true,
 		"Get-ChildItem C:\\ | Select-String x": true,
-		"/usr/bin/grep -r x .":                 true,
+		"/usr/bin/grep -r x .":                 false,
 		"ls > out.txt":                         false,
 		"rm -rf x":                             false,
 		"ls; rm x":                             false,
