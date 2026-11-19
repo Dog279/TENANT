@@ -45,10 +45,13 @@ type Session struct {
 	nextID  atomic.Int64
 	pending sync.Map // string(id raw) -> chan *Message
 
-	// inflight tracks cancel funcs for inbound requests we are
-	// currently handling, keyed by string(request id raw), so an
-	// incoming notifications/cancelled can stop the right handler.
-	inflight sync.Map // string(id raw) -> context.CancelFunc
+	// inflight holds the cancel func of every inbound request from the
+	// moment the read pump takes it up until its handler has returned,
+	// keyed by string(request id raw), so an incoming
+	// notifications/cancelled can stop the right handler. An entry is a
+	// pointer so that a request can tell its own entry from that of a
+	// later request under the same id.
+	inflight sync.Map // string(id raw) -> *context.CancelFunc
 	// progressSinks routes incoming notifications/progress to the
 	// CallWithProgress caller, keyed by string(progressToken raw).
 	progressSinks sync.Map // string(token raw) -> func(ProgressParams)
@@ -261,7 +264,14 @@ func (s *Session) dispatch(ctx context.Context, msg *Message) {
 	case msg.IsResponse():
 		s.routeResponse(msg)
 	case msg.IsRequest():
-		go s.handleRequest(ctx, msg)
+		// The request's ctx and cancel are registered here, on the read
+		// pump, not in the request's goroutine: the notifications/cancelled
+		// for it can be the very next frame, is handled on this pump too,
+		// and must find it. Registered in the goroutine, a cancel read right
+		// behind its request found nothing and the handler ran on.
+		reqCtx, cancel := context.WithCancel(ctx)
+		s.inflight.Store(string(msg.ID.Raw()), &cancel)
+		go s.handleRequest(ctx, reqCtx, &cancel, msg)
 	case msg.IsNotification():
 		// Protocol-level notifications are consumed here, not forwarded
 		// to the application handler.
@@ -286,7 +296,7 @@ func (s *Session) handleCancelled(params json.RawMessage) {
 		return
 	}
 	if v, ok := s.inflight.Load(string(p.RequestID)); ok {
-		v.(context.CancelFunc)()
+		(*v.(*context.CancelFunc))()
 	}
 }
 
@@ -315,16 +325,20 @@ func (s *Session) routeResponse(msg *Message) {
 	}
 }
 
-func (s *Session) handleRequest(ctx context.Context, msg *Message) {
-	// Per-request cancellable ctx so an inbound notifications/cancelled
-	// can stop this handler. Keyed by the request id the peer will name.
-	reqCtx, cancel := context.WithCancel(ctx)
-	key := string(msg.ID.Raw())
-	s.inflight.Store(key, cancel)
+// handleRequest runs one inbound request. reqCtx is its per-request
+// cancellable ctx and cancel its entry in inflight, both made by dispatch.
+func (s *Session) handleRequest(ctx, reqCtx context.Context, cancel *context.CancelFunc, msg *Message) {
 	defer func() {
-		s.inflight.Delete(key)
-		cancel()
+		// Only its own entry: the peer may have used the id again by now,
+		// and that request's cancel must stay findable.
+		s.inflight.CompareAndDelete(string(msg.ID.Raw()), cancel)
+		(*cancel)()
 	}()
+	// Cancelled before it started, by the peer or by the session ending:
+	// the handler is not run, and a cancelled request is not answered.
+	if reqCtx.Err() != nil {
+		return
+	}
 
 	result, err := s.handler.HandleRequest(reqCtx, msg.Method, msg.Params)
 	resp := &Message{ID: msg.ID}
