@@ -35,15 +35,43 @@ func newFleetTUIControl(c *commonFlags, stg *settings, mu *sync.Mutex) fleetTUIC
 	if lc == nil {
 		lc = &launchConfig{}
 	}
-	return fleetTUIControl{lc: lc, ops: fleetOps{
-		cfgDir: c.cfgDir, store: fleet.Open(c.cfgDir), surface: surfaceTUI,
+	return fleetTUIControl{lc: lc, ops: liveFleetOps(c, stg, mu, surfaceTUI)}
+}
+
+// liveFleetOps are the fleet's operations over a running process's own state:
+// defaultFleet, and the live settings stg read under mu. surface names where
+// the operator is (the terminal app, the dashboard) in the Security records.
+func liveFleetOps(c *commonFlags, stg *settings, mu *sync.Mutex, surface string) fleetOps {
+	return fleetOps{
+		cfgDir: c.cfgDir, store: fleet.Open(c.cfgDir), surface: surface,
 		schemes: func() (*approval.Fleet, error) { return defaultFleet, nil },
 		local: func() (approval.Scheme, error) {
 			mu.Lock()
 			defer mu.Unlock()
 			return approval.Scheme{Permissions: maps.Clone(stg.Permissions), ToolRules: maps.Clone(stg.ToolRules)}, nil
 		},
-	}}
+	}
+}
+
+// fleetHolding says which process holds the fleet of this process's config
+// dir, in words; here is true when it is this one, which then knows which
+// machines are online.
+func fleetHolding() (head string, here bool) {
+	if mgr := fleetManager(); mgr != nil {
+		return "this process holds the fleet, on " + mgr.Addr().String(), true
+	}
+	if elsewhere := fleetHeldElsewhere(); elsewhere != "" {
+		return strings.TrimPrefix(elsewhere, "fleet: "), false
+	}
+	head = "no process holds the fleet yet, so no machine can connect"
+	if h := theFleet.Load(); h != nil {
+		h.mu.Lock()
+		if h.problem != "" {
+			head = "the fleet listener is not up: " + fleetQuote(h.problem)
+		}
+		h.mu.Unlock()
+	}
+	return head, false
 }
 
 // links is each machine's link, when this process holds the fleet.
@@ -74,23 +102,13 @@ func (f fleetTUIControl) Status() string {
 		return "Fleet: " + err.Error()
 	}
 	links := fleetLinks()
-	var head, foot string
-	switch mgr, elsewhere := fleetManager(), fleetHeldElsewhere(); {
-	case mgr != nil:
-		head = "this process holds the fleet, on " + mgr.Addr().String()
+	head, here := fleetHolding()
+	foot := ""
+	switch {
+	case here:
 		foot = "  Machines are connected only while this app is open: a master with a fleet should run `tenant serve` as its service (tenant service install)."
-	case elsewhere != "":
-		head = strings.TrimPrefix(elsewhere, "fleet: ")
+	case fleetHeldElsewhere() != "":
 		foot = "  Which machines are online is known there, and calls to them are made there."
-	default:
-		head = "no process holds the fleet yet, so no machine can connect"
-		if h := theFleet.Load(); h != nil {
-			h.mu.Lock()
-			if h.problem != "" {
-				head = "the fleet listener is not up: " + fleetQuote(h.problem)
-			}
-			h.mu.Unlock()
-		}
 	}
 	return "Fleet: " + head + "\n" + listText(machines, links) + "\n" + foot
 }

@@ -5,11 +5,13 @@ package main
 // the files (fleet.json, the settings file, config.json), so it works whether
 // or not a Tenant is running, and whichever process holds the fleet: the
 // holder sees a change within seconds (fleethub.go). The same operations are
-// behind /fleet in the terminal (fleettuictl.go).
+// behind /fleet in the terminal (fleettuictl.go) and the dashboard's Fleet
+// page (fleet_dashctl.go).
 //
 // Confirming a machine is the one step that lets a master call it. It is
-// taken here and in the terminal's /fleet confirm and nowhere else: no tool,
-// no relay and no approval card leads to it (fleetOps.confirmMachine).
+// taken here, in the terminal's /fleet confirm and on the dashboard's Fleet
+// page opened on this computer, and nowhere else: no tool, no relay and no
+// approval card leads to it (fleetOps.confirmMachine).
 
 import (
 	"bufio"
@@ -224,8 +226,10 @@ func (o fleetOps) audit(m fleet.Machine, change, detail string) {
 // confirmMachine makes a pending machine a confirmed one: the operator typed the
 // six digits that machine shows. It is the only caller of Store.Confirm
 // outside the store's own package, and its own callers are the command line
-// (fleetConfirmCmd, which reads the digits from a terminal) and the terminal
-// app's /fleet confirm: nothing a relay, a tool or the dashboard can reach.
+// (fleetConfirmCmd, which reads the digits from a terminal), the terminal
+// app's /fleet confirm and the dashboard's Fleet page, which takes the digits
+// only from a browser signed in on this computer (dashFleet.Confirm): nothing
+// a relay or a tool can reach.
 //
 // The machine's scheme is saved first and the machine confirmed second, so a
 // machine is never callable without a scheme; if the confirmation fails, a
@@ -335,22 +339,67 @@ func confirmScreen(m fleet.Machine, p fleetPreview) string {
 		lines = append(lines, "  Approval scheme it starts with (a copy of this master's local scheme; exec, write, destructive, send and sandbox",
 			"  no looser than ask, whatever the master allows; the fleet's rules for new machines laid over it, and they win):")
 	}
-	lines = append(lines, schemeLines(p.Scheme, "    ", func(cat, mode string) string {
-		switch master, known := p.Master[cat]; {
-		case p.Set[cat] != "":
-			return "set by you, for this machine only"
-		case !p.Kept && known && master.String() != mode:
-			return "(this master: " + master.String() + ")"
-		}
-		return ""
-	}, func(pattern, mode string) string {
-		if p.FleetRules[pattern] == mode {
-			return "fleet rule"
-		}
-		return ""
-	})...)
+	lines = append(lines, schemeLines(p.Scheme, "    ", p.catNote, p.ruleNote)...)
 	lines = append(lines, "  After this the two schemes are independent: a later change on the master does not move this machine.")
 	return strings.Join(lines, "\n")
+}
+
+// catNote says where a category's mode on the confirm screen came from, when
+// it is not simply the master's own: the operator set it here, or the master
+// allows what a machine starts no looser than ask.
+func (p fleetPreview) catNote(cat, mode string) string {
+	switch master, known := p.Master[cat]; {
+	case p.Set[cat] != "":
+		return "set by you, for this machine only"
+	case !p.Kept && known && master.String() != mode:
+		return "(this master: " + master.String() + ")"
+	}
+	return ""
+}
+
+// ruleNote marks a rule that is one of the fleet's rules for new machines.
+func (p fleetPreview) ruleNote(pattern, mode string) string {
+	if p.FleetRules[pattern] == mode {
+		return "fleet rule"
+	}
+	return ""
+}
+
+// recopy gives a machine its scheme again: from "defaults" the fleet's rules
+// are laid over the scheme it has; from "master" it gets a fresh copy of the
+// master's local scheme, as a machine confirmed now would (Fleet.Inherit).
+// f is the fleet's schemes (o.schemes).
+func (o fleetOps) recopy(f *approval.Fleet, m fleet.Machine, from string) error {
+	switch from {
+	case "defaults":
+		s, err := f.Scheme(m.ID)
+		if err != nil {
+			return err
+		}
+		if err := f.Put(m.ID, s.Overlay(f.Rules().Snapshot())); err != nil {
+			return err
+		}
+		o.audit(m, "scheme changed", "the fleet's rules laid over its approval scheme again")
+	case "master":
+		if m.State == fleet.StatePending || m.State == fleet.StateRevoked {
+			return fmt.Errorf("%s is %s: a machine gets its scheme when it is confirmed", fleetName(m.Name), m.State)
+		}
+		local, err := o.local()
+		if err != nil {
+			return err
+		}
+		s, err := f.Inherit(local)
+		if err != nil {
+			return err
+		}
+		if err := f.Put(m.ID, s); err != nil {
+			return err
+		}
+		o.audit(m, "scheme changed", "a fresh copy of the master's local scheme")
+	default:
+		return fmt.Errorf("--from %s: want defaults or master", fleetQuote(from))
+	}
+	return nil
 }
 
 // listText is the fleet's machines, one per line. links is the state of each
@@ -972,33 +1021,15 @@ func fleetPermissionsCmd(args []string) error {
 	switch {
 	case *from != "" && len(cli.pos) > 1:
 		return errors.New("--from takes no edit beside it")
-	case *from == "defaults":
-		s, err := f.Scheme(m.ID)
-		if err != nil {
-			return err
-		}
-		if err := f.Put(m.ID, s.Overlay(f.Rules().Snapshot())); err != nil {
-			return err
-		}
-		fmt.Printf("%s: the fleet's rules are laid over its scheme again\n", name)
-	case *from == "master":
-		if m.State == fleet.StatePending || m.State == fleet.StateRevoked {
-			return fmt.Errorf("%s is %s: a machine gets its scheme when it is confirmed", name, m.State)
-		}
-		local, err := cli.ops.local()
-		if err != nil {
-			return err
-		}
-		s, err := f.Inherit(local)
-		if err != nil {
-			return err
-		}
-		if err := f.Put(m.ID, s); err != nil {
-			return err
-		}
-		fmt.Printf("%s: its scheme is a fresh copy of this master's local scheme (exec, write, destructive, send and sandbox no looser than ask), with the fleet's rules\n", name)
 	case *from != "":
-		return fmt.Errorf("--from %s: want defaults or master", fleetQuote(*from))
+		if err := cli.ops.recopy(f, m, *from); err != nil {
+			return err
+		}
+		if *from == "defaults" {
+			fmt.Printf("%s: the fleet's rules are laid over its scheme again\n", name)
+		} else {
+			fmt.Printf("%s: its scheme is a fresh copy of this master's local scheme (exec, write, destructive, send and sandbox no looser than ask), with the fleet's rules\n", name)
+		}
 	case len(cli.pos) > 1:
 		b, err := f.Child(m.ID)
 		if err != nil {
