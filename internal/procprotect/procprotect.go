@@ -204,6 +204,8 @@ var notStopped = map[string][]string{
 	"windows": {
 		"a program of the same user can end Tenant, and can end, wait for and resume each of its threads; ending threads stops work and reads nothing",
 		"whoever started Tenant holds a handle to it from before these controls, with full access, for as long as it keeps it (a shell waiting for the command, for one), and a program of the same user can copy that handle out of the starter",
+		"the controls refuse a program that starts after Tenant has finished starting; a program already running when Tenant starts (so also one that ends Tenant and waits for it to be started again) can still get in, through the instant before the controls or through the full-access handle the console host holds until Tenant has joined its console again, and what it takes then keeps working; closing that takes Tenant being started already closed, which this version does not do",
+		"a program of the same user can make the Windows Error Reporting exclusion fail at start (delete the value and deny writes to the key), so that Tenant asks at a terminal whether to go on without it or, as a hidden serve, refuses to start",
 	},
 }
 

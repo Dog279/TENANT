@@ -76,8 +76,18 @@ Tenant itself and so held access to it from the first instant. On Windows two
 routes of that kind are open and known: the starter's handle can be copied out
 of the starter by another program of the same user for as long as the starter
 keeps it, and a program that is already running can open Tenant in the instant
-between its start and the controls. A program of the same user can also end
-single threads of Tenant, which stops work and reads nothing. It does not
+between its start and the controls. Put plainly, the Windows controls refuse a
+program that starts after Tenant has finished starting; a program already
+running when Tenant starts (and so one that ends Tenant and waits for it to be
+started again) can still get in, through the instant before the controls or
+through the full-access handle the console host holds until Tenant has joined
+its console again, and what it takes then keeps working; closing that takes
+Tenant being started already closed, which this version does not do. A program
+of the same user can also make the Windows Error Reporting exclusion fail at
+start (delete the value and deny writes to the key), so that Tenant asks at a
+terminal whether to go on without it or, as a hidden serve, refuses to start.
+A program of the same user can also end single threads of Tenant, which stops
+work and reads nothing. It does not
 protect the data: the dashboard token, the credentials file, memory, logs and
 run traces are plain files that a program of the same user can read, and such
 a program can also stop Tenant and run its own copy against them. The Linux

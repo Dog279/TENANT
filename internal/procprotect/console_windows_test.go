@@ -31,6 +31,8 @@ const (
 	envAnchorPause = "PROCPROTECT_ANCHOR_PAUSE" // the victim waits this long with its helper up, and says in <info>.anchor which process it is
 	envAnchorWait  = "PROCPROTECT_ANCHOR_WAIT"  // how long the victim gives its helper to appear
 
+	envTamperThread = "PROCPROTECT_TAMPER_THREAD" // before Protect, the victim gives one of its threads a list its owner may not rewrite and everyone may open
+
 	// namedStreams, with a process creation flag: the victim is started as
 	// Windows Terminal starts a program, with STARTF_USESTDHANDLES and no
 	// handles named. It gets the console's streams all the same, and Windows
@@ -41,6 +43,18 @@ const (
 // victimBefore is the victim's, before it calls Protect: what a test asked
 // of its helper.
 func victimBefore() {
+	if os.Getenv(envTamperThread) != "" {
+		// What round three of the independent test did from outside, in the
+		// moment before Protect: this thread's owner refused WRITE_DAC,
+		// everyone else let in.
+		sd, err := windows.SecurityDescriptorFromString("D:(D;;WD;;;OW)(A;;GA;;;WD)")
+		if err == nil {
+			err = windows.SetKernelObjectSecurity(windows.CurrentThread(), windows.DACL_SECURITY_INFORMATION, sd)
+		}
+		if err != nil {
+			panic(err)
+		}
+	}
 	if d, err := time.ParseDuration(os.Getenv(envAnchorWait)); err == nil {
 		anchorWait = d
 	}
@@ -599,6 +613,38 @@ func TestTheConsoleHelperCannotBeTurnedAgainstTheControl(t *testing.T) {
 		}
 		noWayIn(t, v, true)
 	})
+}
+
+// TestATamperedThreadIsNotReportedClosed: round three of the independent
+// test gave a thread, in the moment before Protect, a list that refuses its
+// owner WRITE_DAC and lets everyone else in. Protect could not rewrite it,
+// took the refusal for "already restricted", and reported the threads
+// closed while any program could open that one. Either the thread is closed
+// after Protect, or the report says the control is not in force.
+func TestATamperedThreadIsNotReportedClosed(t *testing.T) {
+	if Disabled {
+		t.Skip("built with -tags debugattach")
+	}
+	if why := attackerTooStrong(); why != "" {
+		t.Skip(why)
+	}
+	v := startVictim(t, "protected", envTamperThread+"=1")
+	var c Control
+	for _, x := range v.Report.Controls {
+		if x.ID == "windows.thread-dacl" {
+			c = x
+		}
+	}
+	got := attack(t, v)["GetThreadContext on its threads"]
+	switch {
+	case c.OK && got.OK:
+		t.Errorf("windows.thread-dacl is reported in force, and another program got into a thread: %q", got.Got)
+	case !c.OK && c.Reason != "a thread that existed at start could not be given the access list: "+threadNotClosed:
+		t.Errorf("windows.thread-dacl is off with the reason %q; want the fixed one", c.Reason)
+	case c.OK:
+		t.Errorf("windows.thread-dacl is reported in force for a thread whose list Protect could not set")
+	}
+	t.Logf("thread-dacl ok=%v reason=%q detail=%q; GetThreadContext from outside: ok=%v %s%s", c.OK, c.Reason, c.Detail, got.OK, got.Got, got.Err)
 }
 
 // consoleHostsOf lists the console hosts started for pid: its children named

@@ -56,8 +56,27 @@ const tokenSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x2000a;;;OW)"
 
 var (
 	procNtGetNextThread = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtGetNextThread")
+	procNtQueryObject   = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtQueryObject")
 	procGetThreadId     = kernel32.NewProc("GetThreadId")
 )
+
+// ownerThreadRights are the rights restrictedSDDL leaves a thread's owner:
+// end it, wait for it, resume it.
+const ownerThreadRights = 0x101001
+
+// threadNotClosed is the cause when a thread's list grants its owner more
+// than ownerThreadRights and not the right to change it. The same at every
+// start: the gate matches on it.
+const threadNotClosed = "its access list is not the restricted one, gives its owner more than the three rights, and does not let its owner change it"
+
+// grantedAccess is the access h was opened with (OBJECT_BASIC_INFORMATION).
+func grantedAccess(h windows.Handle) (uint32, error) {
+	var info [14]uint32 // Attributes, GrantedAccess, and the rest
+	if st, _, _ := procNtQueryObject.Call(uintptr(h), 0 /* ObjectBasicInformation */, uintptr(unsafe.Pointer(&info[0])), unsafe.Sizeof(info), 0); st != 0 {
+		return 0, fmt.Errorf("NtQueryObject: %w", windows.NTStatus(st))
+	}
+	return info[1], nil
+}
 
 // ownToken is this process's token, opened once, before its access list is
 // closed: the handle keeps the rights it was opened with.
@@ -194,11 +213,25 @@ func restrictThreads(sd *windows.SECURITY_DESCRIPTOR) error {
 			return fmt.Errorf("listing the threads: NtGetNextThread: %w", windows.NTStatus(st))
 		}
 		h = next
-		err := windows.SetKernelObjectSecurity(h, windows.DACL_SECURITY_INFORMATION, sd)
-		if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
-			// Its list already refuses its owner WRITE_DAC: it started
-			// after the default changed.
-			continue
+		// What each thread's list is, is established, never inferred from a
+		// refusal: a program in the moment before Protect can give a thread
+		// a list that refuses its owner WRITE_DAC and lets everyone in
+		// (round three of the independent test). The handle carries what the
+		// list grants this process; a list Tenant may change is set, and one
+		// it may not must grant it no more than the restricted list does.
+		// That is what every program of the same user is granted too: they
+		// carry the same user and groups, and OWNER RIGHTS applies to each
+		// of them as the owner. (The access list itself cannot be read
+		// back: the restricted list gives the owner no READ_CONTROL.)
+		g, err := grantedAccess(h)
+		switch {
+		case err != nil:
+		case g&windows.WRITE_DAC != 0:
+			err = windows.SetKernelObjectSecurity(h, windows.DACL_SECURITY_INFORMATION, sd)
+		case g&^ownerThreadRights == 0:
+			continue // the restricted list, or narrower: a thread that started after the default changed
+		default:
+			err = errors.New(threadNotClosed)
 		}
 		if err != nil {
 			if !slices.Contains(causes, err.Error()) {
