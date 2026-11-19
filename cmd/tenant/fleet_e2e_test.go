@@ -96,6 +96,7 @@ func TestFleetE2EProcess(t *testing.T) {
 		_ = os.Setenv(k, v)
 	}
 	e2eUpdateSeams(spec) // fleet_update_e2e_test.go: what an update of a machine needs here
+	e2eRehomeSeams()     // fleet_e2e_rehome_test.go: an init that hands the test its recovery identity
 	if spec.Hold {
 		fmt.Printf("E2E-PID %d\n", os.Getpid())
 		go e2eHold()
