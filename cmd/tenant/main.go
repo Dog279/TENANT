@@ -58,7 +58,11 @@ func main() {
 	if n := c.Names[0]; n != "serve" && n != "tui" { // those open the full log book themselves
 		openCommandLog = openOneShotLog
 	}
-	err := c.Run(ctx, os.Args[2:])
+	// The command runs on a thread whose new files get the user's ordinary
+	// access list (Windows; see procprotect.Ordinary and internal/fsperm): a
+	// file a command writes where nothing is inherited is its owner's to read.
+	var err error
+	procprotect.Ordinary(func() { err = c.Run(ctx, os.Args[2:]) })
 	sessionEndFinished() // Windows: answers a logoff or shutdown that serve was stopped by
 	closeCommandLog()
 	if err != nil {

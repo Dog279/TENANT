@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/windows/svc"
+
+	"tenant/internal/procprotect"
 )
 
 // runWindowsService runs serve under the SCM when that is who started this
@@ -33,7 +35,9 @@ func runWindowsService() bool {
 		}
 		holdDataDir = lockDataDirForProcess
 		killChildrenOnExit()
-		return cmdServe(ctx, os.Args[2:])
+		var err error
+		procprotect.Ordinary(func() { err = cmdServe(ctx, os.Args[2:]) }) // as main runs a command
+		return err
 	}}
 	if err := svc.Run("Tenant", h); err != nil {
 		os.Exit(1)

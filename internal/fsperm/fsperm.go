@@ -1,4 +1,14 @@
 // Package fsperm owns Tenant's local private-data permission policy.
+//
+// On Windows it also keeps what Tenant makes its owner's to open. A protected
+// Tenant (internal/procprotect) gives the objects it creates an access list
+// made for its threads, and a file or folder made where nothing is inherited
+// from the folder above gets that list too: the owner could then neither read
+// the file nor make anything in the folder (TEN-535 hardening). So every file
+// and folder made here is made inside procprotect.Ordinary, and a directory
+// handed to MkdirAll, which is one of Tenant's own, is made to pass its
+// permissions on to what is made in it (passOn): from then on it does not
+// matter which part of Tenant makes a file there, or how.
 package fsperm
 
 import (
@@ -7,6 +17,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"tenant/internal/procprotect"
 )
 
 const (
@@ -64,11 +76,16 @@ func Repair(path string) (bool, error) {
 // MkdirAll creates a private directory tree and tightens the final directory
 // when it already exists. Existing parent directories are left unchanged.
 func MkdirAll(path string) error {
-	if err := os.MkdirAll(path, PrivateDirMode); err != nil {
+	var err error
+	procprotect.Ordinary(func() { err = os.MkdirAll(path, PrivateDirMode) })
+	if err != nil {
 		return err
 	}
 	if isVolumeRoot(path) {
 		return nil
+	}
+	if err := passOn(path); err != nil {
+		return err
 	}
 	return restrict(path, PrivateDirMode)
 }
@@ -88,7 +105,9 @@ func WriteFile(path string, data []byte) error {
 
 // OpenFile opens a private file and tightens it when it already exists.
 func OpenFile(path string, flag int) (*os.File, error) {
-	f, err := os.OpenFile(path, flag, PrivateFileMode)
+	var f *os.File
+	var err error
+	procprotect.Ordinary(func() { f, err = os.OpenFile(path, flag, PrivateFileMode) })
 	if err != nil {
 		return nil, err
 	}
