@@ -27,6 +27,7 @@ builds:
         -X tenant/internal/version.Target={{ .Target }}
         -X tenant/internal/version.Dirty={{ .IsGitDirty }}
         -X tenant/internal/version.Repo={{ envOrDefault "GITHUB_REPOSITORY" "" }}
+        -X tenant/internal/version.ReleaseKeys={{ envOrDefault "TENANT_RELEASE_PUBKEYS" "" }}
 
 archives:
   - id: tenant

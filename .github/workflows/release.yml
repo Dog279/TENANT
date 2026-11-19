@@ -47,6 +47,22 @@ jobs:
             sed "/^#/!s|__REPO__|$GITHUB_REPOSITORY|g" "scripts/$f" > "dist-scripts/$f"
           done
 
+      # The project key (TEN-542). The main releases also sign checksums.txt
+      # with an Ed25519 key kept in the secret TENANT_RELEASE_SIGNING_KEY; its
+      # public half, the variable TENANT_RELEASE_PUBKEYS, is built into the
+      # binaries. A repository with neither (a fork) gets sign=false, and its
+      # release is exactly as before. One with only one of the two, a variable
+      # that does not parse, or a secret whose public half is not in the
+      # variable fails here, before anything is built or published. A secret
+      # cannot be tested in a step's `if:`, so this step turns it into an
+      # output; the secret reaches the script through the environment only.
+      - name: Check the project key
+        id: project_key
+        env:
+          TENANT_RELEASE_SIGNING_KEY: ${{ secrets.TENANT_RELEASE_SIGNING_KEY }}
+          TENANT_RELEASE_PUBKEYS: ${{ vars.TENANT_RELEASE_PUBKEYS }}
+        run: go run ./scripts/releasekey check >> "$GITHUB_OUTPUT"
+
       - name: Publish release
         uses: goreleaser/goreleaser-action@v7
         with:
@@ -55,6 +71,23 @@ jobs:
           args: release --clean ${{ github.event.repository.private && '--skip=sign' || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TENANT_RELEASE_PUBKEYS: ${{ vars.TENANT_RELEASE_PUBKEYS }}
+
+      # Signs the exact checksums.txt GoReleaser published, checks the
+      # signature with the keys the binaries carry, and adds it to the
+      # release as checksums.txt.sig. GoReleaser's own signs: section cannot
+      # be skipped per entry without GoReleaser Pro, so this runs after it:
+      # for the seconds between the two, a binary that carries the key
+      # refuses the release as unsigned.
+      - name: Sign checksums.txt with the project key
+        if: ${{ steps.project_key.outputs.sign == 'true' }}
+        env:
+          TENANT_RELEASE_SIGNING_KEY: ${{ secrets.TENANT_RELEASE_SIGNING_KEY }}
+          TENANT_RELEASE_PUBKEYS: ${{ vars.TENANT_RELEASE_PUBKEYS }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          go run ./scripts/releasekey sign dist/checksums.txt
+          gh release upload "$GITHUB_REF_NAME" dist/checksums.txt.sig --repo "$GITHUB_REPOSITORY"
 
       - name: Attest release artifacts
         if: ${{ !github.event.repository.private }}
