@@ -102,7 +102,7 @@ type ClientConfig struct {
 	// Update takes one piece of a new Tenant (fleet/update). Nil answers that
 	// this machine cannot be updated over the link.
 	Update func(ctx context.Context, u Update) (UpdateAck, error)
-	// Log gets what is worth a line on the machine. Nil logs nothing.
+	// Log gets what is worth a line on the machine. Nil is the process logger.
 	Log *slog.Logger
 }
 
@@ -166,7 +166,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}
 	log := cfg.Log
 	if log == nil {
-		log = slog.New(slog.DiscardHandler)
+		log = slog.Default()
 	}
 	return &Client{
 		cfg: cfg, log: log, id: id, file: OpenChild(ChildPath(cfg.Dir)),
@@ -236,6 +236,8 @@ func (c *Client) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			pause.Stop()
+			c.setStatus(LinkOffline, "", "the child stopped")
+			return ctx.Err()
 		case <-pause.C:
 		}
 		wait = min(2*wait, limit)

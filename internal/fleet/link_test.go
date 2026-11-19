@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"runtime"
@@ -16,6 +17,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"tenant/internal/mcp"
 	"tenant/internal/mcp/transport"
@@ -30,7 +32,13 @@ const (
 	testPing  = 150 * time.Millisecond // a dead link is noticed in two of these
 	testWatch = 25 * time.Millisecond  // how often the master re-reads fleet.json
 	waitLong  = 20 * time.Second       // how long a test waits for what must happen
+
+	repl = string(utf8.RuneError) // what a byte that is not text is replaced by
 )
+
+// quiet is the log of the tests' managers and clients: a hostile child makes
+// a master say a great deal.
+var quiet = slog.New(slog.DiscardHandler)
 
 // watchLeaks fails the test if it ends with more goroutines than it began
 // with. Call it first, so that it runs after every other cleanup.
@@ -108,6 +116,7 @@ type rig struct {
 	// children dialed. Both are zero when a test ends.
 	accepted, dialed atomic.Int64
 	masterSent       atomic.Int64 // bytes the master wrote to its connections
+	kidsSent         atomic.Int64 // bytes the children's clients wrote to theirs
 }
 
 // newRig starts a master. tweak changes the manager before it serves.
@@ -116,7 +125,7 @@ func newRig(t *testing.T, tweak ...func(*Manager)) *rig {
 	watchLeaks(t)
 	r := &rig{master: newMaster(t)}
 	r.store.watchEvery = testWatch
-	mgr := must(newManager(ManagerConfig{Store: r.store, Identity: r.id, Role: "test"}))(t)
+	mgr := must(newManager(ManagerConfig{Store: r.store, Identity: r.id, Role: "test", Log: quiet}))(t)
 	mgr.ws = transport.WSConfig{PingInterval: testPing}
 	mgr.addressEvery = testWatch
 	mgr.helloTime = 2 * time.Second
@@ -282,6 +291,7 @@ func newFakeTools() *fakeTools {
 			return strings.Repeat(a.Fill, a.N), false, nil
 		},
 		"panic": func(context.Context, json.RawMessage) (string, bool, error) { panic("boom") },
+		"bytes": func(context.Context, json.RawMessage) (string, bool, error) { return "a\xff\xfeb", false, nil },
 		"keep": func(ctx context.Context, _ json.RawMessage) (string, bool, error) {
 			f.ctxs <- ctx
 			return "kept", false, nil
@@ -354,7 +364,7 @@ func (r *rig) kidIn(t *testing.T, dir string, mach Machine) *kid {
 // process would.
 func (k *kid) client() *Client {
 	k.t.Helper()
-	c := must(NewClient(ClientConfig{Dir: k.dir, Tools: k.tools, Version: "1.2.3", User: "root",
+	c := must(NewClient(ClientConfig{Dir: k.dir, Tools: k.tools, Version: "1.2.3", User: "root", Log: quiet,
 		Update: func(_ context.Context, u Update) (UpdateAck, error) {
 			return UpdateAck{Received: u.Offset + int64(len(u.Data)), Applying: u.Offset+int64(len(u.Data)) == u.Size}, nil
 		}}))(k.t)
@@ -367,7 +377,7 @@ func (k *kid) client() *Client {
 			return nil, err
 		}
 		k.r.dialed.Add(1)
-		cc := &counted{Conn: conn, open: &k.r.dialed}
+		cc := &counted{Conn: conn, open: &k.r.dialed, sent: &k.r.kidsSent}
 		k.mu.Lock()
 		k.conns = append(k.conns, cc)
 		k.mu.Unlock()
@@ -1138,7 +1148,7 @@ func TestLinkVersionMismatch(t *testing.T) {
 // process does.
 func TestSecondManagerLearnsWhoHoldsTheFleet(t *testing.T) {
 	r := newRig(t)
-	cfg := ManagerConfig{Store: Open(r.dir), Identity: r.id, Addr: r.addr, Role: "tui"}
+	cfg := ManagerConfig{Store: Open(r.dir), Identity: r.id, Addr: r.addr, Role: "tui", Log: quiet}
 	_, err := StartManager(cfg)
 	var held *HeldError
 	if !errors.As(err, &held) {

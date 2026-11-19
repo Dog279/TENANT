@@ -159,7 +159,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/research` | `internal/fsperm` |  |
 | `internal/backup` | `internal/datalock`, `internal/fsperm`, `internal/secrets`, `internal/version` |  |
 | `internal/peering` | `internal/httplimits`, `internal/secrets` |  |
-| `internal/fleet` | `internal/secrets`, `internal/datalock` | a fleet's identity, enrollment and fleet.json; knows no link, no tool and no command |
+| `internal/fleet` | `internal/secrets`, `internal/datalock`, `internal/httplimits`, `internal/mcp/**`, `internal/model` | a fleet's identity, enrollment and fleet.json, and the link between a master and its children; serves the tool mux it is handed and knows no tool and no command |
 | `internal/mcp` | `internal/mcp/transport` | wire protocol only, no LLM knowledge |
 | `internal/model` | `internal/model/profiles`, `internal/runtrace` | no memory, agent or plugins |
 | `internal/model/**` | `internal/model/**`, `internal/runtrace`, `internal/fsperm` |  |

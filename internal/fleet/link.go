@@ -120,7 +120,6 @@ const (
 	requestsPerSec = 32
 	maxStrikes     = 16
 	maxPreUpgrade  = 128 // connections that are not a link yet, at once
-	headerTime     = 10 * time.Second
 )
 
 // Errors of the master's end. Test with errors.Is.
@@ -353,7 +352,7 @@ func validToolName(s string) bool {
 
 // cut shortens s to at most n bytes of valid UTF-8.
 func cut(s string, n int) (string, bool) {
-	s = strings.ToValidUTF8(s, "�")
+	s = strings.ToValidUTF8(s, string(utf8.RuneError))
 	if len(s) <= n {
 		return s, false
 	}

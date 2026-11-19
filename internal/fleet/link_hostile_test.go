@@ -720,7 +720,7 @@ func TestHostileResults(t *testing.T) {
 	res, err = answer(waitLong, func(id string) []string {
 		return []string{`{"jsonrpc":"2.0","id":` + id + `,"result":{"text":"a` + "\xff\xfe" + `b","is_error":true}}`}
 	})
-	if err != nil || res.Text != "a��b" || !res.IsError {
+	if err != nil || res.Text != "a"+repl+repl+"b" || !res.IsError {
 		t.Errorf("a result that is not UTF-8: %q, %v", res.Text, err)
 	}
 	h.intact(t)
@@ -774,5 +774,38 @@ func TestHostileToolList(t *testing.T) {
 	if tools, err := list(`{}`); err != nil || len(tools) != 0 {
 		t.Errorf("an empty list: %+v, %v", tools, err)
 	}
+	h.intact(t)
+}
+
+// A machine that dials again and again without ever finishing its hello
+// holds one connection that is not a link yet, not one per dial.
+func TestHostileManyConnectionsStuckInTheHello(t *testing.T) {
+	h := newHostile(t, func(m *Manager) { m.helloTime = 500 * time.Millisecond })
+	mach, id := h.add(t, "bad", StateConfirmed)
+	mute := func(*rawChild, mcp.Message) bool { return true } // it answers nothing
+	if _, err := h.dialRaw(t, id, mute); err != nil {
+		t.Fatal(err)
+	}
+	base := runtime.NumGoroutine()
+	for range 20 {
+		_, err := h.dialRaw(t, id, mute)
+		var status ws.StatusError
+		if !errors.As(err, &status) || int(status) != http.StatusTooManyRequests {
+			t.Fatalf("a second connection during the hello = %v, want 429", err)
+		}
+	}
+	if grew := runtime.NumGoroutine() - base; grew > 4 {
+		t.Errorf("20 refused connections left %d goroutines", grew)
+	}
+	h.intact(t)
+	// When the hello it owes has run out of time, the machine can try again.
+	for deadline := time.Now().Add(waitLong); ; time.Sleep(20 * time.Millisecond) {
+		if _, err := h.dialRaw(t, id, nil); err == nil {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("the machine never got another try: %v", err)
+		}
+	}
+	h.awaitOnline(t, mach.ID, true)
 	h.intact(t)
 }

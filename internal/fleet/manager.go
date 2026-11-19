@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"tenant/internal/datalock"
+	"tenant/internal/httplimits"
 	"tenant/internal/mcp"
 	"tenant/internal/mcp/transport"
 	"tenant/internal/model"
@@ -36,8 +37,9 @@ type ManagerConfig struct {
 	Role string
 	// Refused and Alert are the enroll endpoint's audit (NewEnrollHandler).
 	Refused, Alert func(Refusal)
-	// Log gets what an operator may want on record: links made and ended, and
-	// why. Nil logs nothing.
+	// Log gets what an operator may want on record: links made and ended and
+	// why, handshakes refused, a machine that sends what the link does not
+	// allow. Nil is the process logger.
 	Log *slog.Logger
 }
 
@@ -115,10 +117,11 @@ type Manager struct {
 	wg      sync.WaitGroup // the manager's goroutines, and one count per link until its transport is closed
 	started time.Time
 
-	mu     sync.Mutex
-	closed bool
-	links  map[string]*link
-	last   map[string]lastSeen
+	mu       sync.Mutex
+	closed   bool
+	links    map[string]*link
+	greeting map[string]bool // machines with a connection between its upgrade and the end of its hello
+	last     map[string]lastSeen
 }
 
 type lastSeen struct {
@@ -152,17 +155,17 @@ func newManager(cfg ManagerConfig) (*Manager, error) {
 	}
 	log := cfg.Log
 	if log == nil {
-		log = slog.New(slog.DiscardHandler)
+		log = slog.Default()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Manager{
 		cfg: cfg, store: cfg.Store, log: log, tls: tlsCfg,
 		holder:      filepath.Join(filepath.Dir(cfg.Store.path), holderFileName),
 		linkVersion: LinkVersion, inFlight: defaultInFlight, callTime: defaultCallTime, helloTime: helloTime,
-		headerTime: headerTime, addressEvery: 2 * time.Second,
+		headerTime: httplimits.ReadHeaderTimeout, addressEvery: 2 * time.Second,
 		ctx: ctx, cancel: cancel,
 		sem:   make(chan struct{}, maxPreUpgrade),
-		links: map[string]*link{}, last: map[string]lastSeen{},
+		links: map[string]*link{}, greeting: map[string]bool{}, last: map[string]lastSeen{},
 	}, nil
 }
 
@@ -201,23 +204,23 @@ func (m *Manager) serve(ln net.Listener) {
 	mux.Handle(EnrollPath, NewEnrollHandler(m.store, m.cfg.Refused, m.cfg.Alert))
 	mux.HandleFunc(LinkPath, m.serveLink)
 	m.srv = &http.Server{
-		Handler: mux,
-		// A connection has this long to finish its handshake and its request,
-		// and a refusal this long to be read. An upgraded connection leaves
-		// the server and lives by the transport's deadlines.
-		ReadHeaderTimeout: m.headerTime,
-		ReadTimeout:       3 * m.headerTime,
-		WriteTimeout:      3 * m.headerTime,
-		IdleTimeout:       3 * m.headerTime,
-		MaxHeaderBytes:    16 << 10,
-		TLSNextProto:      map[string]func(*http.Server, *tls.Conn, http.Handler){}, // no HTTP/2: a link is an HTTP/1.1 upgrade
-		ErrorLog:          slog.NewLogLogger(m.log.Handler(), slog.LevelDebug),      // refused handshakes
+		Handler:      mux,
+		TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){}, // no HTTP/2: a link is an HTTP/1.1 upgrade
 		ConnState: func(_ net.Conn, s http.ConnState) {
 			if s == http.StateHijacked || s == http.StateClosed {
 				<-m.sem
 			}
 		},
 	}
+	httplimits.Configure(m.srv)
+	// Nothing on this port streams, so the whole of a request and the whole
+	// of an answer have a time limit too: a connection has headerTime to
+	// finish its handshake and its request line and headers, and a refusal
+	// that long again to be read. An upgraded connection leaves the server
+	// and lives by the transport's deadlines.
+	m.srv.ReadHeaderTimeout = m.headerTime
+	m.srv.ReadTimeout, m.srv.WriteTimeout, m.srv.IdleTimeout = 3*m.headerTime, 3*m.headerTime, 3*m.headerTime
+	m.srv.ErrorLog = slog.NewLogLogger(m.log.Handler(), slog.LevelWarn) // refused handshakes are worth a line
 	// Seeded with the list as it is: every child is sent it when it connects.
 	pushed, _ := m.store.Addresses()
 	m.wg.Add(3)
@@ -499,15 +502,27 @@ func (m *Manager) serveLink(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, answer, status)
 		return
 	}
+	// One connection per machine at a time gets as far as the hello: a machine
+	// holds its link and at most one more that is not a link yet, however many
+	// times it dials.
 	m.mu.Lock()
-	if m.closed {
+	if m.closed || m.greeting[mach.ID] {
 		m.mu.Unlock()
+		w.Header().Set("Connection", "close")
+		http.Error(w, "another connection from this machine is saying hello", http.StatusTooManyRequests)
 		return
 	}
+	m.greeting[mach.ID] = true
 	m.wg.Add(1) // given back when the link's transport is closed (guard.Close)
 	m.mu.Unlock()
+	greeted := func() {
+		m.mu.Lock()
+		delete(m.greeting, mach.ID)
+		m.mu.Unlock()
+	}
 	t, err := transport.UpgradeWSServer(w, r, m.ws)
 	if err != nil {
+		greeted()
 		m.wg.Done()
 		m.log.Debug("fleet: link not upgraded", "machine", mach.ID, "err", err)
 		return
@@ -516,7 +531,9 @@ func (m *Manager) serveLink(w http.ResponseWriter, r *http.Request) {
 	l.sess = mcp.NewSession(&guard{Transport: t, l: l, tokens: requestBurst, refilled: time.Now()}, l)
 	l.sess.Start(m.ctx)
 
-	if err := l.hello(mach); err != nil {
+	err = l.hello(mach)
+	greeted()
+	if err != nil {
 		l.end(fmt.Errorf("no hello: %w", err))
 		return
 	}

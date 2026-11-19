@@ -1,7 +1,7 @@
 // Package fleet is the identity, enrollment and state of a Tenant fleet
-// (TEN-531): one master that owns child machines. It is a library; the link
-// that runs over it and the `tenant fleet` / `tenant child` commands live
-// elsewhere.
+// (TEN-531), and the link between its machines: one master that owns child
+// machines. It is a library; the `tenant fleet` / `tenant child` commands,
+// the child's tools and the master's fleet tools live elsewhere.
 //
 // # Identity and TLS
 //
@@ -41,4 +41,20 @@
 // Child is a child's own configuration: where its master is, which
 // certificate the master must present, and the ceiling the machine sets on
 // what it will do. ChildFile re-reads it when it changes on disk.
+//
+// # The link
+//
+// A child dials its master and holds one WebSocket open (link.go has the
+// protocol). Manager is the master's end: it serves the enroll endpoint and
+// the link endpoint on the one fleet port, holds a session per connected
+// child, and makes the calls: Tools, Call, Result, Update, Ping. Client is
+// the child's end: it serves a tool mux to the master, keeps a call running
+// through a dropped link, and dials again. Approvals are decided on the
+// master: a tool on the child calls Confirm, which asks over the link, and
+// the answer comes from the Confirm of the Call that is running.
+//
+// One process holds a fleet's links at a time; a second is told which
+// (HeldError). A call to a machine that is offline, paused, pending or
+// revoked fails at once; nothing is queued and nothing is sent twice. What a
+// child sends is untrusted, down to the frame: see guard in manager.go.
 package fleet

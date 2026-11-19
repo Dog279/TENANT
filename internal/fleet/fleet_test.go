@@ -12,10 +12,15 @@ import (
 )
 
 // TestMain lets the test binary stand in for a second Tenant process that
-// changes the same fleet.json (see multiproc_test.go).
+// changes the same fleet.json (see multiproc_test.go), or for the machines of
+// a fleet (see link_scale_test.go).
 func TestMain(m *testing.M) {
-	if os.Getenv(helperEnv) != "" {
-		if err := helperProcess(); err != nil {
+	if mode := os.Getenv(helperEnv); mode != "" {
+		run := helperProcess
+		if mode == helperChildren {
+			run = childrenProcess
+		}
+		if err := run(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
