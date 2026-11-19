@@ -14,7 +14,9 @@ import (
 // writes nothing, and with every control in force nothing is written.
 func TestAMissingControlIsLoggedByEveryCommand(t *testing.T) {
 	first, _ := forcedControls(t) // skips where there are no controls
-	u := newTenantUnderTest(t, protectTestBinary(t))
+	bin := protectTestBinary(t)
+	removeTestExclusion(t, bin) // the starts with every control in force write it
+	u := newTenantUnderTest(t, bin)
 	if err := os.WriteFile(launchConfigPath(u.cfg), []byte(`{"dashboard":{"enabled":false}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}

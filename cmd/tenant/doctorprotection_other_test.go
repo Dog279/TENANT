@@ -14,3 +14,6 @@ const doneByDoctorItself = ""
 func undoFromOutside(*testing.T, string) (env []string, undo func(t *testing.T, pid int), found string) {
 	return nil, nil, ""
 }
+
+// removeTestExclusion: only Windows keeps a value for a program that ran.
+func removeTestExclusion(*testing.T, string) {}
