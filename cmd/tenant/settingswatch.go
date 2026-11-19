@@ -156,6 +156,8 @@ func applySettingsFile(cfgDir, agentID string, broker *approvalBroker, rules *to
 	// The acknowledgements of a missing process protection too (TEN-535):
 	// `tenant service restart` and `tenant update` record one from another
 	// process, and this one's next save must not drop it.
+	// ponytail: a save by this process before the next tick (3 s) still
+	// drops it, and Tenant then asks again; merge on save if that ever bites.
 	mu.Lock()
 	stg.ExecProfiles, stg.ExecExceptions = fresh.ExecProfiles, fresh.ExecExceptions
 	stg.ProtectionAcknowledged = fresh.ProtectionAcknowledged

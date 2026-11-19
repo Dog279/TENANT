@@ -311,8 +311,31 @@ func TestProtectionGateAsProcesses(t *testing.T) {
 	}
 }
 
-// The tags that weaken process protection belong to no release build.
+// The tags that weaken process protection belong to no release build, and
+// nothing outside a test or the test-tagged file can force a control off:
+// that would be the run-time switch the plan forbids.
 func TestReleaseBuildsCarryNoProtectionTags(t *testing.T) {
+	root := filepath.Join("..", "..")
+	for _, top := range []string{"cmd", "internal"} {
+		err := filepath.WalkDir(filepath.Join(root, top), func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return err
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			rel, _ := filepath.Rel(root, path)
+			if strings.Contains(string(b), "ForceFail(") && filepath.ToSlash(rel) != "internal/procprotect/procprotect.go" &&
+				!strings.HasPrefix(string(b), "//go:build procprotecttest\n") && !strings.HasPrefix(string(b), "//go:build procprotecttest\r\n") {
+				t.Errorf("%s calls ForceFail in a build that can be released", rel)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, rel := range []string{".goreleaser.yaml", filepath.Join(".github", "workflows", "release.yml")} {
 		b, err := os.ReadFile(filepath.Join("..", "..", rel))
 		if err != nil {

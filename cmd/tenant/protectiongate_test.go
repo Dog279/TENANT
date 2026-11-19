@@ -518,6 +518,7 @@ func TestServiceVerbsAskFirst(t *testing.T) {
 	for _, k := range []string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME"} {
 		t.Setenv(k, home) // a unit path under here, never the developer's own
 	}
+	useRealUnitDir(t) // under that home, and gone with it
 	// No --system service (Windows) and nothing loaded (macOS), so neither
 	// waits for a stop that the recorder never performs.
 	noService := func(argv []string) (string, error) {
