@@ -621,10 +621,11 @@ func roLong(a, name string) bool {
 }
 
 // roTakesFile reports an option of grep or rg whose next argument is a file:
-// -f (also last in a cluster), --file, --ignore-file, --exclude-from.
+// -f (also last in a cluster), --file, --ignore-file, --exclude-from. With an
+// "=" the value is attached, and the next argument is not it.
 func roTakesFile(a string) bool {
 	return (strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.HasSuffix(a, "f")) ||
-		roLong(a, "file") || roLong(a, "ignore-file") || roLong(a, "exclude-from")
+		(!strings.Contains(a, "=") && (roLong(a, "file") || roLong(a, "ignore-file") || roLong(a, "exclude-from")))
 }
 
 // roShort reports whether a is a single-dash cluster holding one of letters.
