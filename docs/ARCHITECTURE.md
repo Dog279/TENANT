@@ -268,7 +268,12 @@ Handler, Call/Notify, read pump, response routing), `initialize.go`
 `version.go` (`ProtocolVersion = "2025-06-18"`, `LibraryVersion`),
 `transport/transport.go` (`Transport` interface, `ErrClosed`,
 `ErrFrameTooLarge`), `transport/stdio.go` (newline-delimited stdio:
-NewStdioSelf / NewStdioStreams / NewStdioProcess).
+NewStdioSelf / NewStdioStreams / NewStdioProcess), `transport/sse.go`
+(HTTP with Server-Sent Events), `transport/ws.go` (WebSocket over a
+connection the caller supplies, for the fleet link: NewWSClient /
+NewWSServer / UpgradeWSClient / UpgradeWSServer; a frame limit both ways,
+a write deadline, and a dead peer noticed within two ping intervals, see
+the package comment).
 
 **Public API:**
 - `mcp.NewSession(t transport.Transport, h Handler) *Session`
