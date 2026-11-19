@@ -149,12 +149,9 @@ func readable(t testing.TB, root string, needles ...string) []string {
 		if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
-		raw, err := os.ReadFile(path)
-		if errors.Is(err, fs.ErrNotExist) {
+		raw, gone := readUnlessGone(t, path)
+		if gone {
 			return nil
-		}
-		if err != nil {
-			raw = readFile(t, path)
 		}
 		for _, n := range needles {
 			if bytes.Contains(raw, []byte(n)) {
@@ -165,6 +162,28 @@ func readable(t testing.TB, root string, needles ...string) []string {
 	})
 	must(t, err)
 	return hits
+}
+
+// readUnlessGone reads path, trying again for a second while Windows refuses
+// it (a sharing violation while the store has it open or renames it). A file
+// that is gone meanwhile, a temporary one renamed into place, is forgiven:
+// gone is true, and the walk reads it under its final name. A file that is
+// there and still cannot be read fails the test.
+func readUnlessGone(t testing.TB, path string) (raw []byte, gone bool) {
+	t.Helper()
+	var err error
+	for range 200 {
+		raw, err = os.ReadFile(path)
+		switch {
+		case err == nil:
+			return raw, false
+		case errors.Is(err, fs.ErrNotExist):
+			return nil, true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal(err)
+	return nil, false
 }
 
 // watch records the name of everything that appears under the roots until
