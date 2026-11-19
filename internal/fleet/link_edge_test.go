@@ -119,12 +119,14 @@ func TestLinkRevokedMachineThatWillNotHangUp(t *testing.T) {
 	if took := time.Since(start); took < 900*time.Millisecond || took > 3*time.Second {
 		t.Errorf("cut off after %v, want about a second", took)
 	}
-	told := false
+	told := 0
 	for len(c.in) > 0 {
-		told = told || (<-c.in).Method == noticeRevoked
+		if msg := <-c.in; msg.Method == noticeRevoked {
+			told++
+		}
 	}
-	if !told {
-		t.Error("it was not told")
+	if told != 1 {
+		t.Errorf("it was told %d times", told)
 	}
 	h.awaitOnline(t, id, false)
 	h.intact(t)
