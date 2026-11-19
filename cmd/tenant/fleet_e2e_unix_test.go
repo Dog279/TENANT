@@ -24,7 +24,7 @@ func e2eProtected(pid string) error {
 	if runtime.GOOS != "linux" || os.Geteuid() == 0 {
 		return nil
 	}
-	if _, err := os.ReadFile("/proc/" + pid + "/environ"); !os.IsPermission(err) {
+	if _, err := os.ReadFile("/proc/" + pid + "/environ"); !os.IsPermission(err) && !os.IsNotExist(err) { // gone already: a revoked child ends at once
 		return fmt.Errorf("its /proc/%s/environ can be read (%v)", pid, err)
 	}
 	return nil

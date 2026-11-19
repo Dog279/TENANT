@@ -31,7 +31,7 @@ func e2eProtected(pid string) error {
 		windows.CloseHandle(h)
 		return errors.New("it can be opened to read its memory")
 	}
-	if !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+	if !errors.Is(err, windows.ERROR_ACCESS_DENIED) && !errors.Is(err, windows.ERROR_INVALID_PARAMETER) { // gone already: a revoked child ends at once
 		return err
 	}
 	return nil
