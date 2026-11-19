@@ -66,6 +66,10 @@ var systemLog = writeSystemLog
 // procprotecttest (protecttest.go); "" in every other build.
 var testBuildNote string
 
+// afterProtect is given Protect's report as soon as it is made, in a build
+// made with -tags procprotecttest (protecttest.go); nil in every other build.
+var afterProtect func(procprotect.Report)
+
 // sessionHelperEnv is added to the environment of the helper process serve
 // starts on Windows (sessionend_windows.go), which otherwise gets nothing of
 // serve's. Nil in every build but one made with -tags procprotecttest, where

@@ -14,9 +14,11 @@ package main
 //	TENANT_TEST_VERSION     the version this process says it is
 //	TENANT_TEST_SYSTEM_LOG  a file that stands in for the system's log
 //	TENANT_TEST_TERMINAL    1: stdin and stderr count as a terminal
+//	TENANT_TEST_REPORT      a file Protect's report is written to, as JSON
 
 import (
 	"bufio"
+	"encoding/json"
 	"io"
 	"os"
 	"strings"
@@ -51,5 +53,11 @@ func init() { // before main, so before Protect
 	}
 	if os.Getenv("TENANT_TEST_TERMINAL") == "1" {
 		ackConsole = func() (*bufio.Reader, io.Writer, bool) { return bufio.NewReader(os.Stdin), os.Stderr, true }
+	}
+	if path := os.Getenv("TENANT_TEST_REPORT"); path != "" {
+		afterProtect = func(r procprotect.Report) {
+			b, _ := json.Marshal(r)
+			_ = os.WriteFile(path, b, 0o600)
+		}
 	}
 }

@@ -28,6 +28,7 @@ func TestMain(m *testing.M) {
 	if mode := os.Getenv("TENANT_BOOT_HELPER"); mode != "" {
 		bootHelper(mode, os.Getenv("TENANT_BOOT_ROOT"))
 	}
+	consoleDriverIfAsked() // Windows: the program that types at a victim's console (consolestarts_windows_test.go)
 	// The built-in exec backend is the host in these tests, whatever this OS's
 	// sandbox can do: a test about the built-in default says which it wants
 	// (withBuiltinExec, execprofiles_test.go).

@@ -33,6 +33,9 @@ var protection procprotect.Report
 func main() {
 	// Before anything else, for every command and for the service.
 	protection = procprotect.Protect()
+	if afterProtect != nil { // a test build's (protecttest.go)
+		afterProtect(protection)
+	}
 	if runWindowsService() { // started by the service control manager (svc_windows.go, TEN-498)
 		return
 	}
