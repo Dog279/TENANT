@@ -92,7 +92,7 @@ const (
 	maxUpdateSize  = 1 << 30
 
 	defaultInFlight = 8                // tools/call in flight per child, on both ends
-	defaultCallTime = 5 * time.Minute  // a call whose caller set no deadline
+	defaultCallTime = 15 * time.Minute // a call whose caller set no deadline: longer than any tool lets itself run
 	maxCallTime     = 30 * time.Minute // the longest a child lets one call run
 	callGrace       = time.Second      // how long after a call's deadline a child ends it by itself
 	requestTime     = 30 * time.Second // every other request

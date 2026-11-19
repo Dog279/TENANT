@@ -383,7 +383,7 @@ func (m *Manager) Tools(ctx context.Context, id string) ([]model.ToolSpec, error
 // id, which the result or the *CallError carries. It fails at once for a
 // machine that is offline (*OfflineError), not confirmed, at its limit of
 // calls in flight (ErrBusy), or unreadable in fleet.json. A context without
-// a deadline gets one of five minutes; when the context ends the machine is
+// a deadline gets one of fifteen minutes; when the context ends the machine is
 // told to stop. A link that drops mid-call ends it with ErrOutcomeUnknown,
 // and nothing is sent again.
 func (m *Manager) Call(ctx context.Context, id string, c Call) (Result, error) {
