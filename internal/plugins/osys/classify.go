@@ -52,14 +52,6 @@ var dangerPatterns = []dangerPattern{
 	{regexp.MustCompile(`(?i)\biex\b.*\b(downloadstring|invoke-webrequest|iwr)\b`), "execute downloaded content (IEX)"},
 	{regexp.MustCompile(`(?i)\bchmod\s+-R\s+0*[0-7]{0,3}\s+/`), "recursive chmod on a root path"},
 	{regexp.MustCompile(`(?i)\bfind\s+/(\s|$)[^;&|\n]*-delete`), "find / -delete"},
-	// TEN-498: an agent must not stop, remove or replace the Tenant it runs
-	// in without the operator's say. Anchored: `grep tenant service.log` is
-	// not this; a path or .exe before the name is.
-	// TEN-531: the same for the fleet child a machine runs: `tenant child
-	// pause`, `resume` and `uninstall` are the operator's on that machine.
-	// And for the master's `tenant fleet …`, which sets what the agent may
-	// do on every machine of the fleet (permissions, relay, revoke, enroll).
-	{regexp.MustCompile(`(?i)^(\S*[\\/])?tenant(\.exe)?\s+(service|update|child|fleet)\b`), "tenant service/update/child/fleet (changes how Tenant itself runs, or what it may do on its fleet)"},
 }
 
 // cmdStart anchors a command word at the start of a command: the string's
@@ -78,7 +70,218 @@ func Classify(command string) (dangerous bool, reason string) {
 			return true, p.reason
 		}
 	}
+	if selfCommand(c, 0) {
+		return true, "tenant service/update/child/fleet (changes how Tenant itself runs, or what it may do on its fleet)"
+	}
 	return destructiveTarget(c)
+}
+
+// selfVerbs are the subcommands of tenant that stop, remove or replace the
+// Tenant an agent runs in (TEN-498): the operator must say yes to them.
+// TEN-531: the same for the fleet child a machine runs (`tenant child pause`,
+// `resume`, `uninstall` are the operator's on that machine) and for the
+// master's `tenant fleet …`, which sets what the agent may do on every
+// machine of the fleet (permissions, relay, revoke, enroll).
+var selfVerbs = map[string]bool{"service": true, "update": true, "child": true, "fleet": true}
+
+// selfLaunchers run the command that follows their options, VAR=x and
+// numbers or durations (nice -n 10, timeout 30s: no program is named 5 or
+// 30s), with sh's keywords that do the same; Start-Process (start, saps) is
+// read by selfStart too. selfShells run the command line given after their
+// -c, /c or -Command, and Windows PowerShell 5.1 its bare arguments (pwsh
+// takes them as a file). selfEvals run the rest of the line as one.
+//
+// A TRIPWIRE, NOT A BOUNDARY: a variable, an alias, a script file or a
+// launcher not listed here gets `tenant update` past any reading of the
+// line. What holds is the approval mode, and for the fleet the commands that
+// insist on a terminal.
+var (
+	selfLaunchers = map[string]bool{"sudo": true, "doas": true, "env": true, "nohup": true, "exec": true,
+		"command": true, "time": true, "nice": true, "timeout": true, "xargs": true, "start": true,
+		"start-process": true, "saps": true, ".": true,
+		"!": true, "if": true, "then": true, "else": true, "elif": true, "do": true, "while": true, "until": true}
+	selfShells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true,
+		"cmd": true, "powershell": true, "pwsh": true}
+	selfEvals      = map[string]bool{"eval": true, "iex": true, "invoke-expression": true}
+	selfAssignment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
+	selfDuration   = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?[smhd]?$`)
+	// selfStartValues are the parameters of Start-Process besides -FilePath
+	// and -ArgumentList that take a value.
+	selfStartValues = []string{"credential", "workingdirectory", "redirectstandarderror", "redirectstandardinput",
+		"redirectstandardoutput", "verb", "windowstyle"}
+)
+
+// selfCommand reports a command of the line whose running word is tenant
+// (any path before it, .exe, any case, quoted or not) followed by one of
+// selfVerbs. The line is cut into commands twice, as sh reads it and as
+// PowerShell 5.1 does (selfSegments), and each command's words are the ones
+// readOnlyArgs gives for that shell, so `grep "tenant service" x` and
+// `echo tenant update` stay data. depth bounds the launchers' recursion.
+func selfCommand(line string, depth int) bool {
+	if depth > 8 {
+		return false
+	}
+	for _, sh := range []bool{true, false} {
+		for _, seg := range selfSegments(line, sh) {
+			shWords, psWords, _, _, _ := readOnlyArgs(seg)
+			words := psWords
+			if sh {
+				words = shWords
+			}
+			if words == nil { // an open quote, or a backslash before one
+				for _, f := range strings.Fields(seg) {
+					words = append(words, strings.Trim(f, `"'`))
+				}
+			}
+			if selfRuns(words, depth) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// selfSegments cuts a line into its commands: at ; & | newline carriage
+// return ( ) { }, outside quotes; inside double quotes at $( and its ), which
+// still run. sh also cuts at a backtick and escapes with a backslash;
+// PowerShell escapes with a backtick.
+func selfSegments(line string, sh bool) []string {
+	var segs []string
+	start, quote, depth := 0, byte(0), 0
+	cut := func(i, n int) {
+		segs = append(segs, line[start:i])
+		start = i + n
+	}
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+		switch {
+		case quote == '\'':
+			if ch == '\'' {
+				quote = 0
+			}
+		case (sh && ch == '\\') || (!sh && ch == '`'):
+			i++ // the next character is text
+		case quote == '"':
+			switch {
+			case ch == '"':
+				quote = 0
+			case ch == '$' && i+1 < len(line) && line[i+1] == '(':
+				depth++
+				cut(i, 2)
+				i++
+			case ch == ')' && depth > 0:
+				depth--
+				cut(i, 1)
+			case sh && ch == '`':
+				cut(i, 1)
+			}
+		case ch == '\'' || ch == '"':
+			quote = ch
+		case strings.IndexByte(";&|\n\r(){}`", ch) >= 0:
+			cut(i, 1)
+		}
+	}
+	return append(segs, line[start:])
+}
+
+// selfRuns reports words of one command that run tenant with a verb of
+// selfVerbs, directly or through selfLaunchers or selfShells.
+func selfRuns(w []string, depth int) bool {
+	if depth > 8 {
+		return false
+	}
+	for len(w) > 0 && (w[0] == "" || selfAssignment.MatchString(w[0])) {
+		w = w[1:]
+	}
+	if len(w) == 0 {
+		return false
+	}
+	name := strings.ToLower(w[0])
+	name = strings.TrimSuffix(name[strings.LastIndexAny(name, `\/`)+1:], ".exe")
+	rest := w[1:]
+	switch {
+	case name == "tenant":
+		return len(rest) > 0 && selfVerbs[strings.ToLower(rest[0])]
+	case selfEvals[name]:
+		return selfCommand(strings.Join(rest, " "), depth+1)
+	case selfShells[name]:
+		ps := name == "powershell" || name == "pwsh"
+		for i, a := range rest {
+			l := strings.ToLower(a)
+			flag := len(l) > 1 && (l[0] == '-' || (l[0] == '/' && (ps || name == "cmd")))
+			switch {
+			case name == "cmd" && (l == "/c" || l == "/k"),
+				ps && flag && strings.HasPrefix("command", l[1:]),
+				!ps && name != "cmd" && flag && l[1] != '-' && strings.Contains(l, "c"):
+				return selfCommand(strings.Join(rest[i+1:], " "), depth+1)
+			case ps && flag && strings.HasPrefix("file", l[1:]):
+				return false
+			case name == "powershell" && !flag:
+				// The first bare word, or the one after an option's value.
+				return selfCommand(strings.Join(rest[i:], " "), depth+1) ||
+					(i > 0 && strings.HasPrefix(rest[i-1], "-") && selfCommand(strings.Join(rest[i+1:], " "), depth+1))
+			}
+		}
+	case selfLaunchers[name]:
+		if (name == "start" || name == "start-process" || name == "saps") && selfStart(rest) {
+			return true
+		}
+		for i, a := range rest {
+			if a == "-S" || a == "--split-string" { // env -S 'CMD ARGS'
+				return selfCommand(strings.Join(rest[i+1:], " "), depth+1)
+			}
+			if a == "" || strings.HasPrefix(a, "-") || (len(a) == 2 && a[0] == '/') || selfAssignment.MatchString(a) || selfDuration.MatchString(a) {
+				continue
+			}
+			// The first other word runs; after an option (sudo -u root) it may
+			// be that option's value, and the launcher goes on after it.
+			return selfRuns(rest[i:], depth+1) ||
+				(i > 0 && strings.HasPrefix(rest[i-1], "-") && selfRuns(append([]string{w[0]}, rest[i+1:]...), depth+1))
+		}
+	}
+	return false
+}
+
+// selfStart reads PowerShell's Start-Process: the program is the value of
+// -FilePath (-Path, -PSPath, or a start of the name) or the first bare word;
+// its first argument is the first item of -ArgumentList (-Args) or of the
+// second bare word, a comma list.
+func selfStart(rest []string) bool {
+	var file, args string
+	var bare []string
+	for i := 0; i < len(rest); i++ {
+		a := rest[i]
+		if !strings.HasPrefix(a, "-") {
+			bare = append(bare, a)
+			continue
+		}
+		p, v, glued := strings.Cut(strings.ToLower(a[1:]), ":")
+		if !glued && i+1 < len(rest) {
+			v = rest[i+1]
+		}
+		switch {
+		case p == "":
+			continue
+		case strings.HasPrefix("filepath", p) || p == "path" || p == "pspath":
+			file = v
+		case strings.HasPrefix("argumentlist", p) || p == "args":
+			args = v
+		case !slices.ContainsFunc(selfStartValues, func(s string) bool { return strings.HasPrefix(s, p) }):
+			continue // a switch
+		}
+		if !glued {
+			i++
+		}
+	}
+	if file == "" && len(bare) > 0 {
+		file, bare = bare[0], bare[1:]
+	}
+	if args == "" && len(bare) > 0 {
+		args = bare[0]
+	}
+	verb, _, _ := strings.Cut(strings.Trim(strings.ToLower(args), ` '",`), ",")
+	verb, _, _ = strings.Cut(strings.Trim(verb, ` '"`), " ")
+	return len(file) > 0 && selfRuns([]string{file, verb}, 8)
 }
 
 // segmentSplit separates the commands of a compound line.

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -624,6 +625,69 @@ func TestClassifyTenantService(t *testing.T) {
 			t.Errorf("Classify(%q) = %v (%s), want %v", tc.cmd, d, reason, tc.dangerous)
 		}
 	}
+}
+
+// The word that runs is tenant, with a verb of selfVerbs, in any command of
+// the line, under sh's and PowerShell 5.1's reading, or behind a launcher.
+var tenantSelfCommands = []string{
+	"true && tenant service uninstall", "cd /tmp; tenant update", " tenant update", "\ttenant service stop",
+	"echo x | tenant update", "ls\ntenant update", "ls\rtenant update", "false || tenant update", "ls & tenant update",
+	"echo $(tenant update)", "echo `tenant update`", "(tenant service stop)", "{ tenant update; }",
+	`echo "$(tenant update)"`, "TENANT SERVICE STOP", "Tenant.EXE Update", "/opt/tenant/bin/tenant update",
+	"& tenant service stop", `& 'C:\x\tenant.exe' update`, `& "C:\Program Files\Tenant\tenant.exe" service stop`,
+	`.\tenant.exe update`, `"tenant" service stop`, "'tenant' update", "X=1 tenant update", "if tenant update; then ls; fi",
+	"Get-Process; & { tenant update }", `echo \"; tenant update`,
+	// Launchers.
+	"sudo tenant service uninstall", "sudo -u root tenant service stop", "doas tenant update", "env tenant update",
+	"env -i FOO=1 tenant update", "env -S 'tenant update'", "nohup tenant update", "exec tenant update",
+	"command tenant update", "time tenant update", "nice -n 10 tenant update", `start "" tenant update`,
+	"start tenant update", "cmd /c tenant update", `cmd /C "tenant service stop"`, "sh -c 'tenant update'",
+	"bash -lc 'cd /tmp && tenant update'", `powershell -NoProfile -Command "tenant update"`, "pwsh -c 'tenant update'",
+	"sudo sh -c 'tenant update'", "sudo env X=1 nohup tenant update",
+	// The coordinator's replay of the first version.
+	"timeout 5 tenant update", "timeout 30s tenant service stop", "timeout -k 5 60 tenant update",
+	"timeout -s KILL 5 tenant update", "eval tenant update", `eval "tenant service stop"`, `iex "tenant update"`,
+	"Invoke-Expression 'tenant service stop'", "powershell tenant update", "powershell.exe -NoProfile tenant update",
+	"Start-Process tenant -ArgumentList update", "Start-Process -FilePath tenant.exe -ArgumentList 'service','stop'",
+	"saps tenant -Args update", "start tenant -ArgumentList 'update'", "Start-Process -WindowStyle Hidden tenant update",
+	"xargs tenant update", "xargs -n1 tenant update",
+}
+
+// tenant and a verb as data: no card for these (TEN-498's reason to anchor).
+var tenantSelfData = []string{
+	"grep tenant service.log", `grep "tenant service" x.log`, "cat docs/tenant update.md", "echo tenant update",
+	`git log --grep "tenant service"`, "ls tenant", "rg 'tenant fleet' docs", "rg 'tenant update' docs",
+	`git log --grep "fix; tenant update"`, "echo 'a; tenant update'", "tenant version", "tenant status",
+	"sudo grep tenant service.log", "sh -c 'echo tenant update'", "cat tenant", "tenant",
+	"timeout 5 grep tenant service.log", "eval echo tenant update", "Start-Process notepad tenant-update.md",
+	"xargs grep tenant", "powershell -File tenant-update.ps1", `powershell Get-Content tenant\update.md`,
+	"pwsh tenant update", "Start-Process tenant -ArgumentList version",
+}
+
+func TestClassifyTenantSelfCommandAnywhere(t *testing.T) {
+	for _, cmd := range tenantSelfCommands {
+		if d, _ := Classify(cmd); !d {
+			t.Errorf("Classify(%q) = false: Tenant's own service/update would run with no card", cmd)
+		}
+	}
+	for _, cmd := range tenantSelfData {
+		if d, reason := Classify(cmd); d {
+			t.Errorf("Classify(%q) = true (%s): tenant is data here, not the command", cmd, reason)
+		}
+	}
+}
+
+// FuzzClassify: Classify never panics and gives the same answer twice.
+func FuzzClassify(f *testing.F) {
+	for _, c := range append(slices.Clone(tenantSelfCommands), tenantSelfData...) {
+		f.Add(c)
+	}
+	f.Fuzz(func(t *testing.T, c string) {
+		d1, r1 := Classify(c)
+		if d2, r2 := Classify(c); d1 != d2 || r1 != r2 {
+			t.Errorf("Classify(%q) is not deterministic: %v %q, then %v %q", c, d1, r1, d2, r2)
+		}
+	})
 }
 
 // TEN-499: os_write_file and os_edit_file replace a file by rename, so a kill
