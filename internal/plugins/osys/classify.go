@@ -777,7 +777,8 @@ func netMount(a string) bool {
 // //host) is refused too, except as the first operand of the words that
 // search for a pattern (//go:build), where only a host with a share is. An
 // option that gives the pattern (-e, --regexp, -f, --file, glued or not, in
-// any place: GNU grep permutes) makes every operand a file; only the value of
+// any place: GNU grep permutes), or rg's --files, which takes none, makes
+// every operand a file; only the value of
 // a -e or --regexp before any operand is then exempt. After an option that
 // takes a file (grep -f, --file; rg --ignore-file), the operand is that file.
 // And an option
@@ -788,10 +789,11 @@ func readOnlyReach(word string, args []string) bool {
 		return true
 	}
 	grep := word == "grep" || word == "egrep" || word == "fgrep" || word == "rg"
+	// rg --files takes no pattern at all: every operand is a path to list.
 	byOption := grep && slices.ContainsFunc(args, func(a string) bool {
 		long, isLong := strings.CutPrefix(a, "--")
 		long, _, _ = strings.Cut(long, "=")
-		return (!isLong && len(a) > 1 && a[0] == '-' && strings.ContainsAny(a, "ef")) ||
+		return (word == "rg" && a == "--files") || (!isLong && len(a) > 1 && a[0] == '-' && strings.ContainsAny(a, "ef")) ||
 			(isLong && long != "" && (strings.HasPrefix("regexp", long) || strings.HasPrefix("file", long)))
 	})
 	pattern := grep && !byOption // the next operand is the pattern
