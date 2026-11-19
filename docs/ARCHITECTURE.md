@@ -160,7 +160,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/backup` | `internal/datalock`, `internal/fsperm`, `internal/secrets`, `internal/version` |  |
 | `internal/fleet/shadow` | `internal/memory/episodic`, `internal/memory/semantic`, `internal/secrets`, `internal/fsperm`, `internal/datalock` | a fleet machine's memory: the master's shadow in RAM and its encrypted snapshots, the child's copies, and which side wins; knows no link |
 | `internal/peering` | `internal/httplimits`, `internal/secrets` |  |
-| `internal/fleet` | `internal/secrets`, `internal/datalock`, `internal/httplimits`, `internal/mcp/**`, `internal/model` | a fleet's identity, enrollment and fleet.json, and the link between a master and its children; serves the tool mux it is handed and knows no tool and no command |
+| `internal/fleet` | `internal/fleet/shadow`, `internal/secrets`, `internal/datalock`, `internal/httplimits`, `internal/mcp/**`, `internal/model` | a fleet's identity, enrollment and fleet.json, and the link between a master and its children; serves the tool mux it is handed and knows no tool and no command |
 | `internal/mcp` | `internal/mcp/transport` | wire protocol only, no LLM knowledge |
 | `internal/model` | `internal/model/profiles`, `internal/runtrace` | no memory, agent or plugins |
 | `internal/model/**` | `internal/model/**`, `internal/runtrace`, `internal/fsperm` |  |

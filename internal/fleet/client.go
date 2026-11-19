@@ -19,6 +19,7 @@ import (
 
 	"github.com/gobwas/ws"
 
+	"tenant/internal/fleet/shadow"
 	"tenant/internal/mcp"
 	"tenant/internal/mcp/transport"
 	"tenant/internal/model"
@@ -102,6 +103,10 @@ type ClientConfig struct {
 	// Update takes one piece of a new Tenant (fleet/update). Nil answers that
 	// this machine cannot be updated over the link.
 	Update func(ctx context.Context, u Update) (UpdateAck, error)
+	// Memory keeps the copies of this machine's memory the master sends
+	// (TEN-532): encrypted snapshots the child cannot read. Nil answers the
+	// memory methods as a child that does not know them would.
+	Memory *shadow.ChildStore
 	// Log gets what is worth a line on the machine. Nil is the process logger.
 	Log *slog.Logger
 }
@@ -138,6 +143,8 @@ type Client struct {
 	kept    []keptResult        // finished calls, oldest first
 	keptLen int                 // bytes of text in kept
 	calls   sync.WaitGroup
+
+	mem memoryEnd // the copies of this machine's memory going in and out
 }
 
 type keptResult struct {
@@ -407,6 +414,14 @@ func (l *childLink) HandleRequest(ctx context.Context, method string, params jso
 		return c.update(ctx, params)
 	case methodAddresses:
 		return c.addresses(params)
+	case methodMemoryList, methodMemoryPut, methodMemoryGet, methodMemoryPurge:
+		if c.cfg.Memory == nil {
+			break // a child that keeps no copies is a child that does not know these
+		}
+		if v := int(l.master.Load()); !speaks(c.linkVersion, v) {
+			return nil, mcp.NewError(codeIncompatible, incompatible("this machine", c.linkVersion, v))
+		}
+		return c.memory(method, params)
 	case methodToolsList, methodToolsCall, methodResult:
 		if v := int(l.master.Load()); !speaks(c.linkVersion, v) {
 			return nil, mcp.NewError(codeIncompatible, incompatible("this machine", c.linkVersion, v))
