@@ -95,6 +95,28 @@ func slashCron(m *model, line string) tea.Cmd {
 		} else {
 			m.sysChat("cron: running " + rest + " now — result will appear in the feed")
 		}
+	case "fleet":
+		// Open a job for fleet machines (TEN-531). A job reaches none until the
+		// operator names them here; "none" closes it again.
+		fc, ok := m.cfg.Cron.(CronFleetControl)
+		ff := strings.Fields(rest)
+		if !ok || len(ff) < 2 {
+			m.sysChat("usage: /cron fleet <id> <machine>... | none   (the fleet machines this job may reach; none by default)")
+			return nil
+		}
+		names := ff[1:]
+		if len(names) == 1 && strings.EqualFold(names[0], "none") {
+			names = nil
+		}
+		j, err := fc.SetFleet(ff[0], names)
+		switch {
+		case err != nil:
+			m.sysChat("cron: " + err.Error())
+		case len(j.Fleet) == 0:
+			m.sysChat("cron: " + j.ID + " reaches no fleet machine")
+		default:
+			m.sysChat("cron: " + j.ID + " may reach " + strings.Join(j.Fleet, ", ") + " and no other fleet machine; each call is still checked by that machine's scheme, and unattended, ask means no")
+		}
 	case "exec":
 		// Global kill-switch for dangerous (shell / exec-opted-in) jobs.
 		arg := strings.ToLower(strings.TrimSpace(rest))
@@ -118,7 +140,7 @@ func slashCron(m *model, line string) tea.Cmd {
 			m.sysChat("usage: /cron exec [on | off | status]")
 		}
 	default:
-		m.sysChat("usage: /cron [list | add <schedule> | <prompt> | enable <id> | disable <id> | run <id> | rm <id> | exec on|off]")
+		m.sysChat("usage: /cron [list | add <schedule> | <prompt> | enable <id> | disable <id> | run <id> | rm <id> | exec on|off | fleet <id> <machine>...|none]")
 	}
 	return nil
 }
@@ -161,6 +183,9 @@ func (m *model) renderCronList() (string, string) {
 		}
 		if j.TZ != "" {
 			mode += " " + j.TZ
+		}
+		if len(j.Fleet) > 0 {
+			mode += " fleet:" + strings.Join(j.Fleet, ",")
 		}
 		head := fmt.Sprintf("%s %s  %s  [%s]  id:%s  next:%s", mark, name, j.Spec, mode, j.ID, cronDash(j.NextRun))
 		p.WriteString("  " + head + "\n")
@@ -253,6 +278,7 @@ func cronCommands() []*slashCommand {
 				{Syntax: "/cron run <id>", Desc: "run a job once now (result appears in the feed)"},
 				{Syntax: "/cron rm <id>", Desc: "delete a job"},
 				{Syntax: "/cron exec on|off", Desc: "global kill-switch for dangerous shell/exec jobs (default off)"},
+				{Syntax: "/cron fleet <id> <machine>... | none", Desc: "the fleet machines a job may reach (none by default)"},
 			}},
 	}
 }

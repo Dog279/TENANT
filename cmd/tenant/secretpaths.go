@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"tenant/internal/fleet"
 	"tenant/internal/peering"
 )
 
@@ -48,6 +49,9 @@ func managedSecrets(cfgDir, dataDir string) ([]managedSecret, error) {
 			add(cfgDir, path)
 		}
 		for _, path := range peering.AtRestPaths(cfgDir) {
+			add(cfgDir, path)
+		}
+		for _, path := range fleet.AtRestPaths(cfgDir) { // fleet.json, the master's identity, who holds the fleet (TEN-531)
 			add(cfgDir, path)
 		}
 		// Listed, not globbed: a config dir containing '[' would make the

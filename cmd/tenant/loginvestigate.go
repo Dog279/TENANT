@@ -264,7 +264,8 @@ func (inv *investigator) turn(ctx context.Context, st *store.Store, prompt, atta
 	if err != nil {
 		return nil, nil, gov.Status(), err
 	}
-	res, err := ag.Turn(ctx, agent.TurnRequest{UserQuery: prompt, LoopCeiling: investigationSteps, TraceID: trace})
+	// Unattended, over a log event it did not write: it reaches no fleet machine (TEN-531).
+	res, err := ag.Turn(withFleetMachines(ctx, nil), agent.TurnRequest{UserQuery: prompt, LoopCeiling: investigationSteps, TraceID: trace})
 	return res, ag, gov.Status(), err
 }
 

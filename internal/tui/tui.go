@@ -105,6 +105,9 @@ type Config struct {
 	// Peer, if set, powers /peer (list/show/remove) + /configure peer (the
 	// per-peer share-policy editor). Federation pairing (TEN-183/188).
 	Peer PeerControl
+	// Fleet, if set, powers /fleet and /permissions fleet: the machines this
+	// Tenant is the master of (TEN-531).
+	Fleet FleetControl
 
 	// GitHub is the watched-repository list behind /github (nil = unavailable).
 	GitHub GitHubControl
@@ -734,6 +737,8 @@ type CronJobView struct {
 	NextRun    string
 	LastRun    string
 	LastStatus string
+	// Fleet names the fleet machines the job may reach (none: no machine).
+	Fleet []string
 }
 
 // SecretsControl powers the no-arg `/configure` picker (TEN-149): list every
@@ -1247,6 +1252,8 @@ type toolRow struct {
 type model struct {
 	ctx context.Context
 	cfg Config
+	// typed is true while the line being submitted was entered at the keyboard.
+	typed bool
 
 	chat  viewport.Model
 	feed  viewport.Model
@@ -1665,7 +1672,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// submit() so /approve, /deny, /permissions work mid-turn.
 				m.interject(q)
 			case !m.busy || strings.HasPrefix(q, "/"):
-				if cmd := m.submit(); cmd != nil {
+				// typed marks a line the operator entered at this keyboard. A
+				// line the app submits itself (a goal's next prompt) is not one,
+				// and /fleet confirm takes no other kind.
+				m.typed = true
+				cmd := m.submit()
+				m.typed = false
+				if cmd != nil {
 					cmds = append(cmds, cmd)
 				}
 			}

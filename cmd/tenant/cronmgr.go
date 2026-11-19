@@ -214,6 +214,7 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 		// is no per-agent "force big" in route config, so the prompt prefix is
 		// the operator's lever.
 		runCtx = withExecSurface(runCtx, surfaceCronExec) // picks the cron-exec exec profile
+		runCtx = withFleetMachines(runCtx, job.Fleet)     // the fleet machines this job was opened for; none by default
 		prompt, override := agent.ParseRoutePrefix(job.Prompt)
 		res, err := ag.Turn(runCtx, agent.TurnRequest{
 			UserQuery: prompt, RouteSurface: agent.RouteSurfaceCron, RouteOverride: override,
@@ -292,7 +293,17 @@ func withAuthBanner(summary string, probs []string) string {
 // asks nobody, so each verdict is its own Security record (and, under
 // logs.security.on_failure: deny, a grant it can't record is a denial).
 func cronExecApprover(cfgDir, dataDir string) offsiteConfirm {
-	allows := func(action, detail string) bool {
+	allows := cronExecAllows(cfgDir, dataDir)
+	return func(ctx context.Context, action, detail string) bool {
+		return approval.Verdict(ctx, categorize(action), action, detail, "cron", "cron", allows(action, detail))
+	}
+}
+
+// cronExecAllows is the cron-exec approver's rule alone, with no record: an
+// exec job's fleet call is checked by it as the origin's side of the two
+// checks (fleetOrigin), and the fleet files that verdict itself.
+func cronExecAllows(cfgDir, dataDir string) func(action, detail string) bool {
+	return func(action, detail string) bool {
 		switch categorize(action) {
 		case catSandbox:
 			// Unattended: a sandbox refusal is final. Re-running outside the
@@ -315,9 +326,6 @@ func cronExecApprover(cfgDir, dataDir string) offsiteConfirm {
 			}
 		}
 		return true
-	}
-	return func(ctx context.Context, action, detail string) bool {
-		return approval.Verdict(ctx, categorize(action), action, detail, "cron", "cron", allows(action, detail))
 	}
 }
 
@@ -712,6 +720,7 @@ func (a tuiCron) Jobs() []tui.CronJobView {
 			ID: j.ID, Name: j.Name, Spec: j.Spec, Prompt: j.Prompt, Enabled: j.Enabled,
 			Kind: j.KindOf(), Exec: j.Exec, TZ: j.TZ,
 			NextRun: cronFmtTime(j.NextRun), LastRun: cronFmtTime(j.LastRun), LastStatus: j.LastStatus,
+			Fleet: fleetNames(j.Fleet),
 		})
 	}
 	return out

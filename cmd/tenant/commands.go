@@ -2394,7 +2394,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 			for _, j := range c.lc.Cron.Jobs {
 				cronDefs = append(cronDefs, cron.JobDef{
 					ID: j.ID, Name: j.Name, Spec: j.Spec, Prompt: j.Prompt,
-					Enabled: j.Enabled, Kind: j.Kind, Exec: j.Exec, TZ: j.TZ,
+					Enabled: j.Enabled, Kind: j.Kind, Exec: j.Exec, TZ: j.TZ, Fleet: j.Fleet,
 				})
 			}
 		}
@@ -2406,7 +2406,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 			for i, d := range defs {
 				jobs[i] = cronJobConfig{
 					ID: d.ID, Name: d.Name, Spec: d.Spec, Prompt: d.Prompt,
-					Enabled: d.Enabled, Kind: d.Kind, Exec: d.Exec, TZ: d.TZ,
+					Enabled: d.Enabled, Kind: d.Kind, Exec: d.Exec, TZ: d.TZ, Fleet: d.Fleet,
 				}
 			}
 			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Cron.Jobs = jobs })
@@ -2570,6 +2570,8 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	// approver) is wired below, once the relay manager exists.
 	discordBroker := newDiscordApprovalBroker(log.With("source", "approvals"))
 	discordBroker.SetEvents(emit) // visibility bridge: Discord-routed approvals surface on the feed (TEN-203)
+	// A Discord turn's fleet call is checked by this broker as well as by the machine's scheme (TEN-531).
+	fleetRelayBroker(surfaceDiscord, discordBroker)
 	discordBroker.SetPersist(func(snap map[string]string, known []string) {
 		persistChoice(c.cfgDir, c.lc, pushSys, "relay: the permission change", func(lc *launchConfig) {
 			lc.Relay.Permissions, lc.Relay.KnownCategories = snap, known
@@ -2696,6 +2698,8 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		imsgBroker.LoadModes(c.lc.IMessage.Permissions, c.lc.IMessage.KnownCategories)
 	}
 	imsgAllowMgr.setPerms(imsgBroker)
+	// An iMessage turn's fleet call is checked by this broker as well as by the machine's scheme (TEN-531).
+	fleetRelayBroker(surfaceIMessage, imsgBroker)
 	imsgAllowMgr.loadConfig(c.cfgDir, c.lc)
 
 	// Phase-2 text-confirm operator (TEN-267): the handle whose "Y <nonce>" reply
@@ -3090,6 +3094,11 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		}
 	}
 
+	// The fleet (TEN-531): the terminal app holds the fleet's links unless
+	// `tenant serve` already does, and /fleet says which (fleethub.go).
+	life.AddFunc(lifecycle.Intake, "fleet listener", startFleetHub(ctx, c, "tui", broker, pushSys, log.With("source", "fleet")))
+	fleetCtl := newFleetTUIControl(c, stg, &stgMu)
+
 	modelName := c.vllmModel
 	if c.backend == "echo" || modelName == "" {
 		modelName = c.backend
@@ -3154,6 +3163,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		Logs:            newTUILogs(hub, st.runs),
 		MCP:             mcpCtl,
 		GitHub:          githubTUIControl{cfgDir: c.cfgDir, lc: c.lc},
+		Fleet:           fleetCtl,
 		Peer:            peerTUIControl{cfgDir: c.cfgDir, serve: peerServeFn, reconnect: func() { mux.ReconnectPeersSilently(c.cfgDir) }, stats: peerFedStatsView(mux), health: peerHealth.tuiHealth},
 		Secrets:         tuiKeys{dk: dashKeys{cfgDir: c.cfgDir, mc: modelCtl, surface: surfaceTUI}},
 		Setup:           setupControl{cfgDir: c.cfgDir, mc: modelCtl},

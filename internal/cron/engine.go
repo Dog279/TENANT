@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -43,6 +44,9 @@ type JobDef struct {
 	Kind    string `json:"kind,omitempty"` // "" / "prompt" | "shell"
 	Exec    bool   `json:"exec,omitempty"` // prompt jobs: run with the exec (dangerous) tool surface
 	TZ      string `json:"tz,omitempty"`   // IANA zone (e.g. "America/Los_Angeles"); "" = engine default
+	// Fleet lists the ids of the fleet machines the job may reach; none by
+	// default. Only SetFleet changes it: a job is never created with one.
+	Fleet []string `json:"fleet,omitempty"`
 }
 
 // KindOf returns the effective kind ("" => prompt).
@@ -445,6 +449,33 @@ func (e *Engine) SetEnabled(id string, on bool) (Job, bool, error) {
 	}
 	JobSwitched.Log(context.Background(), "job", j.Label(), "id", j.ID, "state", state)
 	return *j, true, nil
+}
+
+// maxJobFleet bounds how many fleet machines one job may be opened for.
+const maxJobFleet = 64
+
+// SetFleet replaces the list of fleet machines job id may reach (none: the
+// job reaches no machine) and persists it. The engine only keeps the list:
+// what an id names, and whether a call to it is allowed, is the caller's.
+func (e *Engine) SetFleet(id string, machines []string) (Job, error) {
+	machines = slices.Compact(slices.Sorted(slices.Values(machines)))
+	if len(machines) > maxJobFleet || slices.Contains(machines, "") {
+		return Job{}, fmt.Errorf("cron: a job reaches at most %d fleet machines, each named by its id", maxJobFleet)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	idx := e.indexLocked(id)
+	if idx < 0 {
+		return Job{}, fmt.Errorf("cron: no job with id %q", id)
+	}
+	j := e.jobs[idx]
+	prev := j.Fleet
+	j.Fleet = machines
+	if err := e.persistLocked(); err != nil {
+		j.Fleet = prev
+		return Job{}, err
+	}
+	return *j, nil
 }
 
 // RunNow runs a job immediately (serialized with the scheduler loop) and returns

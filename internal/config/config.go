@@ -66,6 +66,9 @@ type Launch struct {
 	// IMessage holds the iMessage drive-allowlist (TEN-68 follow-up): the
 	// handles permitted to drive the agent over iMessage. Deny-by-default.
 	IMessage IMessage `json:"imessage,omitempty"`
+	// Fleet is the master's side of a fleet (TEN-531): where its one fleet
+	// port listens. The machines themselves are in fleet.json.
+	Fleet Fleet `json:"fleet,omitzero"`
 	// Cron holds the recurring-job definitions managed via /cron, the cron_*
 	// tools, and the dashboard's Cron section. Only definitions persist here;
 	// run state (next/last run) is in-memory and recomputed on load.
@@ -541,6 +544,19 @@ type Relay struct {
 	// container card — the default) or "legacy" (plain content + a button row).
 	// v2 falls back to legacy on its own if Discord rejects the post.
 	CardStyle string `json:"card_style,omitempty"`
+	// AllowFleet opens the relay for the fleet (TEN-531). False, the default:
+	// a turn that came through Discord reaches no fleet machine at all, reads
+	// included. True: it may, and each call is still checked twice, by the
+	// relay's own rules above and by the machine's scheme.
+	AllowFleet bool `json:"allow_fleet,omitempty"`
+}
+
+// Fleet is config.json's "fleet": the master's fleet listener (TEN-531).
+type Fleet struct {
+	// Listen is the host:port the one fleet port binds once `tenant fleet
+	// init` has made this Tenant a master. Empty: 0.0.0.0:9777. The addresses
+	// children are told to dial are a separate list, kept in fleet.json.
+	Listen string `json:"listen,omitempty"`
 }
 
 // IMessage holds the iMessage drive-allowlist: the normalized handles
@@ -576,6 +592,9 @@ type IMessage struct {
 	// KnownCategories is the responder broker's chosen-categories marker, as
 	// Settings.KnownCategories is the host's.
 	KnownCategories []string `json:"known_categories,omitempty"`
+	// AllowFleet opens the responder for the fleet, as Relay.AllowFleet does
+	// for Discord. Off by default.
+	AllowFleet bool `json:"allow_fleet,omitempty"`
 }
 
 // Improve governs the self-improvement loop's auto-acceptance of induced
@@ -686,6 +705,10 @@ type CronJob struct {
 	Kind    string `json:"kind,omitempty"`
 	Exec    bool   `json:"exec,omitempty"`
 	TZ      string `json:"tz,omitempty"`
+	// Fleet lists the ids of the fleet machines the job may reach (TEN-531).
+	// Empty, the default: none. Set by the operator when the job is edited
+	// (/cron fleet); an id that was revoked since simply fails.
+	Fleet []string `json:"fleet,omitempty"`
 }
 
 // Skill is one integration's non-secret settings + on/off state.
