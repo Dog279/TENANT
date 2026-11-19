@@ -15,17 +15,20 @@ func Supported() bool { return false }
 // model Windows DACLs. TEN-325 tracks applying an equivalent DACL policy.
 func restrict(_ string, _ os.FileMode) error { return nil }
 
-// passOn makes a directory of Tenant's own pass its permissions on to the
-// files and folders made in it, when it passes on none: a folder whose access
-// list has no inheritable entry, which is what a folder made where nothing is
-// inherited looks like, and what `icacls /inheritance:r` can leave. What is
-// made in such a folder takes the default of the process that makes it, and a
-// protected Tenant's default is not one for files (see the package comment).
+// passOn makes a directory MkdirAll has just made pass its permissions on to
+// the files and folders made in it, when it passes on none: a folder whose
+// access list has no inheritable entry, which is what a folder made where
+// nothing is inherited (after `icacls /inheritance:r` on the folder above,
+// say) looks like. What is made in such a folder takes the default of the
+// process that makes it, and a protected Tenant's default is not one for
+// files (see the package comment).
 //
 // Nobody gains or loses access to the directory: its own entries are kept
-// and marked to be inherited, and Windows adds them to what is in it already.
-// A directory that passes anything on, one whose access list cannot be read,
-// and one on a volume that keeps no access lists (FAT, exFAT) are left alone.
+// and marked to be inherited. It is never called on a directory that was
+// there before MkdirAll: Windows would add the entries to everything already
+// in it. A directory that passes anything on, one whose access list cannot
+// be read, and one on a volume that keeps no access lists (FAT, exFAT) are
+// left alone.
 func passOn(path string) error {
 	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
