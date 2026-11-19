@@ -19,13 +19,18 @@ Releases page.
     threads are refused, and so is rewriting the access list that says so. A program running as
     you can still end Tenant, and can end, wait for and resume each of its threads: ending
     threads stops work and reads nothing. Task Manager still lists Tenant and ends it, and so do
-    `taskkill /F`, PowerShell's `Stop-Process -Force` and Node's `process.kill` (they need the
-    right to query the process's information, which shows its exit code, times, priority, where
-    its memory lies and its handles by number and kind, nothing in its memory); Python's
-    `os.kill` asks for every right and is refused. A program running as you can also read each
-    thread's access list, which Tenant reads back itself at start: every thread's list is
-    compared with the one it set and the threads are counted, and a thread that is not as set
-    turns the control off. The
+    `taskkill /F`, PowerShell's `Stop-Process -Force` and Node's `process.kill`, which need the
+    right to query the process's information; Python's `os.kill` asks for every right and is
+    refused. A program running as you could always read Tenant's exit code, times, priority,
+    counters, module paths and where its memory lies and how it is protected, and that right
+    adds which of its pages are resident and shared (the working set), its handles by number,
+    kind and rights, its mitigation policy, and a walk of its threads that gives no more than
+    opening each by id: nothing of its memory's content, no handle out of it, no thread
+    redirected. A program running as you can also read each thread's access list, which Tenant
+    reads back itself at start: it opens every thread the system lists, by its id, compares its
+    list with the one it set, and a thread that is not as set, or does not let Tenant open it,
+    turns the control off (ending other threads does not hide it); so do more than 512 threads
+    at start. `tenant doctor` reads every thread's list again when it asks a running Tenant. The
     command line, the program's path and the account stay readable. Tenant also puts its file
     name on your Windows Error Reporting exclusion list. Run on Windows 11, not elevated; an
     actual crash dump by Windows Error Reporting was not attempted.
@@ -114,8 +119,14 @@ Releases page.
   that goes ahead on an acknowledgement says so (system 2030, and a line in the status feed).
   Every other command that opens Tenant's data is not asked, but leaves the same record at
   every start it makes without a control: system 2030 in the log book, with the command, the
-  control and the reason, and a line on stderr at a terminal. `help`, `version`, `completion`
-  and a plain `doctor` or `security audit` write nothing.
+  control and the reason, and a line on stderr at a terminal; every command that loads a secret
+  or runs an agent turn is among them. `help`, `version`, `completion`, a plain `doctor` or
+  `security audit`, and `eval --subset smoke` or `ui` (no key, no model) write nothing. When the
+  log book cannot take the record (its folder made unwritable, `logbook.db` not opening), the
+  command says so on stderr, terminal or not, and the record goes to the system's own log. The
+  log book is your file, so a program running as you can still delete a record from it
+  afterwards without doctor noticing; only the failure path's copy in the Windows Application
+  event log is out of its reach.
 
   `tenant service install`, `start` and `restart`, and `tenant setup` when it installs the
   service, ask first, at the terminal you typed them in, because the service has nobody to ask.

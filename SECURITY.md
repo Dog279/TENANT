@@ -89,13 +89,23 @@ of the same user can also make the Windows Error Reporting exclusion fail at
 start (delete the value and deny writes to the key), so that Tenant asks at a
 terminal whether to go on without it or, as a hidden serve, refuses to start.
 A program of the same user can also end single threads of Tenant, which stops
-work and reads nothing; read each thread's access list; and query the
-process's information (exit code, times, priority, where its memory lies and
-how it is protected, its handles by number, kind and rights), which is what
-`taskkill /F` and `Stop-Process` need to end it, but nothing in its memory.
-When a control is not in force, every command that opens Tenant's data writes
-system event 2030 to the log book (`tenant logs`) at each start, with the
-command, the control and the reason; serve and the TUI also ask first. It does not
+work and reads nothing, and read each thread's access list. Such a program
+could always read a protected Tenant's exit code, times, priority, counters,
+the paths of its modules and where its memory lies and how it is protected,
+and the right `taskkill /F` and `Stop-Process` need to end it
+(`PROCESS_QUERY_INFORMATION`) adds which of its pages are resident and shared
+(the working set), its handles by number, kind and rights, its mitigation
+policy, and a walk of its threads that gives no more than opening each by id:
+nothing of its memory's content, no handle out of it, no thread redirected.
+When a control is not in force, every command that opens Tenant's data (every
+command that loads a secret or runs an agent turn among them; eval's smoke
+and ui subsets load neither) writes system event 2030 to the log book (`tenant logs`) at each
+start, with the command, the control and the reason; serve and the TUI also
+ask first. When the log book cannot take the event (its folder made
+unwritable, `logbook.db` not opening), the command says so on stderr and the
+record goes to the operating system's log instead. The log book itself is the
+user's file: a program of the same user can delete the events from it
+afterwards, and doctor's log-book checks do not notice. It does not
 protect the data: the dashboard token, the credentials file, memory, logs and
 run traces are plain files that a program of the same user can read, and such
 a program can also stop Tenant and run its own copy against them. The Linux
