@@ -194,6 +194,12 @@ type Config struct {
 	// records the interrupted turn in the archive instead. nil ⇒ never.
 	Stopping func() bool
 
+	// OnEpisode, if set, sees each turn's episode just before it is written,
+	// under the turn's context: it may add tags, and it is where a fleet
+	// master hands each machine the part of the turn that is that machine's
+	// (TEN-532). It must not block: the turn waits for it. nil ⇒ none.
+	OnEpisode func(ctx context.Context, ep *episodic.Episode)
+
 	// EpisodeVisibility overrides the default `private` visibility used
 	// when this agent's turns are persisted to the episodic store.
 	// Sub-agents spawned by an orchestrator (see cmd/tenant/team.go) set
@@ -2088,7 +2094,7 @@ func (a *Agent) persistEpisode(ctx context.Context, prompt, response string, tra
 	if routeState != nil {
 		routeTags, routeVersion = routeState.snapshot()
 	}
-	id, err := a.cfg.Episodic.Insert(ctx, &episodic.Episode{
+	ep := &episodic.Episode{
 		AgentID:     a.cfg.AgentID,
 		Visibility:  visibility,
 		SessionID:   a.cfg.SessionID,
@@ -2100,7 +2106,11 @@ func (a *Agent) persistEpisode(ctx context.Context, prompt, response string, tra
 		Tags:        routeTags,
 		EmbedderID:  string(embedderID),
 		Embedding:   queryEmbedding,
-	})
+	}
+	if a.cfg.OnEpisode != nil {
+		a.cfg.OnEpisode(ctx, ep)
+	}
+	id, err := a.cfg.Episodic.Insert(ctx, ep)
 	if err != nil {
 		RecordNotSaved.Log(a.ev(ctx), "agent", a.cfg.AgentID, "record", "episode", "err", err)
 	} else if routeState != nil {

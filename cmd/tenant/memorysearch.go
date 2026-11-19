@@ -41,8 +41,8 @@ func newMemorySearchDispatcher(name string, sem *semantic.Store, epi *episodic.S
 func (d *memorySearchDispatcher) Tools() []model.ToolSpec {
 	return []model.ToolSpec{{
 		Name:         "memory_search",
-		Description:  "Recall from your own long-term memory — stored facts + past episodes — by semantic + keyword search. Covers your FULL memory (private included). Use when asked what you know/remember or about earlier conversations.",
-		Parameters:   json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"k":{"type":"integer","description":"max results per store (default 8)"}},"required":["query"]}`),
+		Description:  "Recall from your own long-term memory — stored facts + past episodes — by semantic + keyword search. Covers your FULL memory (private included). Use when asked what you know/remember or about earlier conversations. With host, searches that fleet machine's memory instead (after a fleet call to it in this conversation).",
+		Parameters:   json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"k":{"type":"integer","description":"max results per store (default 8)"},"host":{"type":"string","description":"a fleet machine's name: search its memory instead of yours"}},"required":["query"]}`),
 		ResultLabels: []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceMemory}},
 		Outbound:     true, // connected peers receive this query through federation
 	}}
@@ -52,7 +52,10 @@ func (d *memorySearchDispatcher) Dispatch(ctx context.Context, call model.ToolCa
 	if call.Name != "memory_search" {
 		return "unknown tool: " + call.Name, true, nil
 	}
-	var a peerSearchArgs
+	var a struct {
+		peerSearchArgs
+		Host string `json:"host"`
+	}
 	if len(call.Arguments) > 0 {
 		_ = json.Unmarshal(call.Arguments, &a)
 	}
@@ -61,6 +64,11 @@ func (d *memorySearchDispatcher) Dispatch(ctx context.Context, call model.ToolCa
 		return "query is required", true, nil
 	}
 	k := clampK(a.K)
+	if host := strings.TrimSpace(a.Host); host != "" {
+		// A fleet machine's memory, never mixed with this one's (TEN-532).
+		out, isErr := fleetMemorySearch(ctx, host, q, k, d.embedder)
+		return out, isErr, nil
+	}
 
 	// Embed for hybrid search if an embedder is available; degrade to
 	// keyword-only on failure (never fatal — mirrors the peer tool).

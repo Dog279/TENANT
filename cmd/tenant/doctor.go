@@ -180,6 +180,8 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		{"secret storage protection", checkSecretProtection},
 		// TEN-535: what the operating system was asked to refuse other programs.
 		{"process protection", checkProcessProtection},
+		// TEN-532: a fleet master's fleet key and recovery key.
+		{"fleet memory keys", checkFleetKeys},
 		// credentials.json schema + every keyed provider has a resolvable
 		// secret (env-var present OR stored in creds).
 		{"credentials", checkCredentials},

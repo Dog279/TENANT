@@ -12,9 +12,11 @@ package main
 // dashboard, no relay and no tool reaches it (fleet_reach_test.go).
 
 import (
+	"context"
 	"errors"
 	"maps"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -23,22 +25,8 @@ import (
 	"tenant/internal/approval"
 	"tenant/internal/dashboard"
 	"tenant/internal/fleet"
+	"tenant/internal/secrets"
 )
-
-// fleetMemory says where each machine's memory stands, for the Fleet page's
-// memory column: a dashboard.FleetMemory state, and a line of detail or "".
-// TEN-532 (the shadows and the copies on the machines) supplies the real one.
-type fleetMemory interface {
-	State(machineID string) (state, detail string)
-}
-
-// memoryNotBuilt is the fleet's memory before TEN-532: no machine's is known.
-type memoryNotBuilt struct{}
-
-func (memoryNotBuilt) State(string) (string, string) { return dashboard.FleetMemoryUnknown, "" }
-
-// fleetMemoryOf is what the Fleet page asks. TEN-532 replaces it.
-var fleetMemoryOf fleetMemory = memoryNotBuilt{}
 
 type dashFleet struct{ ops fleetOps }
 
@@ -109,7 +97,9 @@ func (d dashFleet) View() dashboard.FleetView {
 			link = &st
 		}
 		mv := dashMachine(m, link)
-		mv.Memory, mv.MemoryDetail = fleetMemoryOf.State(m.ID)
+		// The memory column: what the holder's last comparison found, or
+		// its record of it (memoryStateIn decrypts nothing).
+		mv.Memory, mv.MemoryDetail = memoryStateIn(d.ops.dataDir, m.ID)
 		if u := fleetUpdater(); u != nil {
 			if st, ok := u.State(m.ID); ok {
 				mv.Update = dashUpdate(st)
@@ -315,4 +305,42 @@ func (d dashFleet) Update(id, version, arch string, allowOlder bool) error {
 		return dashboard.PlainError("Nothing was sent: " + err.Error() + ".")
 	}
 	return nil
+}
+
+// machineIDShape is what a machine id looks like (fleet.json's own rule).
+var machineIDShape = regexp.MustCompile(`^m[0-9a-f]{16}$`)
+
+// Recover brings the fleet's recovery identity to the process that holds the
+// fleet (tenant fleet recover, through POST /fleet/recover): the machine's
+// copy made under another fleet key is read with it and becomes its memory
+// here (fleetMemory.recoverWith). identity is moved into locked memory at
+// once, which zeroes it, and released when this returns.
+func (d dashFleet) Recover(id, was string, identity []byte) (string, error) {
+	buf, err := secrets.NewLockedBuffer(identity)
+	if err != nil {
+		clear(identity)
+		return "", err
+	}
+	defer buf.Release()
+	m, err := d.machine(id)
+	if err != nil {
+		return "", err
+	}
+	if was != "" && !machineIDShape.MatchString(was) {
+		return "", dashboard.PlainError("Nothing changed: --was takes a machine id (m and 16 hex digits), as `tenant child status` on the machine shows it.")
+	}
+	if fleetManager() == nil {
+		if elsewhere := fleetHeldElsewhere(); elsewhere != "" {
+			return "", dashboard.PlainError("Nothing changed: " + strings.TrimPrefix(elsewhere, "fleet: ") + ", and a machine's memory is read there.")
+		}
+		return "", dashboard.PlainError("Nothing changed: no process holds the fleet right now, so no machine is online.")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	said, err := fleetRecover(ctx, m.ID, was, buf)
+	if err != nil {
+		return "", dashboard.PlainError("Nothing changed: " + err.Error() + ".")
+	}
+	d.ops.audit(m, "memory recovered", said)
+	return said, nil
 }

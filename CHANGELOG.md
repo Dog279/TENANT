@@ -252,6 +252,61 @@ Releases page.
     update went.
   - The machine's hello now also says which processor it has (an older machine leaves it out;
     `--arch` names it then).
+- **A fleet machine's memory is kept, encrypted, on both ends** (TEN-532, the second part).
+  - *Keys.* `tenant fleet init` makes the fleet key (sealed by Windows' data protection, an
+    owner-only file elsewhere) and a recovery identity, which it shows you once at a terminal
+    and records only after you have typed it back. Keep it away from this computer: with it, and
+    only with it, a master rebuilt from nothing can read its machines' memory again. Without a
+    terminal init makes everything else, shows no secret and exits 1; run it again at a terminal.
+    A fleet made before this gets its keys at its next `tenant fleet init`.
+  - *Copies.* A machine's memory lives in the master's RAM, and on its disk only as an
+    encrypted snapshot. Every five minutes a changed memory becomes a new generation, encrypted
+    to the fleet key and the recovery key, and goes to the machine, which keeps the last three
+    and cannot read them. Each time a machine connects the two sides compare: the newer wins,
+    the machine's copy rebuilds a master that lost or damaged its own, and a copy made under
+    another fleet key marks the machine **needs recovery key** and nothing is overwritten.
+    A replaced memory is kept aside on the master for thirty days.
+  - `/fleet` and `tenant fleet show` say each machine's memory: in step, behind, needs recovery
+    key, or why it is not known. `tenant doctor` checks the fleet key (and that it is held in
+    memory kept out of the swap file) and that the recovery key was proven. `tenant backup` warns
+    when a fleet master's backup is not encrypted. `tenant fleet revoke --delete-scheme` deletes
+    the machine's memory too.
+  - *What goes into it.* A turn's episode stays in the master's memory, tagged with the machines
+    it worked on, and each of those machines gets the request and its own calls with what came
+    back: never another machine's output, the agent's answer or the master's own memory. At
+    confirmation the master records the machine's OS, account, version, sandbox and ceiling as
+    facts, each from a field it checked. A new tool, `fleet_note`, records a fact about a machine
+    in the agent's words; nothing goes to the machine. Distillation runs over each machine's own
+    turns, into that machine's facts. A machine's memory needs an embedder, as the master's does.
+  - *How it comes back.* A machine's memory comes into a conversation with the first answer from
+    that machine there, and `memory_search` takes a `host` once the conversation has had one. The
+    master's own words (the inventory, notes) are quoted lines; everything else is the machine's
+    output and comes inside that machine's frame, escaped and labelled untrusted, so the egress
+    check covers it, and a note that quotes a machine's output asks first. A relay or job that may
+    not reach a machine gets none of its memory, nor does a helper, team, research or goal run.
+  - *Forget.* `tenant privacy forget` reaches every machine's memory: the holder deletes it there
+    and from the memory kept aside, sends the machine a new copy and tells it to delete its older
+    ones, also once a machine that was offline is back, and applies it again to a memory rebuilt
+    from a copy made before it. Copies a machine keeps under an earlier fleet key are not deleted;
+    you are told. Retention pruning does not reach the machines' memory.
+- **A fleet survives losing its master** (TEN-533). `tenant child rehome`, run on a machine with
+  its child stopped, gives it another master: a master restored from a plain backup or rebuilt
+  from nothing. It takes a code from the new master's `tenant fleet enroll` as `child install`
+  does (standard input or `$TENANT_ENROLL_CODE`, never an argument) and keeps the machine's key,
+  ceiling, tools, sandbox, pause, audit log and memory copies; only which master it trusts
+  changes, in one step, and a rehome that fails leaves it its old master's. The new master holds
+  it as pending until you type its six digits; the old master's certificate is refused from then
+  on. Nothing on the link can start one. The audit log records who did it and both masters'
+  fingerprints.
+  - `tenant fleet recover <name> [--was ID]` brings the recovery identity (at the terminal, or on
+    standard input) to the running master, which reads the machine's memory from its copy made
+    under the old fleet key, makes it the machine's memory and sends it back under the new key.
+    Until then a re-homed machine's memory says **needs recovery key** and none of it is read.
+  - The dashboard's Fleet page shows each machine's memory (in step, behind, needs recovery key,
+    or unknown with the reason). Doctor's line for each machine says its memory and, when it
+    needs the recovery key, the command; a recovery key that was never proven names
+    `tenant fleet init`, which now asks at a terminal for the identity you kept and records the
+    proof.
 - **Fixed: on Windows, a Tenant with no console window opened one for every command it ran.** A
   Tenant started by the service manager has no console to share, so each command got a new
   console window. Such a Tenant now starts its commands with a console that has no window; one

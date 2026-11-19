@@ -19,6 +19,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"tenant/internal/fleet/shadow"
 	"tenant/internal/mcp"
 	"tenant/internal/mcp/transport"
 	"tenant/internal/model"
@@ -403,6 +404,9 @@ type kid struct {
 	dir   string
 	tools *fakeTools
 	c     *Client
+	// memory keeps the machine's copies; nil is a child that does not know
+	// the memory methods.
+	memory *shadow.ChildStore
 
 	cancel context.CancelFunc
 	done   chan error // what Run returned
@@ -441,7 +445,7 @@ func (r *rig) kidIn(t *testing.T, dir string, mach Machine) *kid {
 // process would.
 func (k *kid) client() *Client {
 	k.t.Helper()
-	c := must(NewClient(ClientConfig{Dir: k.dir, Tools: k.tools, Version: "1.2.3", User: "root", Log: quiet,
+	c := must(NewClient(ClientConfig{Dir: k.dir, Tools: k.tools, Version: "1.2.3", User: "root", Log: quiet, Memory: k.memory,
 		Update: func(_ context.Context, u Update) (UpdateAck, error) {
 			return UpdateAck{Received: u.Offset + int64(len(u.Data)), Applying: u.Offset+int64(len(u.Data)) == u.Size}, nil
 		}}))(k.t)

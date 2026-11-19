@@ -23,6 +23,7 @@ package dashboard
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -61,10 +62,17 @@ type FleetControl interface {
 	// not confirmed, held by another process); the rest shows in the
 	// machine's Update.
 	Update(machine, version, arch string, allowOlder bool) error
+	// Recover reads the machine's memory from its newest copy made under
+	// another fleet key, with identity, the fleet's recovery identity the
+	// operator brought (`tenant fleet recover`), and makes it the machine's
+	// memory here; was is the id the machine had when the copy was made, ""
+	// for its own. identity is zeroed when Recover returns. It says what it
+	// did.
+	Recover(machine, was string, identity []byte) (string, error)
 }
 
-// The memory states of the spec's section 7. TEN-532 supplies them; until
-// then every machine's is FleetMemoryUnknown.
+// The memory states of the spec's section 7 (cmd/tenant's memory* constants
+// are the same strings). FleetMemoryUnknown comes with a detail saying why.
 const (
 	FleetMemoryUnknown  = ""
 	FleetMemoryInStep   = "in_step"
@@ -232,7 +240,7 @@ func (m FleetMachine) MemoryWords() string {
 	case FleetMemoryNeedsKey:
 		return "needs recovery key"
 	}
-	return "not available yet"
+	return "unknown"
 }
 
 // Approvals sums up the machine's approval settings for the list.
@@ -282,6 +290,9 @@ func (s *Server) mountFleetSSR(mux *http.ServeMux) {
 	// An update restarts the machine's Tenant and ends its background
 	// commands: it asks first.
 	mux.HandleFunc("POST /fleet/update", needConfirm(nil, s.handleFleetUpdate))
+	// The recovery identity reads every copy the fleet's machines hold: it
+	// asks first, and it is the request's body, never a form field or a URL.
+	mux.HandleFunc("POST /fleet/recover", needConfirm(nil, s.handleFleetRecover))
 }
 
 // The page's fixed words.
@@ -638,6 +649,39 @@ func (s *Server) handleFleetUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.fleetDone(w, r, m.ID, "Updating "+m.Name+": this page shows how far it has got when you reload it.", "")
+}
+
+// maxRecoveryIdentity bounds the body of POST /fleet/recover: an identity
+// is 74 characters, and some room for a line end or a pasted space.
+const maxRecoveryIdentity = 1 << 10
+
+// handleFleetRecover is POST /fleet/recover?machine=ID[&was=ID]&confirm=yes
+// with the recovery identity as the whole body (`tenant fleet recover`). The
+// machine and the confirmation are in the URL so that the body is never
+// parsed as a form: the identity is read as bytes, handed on, and zeroed.
+// It has no form on the page; the command line posts it.
+func (s *Server) handleFleetRecover(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRecoveryIdentity))
+	defer clear(body)
+	if s.fleet == nil {
+		s.fleetDone(w, r, "", "", "")
+		return
+	}
+	m, found := s.fleetMachine(r)
+	if !found {
+		s.fleetDone(w, r, "", "", fleetGone)
+		return
+	}
+	if err != nil || len(body) == 0 {
+		s.fleetDone(w, r, m.ID, "", "Nothing was read: the recovery identity is the body of the request.")
+		return
+	}
+	said, err := s.fleet.Recover(m.ID, strings.TrimSpace(r.URL.Query().Get("was")), body)
+	if err != nil {
+		s.fleetDone(w, r, m.ID, "", s.flashFor(r.Context(), "fleet recover", err, "Couldn't read that machine's memory. Nothing changed."))
+		return
+	}
+	s.fleetDone(w, r, m.ID, "The memory of "+m.Name+": "+said+".", "")
 }
 
 // --- GET /api/fleet ---

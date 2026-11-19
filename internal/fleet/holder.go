@@ -11,12 +11,19 @@ import (
 )
 
 // AtRestPaths are the master's fleet files that hold something worth
-// stealing or forging: fleet.json, the master's identity, and the record of
-// which process holds the fleet. They are written owner-only; doctor audits
-// them and the file tools refuse them.
+// stealing or forging: fleet.json, the master's identity, the record of
+// which process holds the fleet, and the fleet key that every machine's
+// memory is encrypted to (KeyPath). They are written owner-only; doctor
+// audits them and the file tools refuse them.
 func AtRestPaths(dir string) []string {
-	return []string{StorePath(dir), MasterIdentityPath(dir), filepath.Join(dir, holderFileName)}
+	return []string{StorePath(dir), MasterIdentityPath(dir), filepath.Join(dir, holderFileName), KeyPath(dir)}
 }
+
+// KeyPath is the master's fleet key under its config dir (TEN-532): sealed by
+// the operating system's secret protector where there is one, an owner-only
+// file otherwise. Only shadow.CreateKey and shadow.OpenKey read or write it;
+// nothing may read it into a Go string.
+func KeyPath(dir string) string { return filepath.Join(dir, "fleet-key") }
 
 // LockPaths are the fleet's lock files. They hold nothing, but one that is
 // replaced no longer excludes anybody, so nothing but the fleet writes them.

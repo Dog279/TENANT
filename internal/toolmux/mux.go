@@ -100,6 +100,15 @@ type Mux struct {
 	// by SetEnabled so a newer toggle is never reverted by a later registration.
 	savedStates map[string]bool
 
+	// Servers started in the background (StartMCPStdioSilently): Close
+	// cancels each start still under way (bgStops), waits for it (bg), and a
+	// start that finishes after Close tears its server down instead of
+	// adopting it.
+	bgMu     sync.Mutex
+	bg       sync.WaitGroup
+	bgStops  map[*context.CancelFunc]bool
+	bgClosed bool
+
 	// --- Embedding-ranked tool selection (lazy, opt-in via SetEmbedder) ---
 	// When the registered catalog reaches rankActivateThreshold AND an
 	// embedder has been installed, Search switches from "return every
@@ -451,10 +460,43 @@ func (m *Mux) RegisterMCPStdio(name, hint string, open StdioOpener) (string, err
 // enabled, except those the operator disabled, and hidden for a denied
 // connector. A failure leaves the stub for /enable; the server's log has it
 // (its Server and Connection activities). Safe to run in a goroutine.
+//
+// Close stops a start that is still running and waits for it, so nothing it
+// does (a work directory made, a server spawned) happens after Close.
 func (m *Mux) StartMCPStdioSilently(label string, open StdioOpener) {
 	d := m.mcpDeps
-	disp, cleanup, err := open(d.Ctx, d.TrustAnnotations, mcpremote.Policy{AllowWrite: d.AllowWrite, Confirm: d.Confirm, Rule: d.Rule, Locked: d.Locked})
+	parent := d.Ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	m.bgMu.Lock()
+	if m.bgClosed {
+		m.bgMu.Unlock()
+		return
+	}
+	// Close cancels the start while it is under way. A server that came up
+	// keeps this context, uncancelled, for its life: from then on its own
+	// cleanup ends it, gently, as before.
+	ctx, cancel := context.WithCancel(parent)
+	if m.bgStops == nil {
+		m.bgStops = map[*context.CancelFunc]bool{}
+	}
+	m.bgStops[&cancel] = true
+	m.bg.Add(1)
+	m.bgMu.Unlock()
+	defer m.bg.Done()
+	disp, cleanup, err := open(ctx, d.TrustAnnotations, mcpremote.Policy{AllowWrite: d.AllowWrite, Confirm: d.Confirm, Rule: d.Rule, Locked: d.Locked})
+	m.bgMu.Lock()
+	defer m.bgMu.Unlock()
+	delete(m.bgStops, &cancel)
 	if err != nil {
+		cancel()
+		return
+	}
+	if m.bgClosed {
+		if cleanup != nil {
+			cleanup()
+		}
 		return
 	}
 	m.adoptLiveMCP(label, disp, cleanup)
@@ -790,6 +832,14 @@ func (m *Mux) AddCleanup(fn func()) {
 // Close tears down every plugin the mux built (launch-time and lazily
 // activated), in reverse order. Safe to call once at shutdown.
 func (m *Mux) Close() {
+	m.bgMu.Lock()
+	m.bgClosed = true
+	for stop := range m.bgStops {
+		(*stop)()
+	}
+	m.bgStops = nil
+	m.bgMu.Unlock()
+	m.bg.Wait()
 	m.mu.Lock()
 	cs := m.cleanups
 	m.cleanups = nil

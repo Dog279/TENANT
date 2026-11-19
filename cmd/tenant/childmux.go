@@ -49,6 +49,10 @@ const surfaceChild = "fleet"
 // the whole directory is closed to the file tools and these are not secrets.
 func childDataDir(dir string) string { return filepath.Clean(dir) + "-data" }
 
+// childMemoryDir holds the copies of the machine's memory its master sent
+// (TEN-532): inside the child's own directory, which the file tools refuse.
+func childMemoryDir(dir string) string { return filepath.Join(dir, "memory") }
+
 // buildChildMux builds the tools the child in dir serves. confirm is the
 // approval hook every tool gets and current reads the machine's child.json
 // as it is now (fleet.Gate's Confirm and Current). stop ends what the tools

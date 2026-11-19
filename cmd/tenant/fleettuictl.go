@@ -43,7 +43,7 @@ func newFleetTUIControl(c *commonFlags, stg *settings, mu *sync.Mutex) fleetTUIC
 // the operator is (the terminal app, the dashboard) in the Security records.
 func liveFleetOps(c *commonFlags, stg *settings, mu *sync.Mutex, surface string) fleetOps {
 	return fleetOps{
-		cfgDir: c.cfgDir, store: fleet.Open(c.cfgDir), surface: surface,
+		cfgDir: c.cfgDir, dataDir: c.dataDir, store: fleet.Open(c.cfgDir), surface: surface,
 		schemes: func() (*approval.Fleet, error) { return defaultFleet, nil },
 		local: func() (approval.Scheme, error) {
 			mu.Lock()
@@ -110,7 +110,24 @@ func (f fleetTUIControl) Status() string {
 	case fleetHeldElsewhere() != "":
 		foot = "  Which machines are online is known there, and calls to them are made there."
 	}
-	return "Fleet: " + head + "\n" + listText(machines, links) + "\n" + foot
+	return "Fleet: " + head + "\n" + listText(machines, links) + "\n" + memoryLines(f.ops.dataDir, machines) + foot
+}
+
+// memoryLines is each machine's memory (TEN-532), one line each, for /fleet.
+func memoryLines(dataDir string, machines []fleet.Machine) string {
+	var out strings.Builder
+	for _, m := range machines {
+		if m.State == fleet.StatePending || m.State == fleet.StateRevoked {
+			continue
+		}
+		state, detail := memoryStateIn(dataDir, m.ID)
+		fmt.Fprintf(&out, "  memory of %-20s %s", fleetName(m.Name), memoryWords(state))
+		if detail != "" {
+			out.WriteString(": " + detail)
+		}
+		out.WriteString("\n")
+	}
+	return out.String()
 }
 
 func (f fleetTUIControl) Show(name string) (string, error) {
@@ -169,7 +186,7 @@ func (f fleetTUIControl) Revoke(name, scheme string) (string, error) {
 			return "", err
 		}
 		if scheme == "delete" {
-			return fmt.Sprintf("revoked %s (%s): its certificate is refused, and its record and approval scheme are deleted", n, m.ID), nil
+			return fmt.Sprintf("revoked %s (%s): its certificate is refused, its record and approval scheme are deleted, and %s", n, m.ID, memoryGoneWords(f.ops.dataDir, m.ID)), nil
 		}
 		return fmt.Sprintf("revoked %s (%s): its certificate is refused. Its approval scheme is kept under its id", n, m.ID), nil
 	}

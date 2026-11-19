@@ -63,7 +63,11 @@ func cryptData(data []byte, protect bool, flags uint32) ([]byte, error) {
 		return []byte{}, nil
 	}
 	defer windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data)))
+	theirs := unsafe.Slice(out.Data, out.Size)
 	result := make([]byte, out.Size)
-	copy(result, unsafe.Slice(out.Data, out.Size))
+	copy(result, theirs)
+	// When unprotecting, theirs is the secret: zero it, or it stays readable
+	// in freed memory after the caller has wiped result.
+	clear(theirs)
 	return result, nil
 }

@@ -24,6 +24,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"filippo.io/age"
+
 	"tenant/internal/datalock"
 	"tenant/internal/secrets"
 )
@@ -145,6 +147,14 @@ type fileData struct {
 	EnrollOff   bool                `json:"enroll_off,omitempty"`
 	Machines    map[string]*Machine `json:"machines"`
 	Enrollments []*enrollment       `json:"enrollments,omitempty"`
+	// Recovery is the public half of the fleet's recovery identity (an age
+	// X25519 recipient, "age1…"): every snapshot of a machine's memory is
+	// encrypted to it as well as to the fleet key (TEN-532). It is public;
+	// the identity itself is kept by the operator and never by Tenant.
+	Recovery string `json:"recovery,omitempty"`
+	// RecoveryProven is when the operator last gave the recovery identity
+	// back and a test decryption opened with it. Zero: never.
+	RecoveryProven time.Time `json:"recovery_proven,omitzero"`
 }
 
 // enrollment is one enrollment code the master gave out. The secret itself
@@ -226,6 +236,9 @@ func parseStore(b []byte) (*fileData, error) {
 		return nil, fmt.Errorf("fleet.json is version %d and this Tenant reads version %d", d.Version, storeVersion)
 	}
 	if err := validAddresses(d.Addresses); err != nil {
+		return nil, err
+	}
+	if err := validRecovery(d.Recovery, d.RecoveryProven); err != nil {
 		return nil, err
 	}
 	if d.Machines == nil {
@@ -762,6 +775,44 @@ func (s *Store) SetAddresses(addresses []string) error {
 			return errUnchanged
 		}
 		d.Addresses = slices.Clone(addresses)
+		return nil
+	})
+}
+
+// validRecovery accepts no recovery key, or an age X25519 recipient with,
+// optionally, when it was proven. A proof of no key is not one.
+func validRecovery(recipient string, proven time.Time) error {
+	if recipient == "" {
+		if !proven.IsZero() {
+			return errors.New("fleet: a recovery key is recorded as proven and there is none")
+		}
+		return nil
+	}
+	if _, err := age.ParseX25519Recipient(recipient); err != nil || recipient != strings.ToLower(recipient) {
+		return errors.New("fleet: the recovery key is not an age X25519 recipient")
+	}
+	return nil
+}
+
+// Recovery is the public half of the fleet's recovery identity, and when the
+// operator proved they hold the identity; "" while the fleet has none.
+func (s *Store) Recovery() (recipient string, proven time.Time, err error) {
+	d, _, err := s.view()
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return d.Recovery, d.RecoveryProven, nil
+}
+
+// SetRecovery records the public half of the recovery identity and when it
+// was proven. It is written once a test decryption has opened with the
+// identity the operator gave back, never before.
+func (s *Store) SetRecovery(recipient string, proven time.Time) error {
+	if err := validRecovery(recipient, proven); err != nil {
+		return err
+	}
+	return s.mutate(func(d *fileData) error {
+		d.Recovery, d.RecoveryProven = recipient, proven.UTC()
 		return nil
 	})
 }

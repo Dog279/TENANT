@@ -6,6 +6,7 @@ package main
 // (internal/fleet) and serves this machine's tools over it (childmux.go).
 //
 //	tenant child install [--system] [--ceiling C] [--sandbox B]
+//	tenant child rehome         trust another master (one rebuilt from nothing)
 //	tenant child status | pause | resume | audit | uninstall
 //	tenant child run            what the installed service runs
 //
@@ -40,6 +41,7 @@ import (
 	"github.com/mattn/go-isatty"
 
 	"tenant/internal/fleet"
+	"tenant/internal/fleet/shadow"
 	"tenant/internal/fsperm"
 	"tenant/internal/memory/soul"
 	"tenant/internal/sandbox"
@@ -47,7 +49,7 @@ import (
 	"tenant/internal/version"
 )
 
-const childUsage = "usage: tenant child install [--system] [--ceiling full|no-exec|read-only] | status | pause | resume | audit | uninstall"
+const childUsage = "usage: tenant child install [--system] [--ceiling full|no-exec|read-only] | rehome | status | pause | resume | audit | uninstall"
 
 // childCodeEnv is the environment variable `tenant child install` reads the
 // enrollment code from when it is set, before standard input.
@@ -85,7 +87,7 @@ func cmdChild(ctx context.Context, args []string) error {
 		return err
 	}
 	if fs.NArg() > 0 {
-		if verb == "install" {
+		if verb == "install" || verb == "rehome" {
 			return exitError{2, "the enrollment code is read from standard input or from $" + childCodeEnv +
 				", never from an argument: an argument shows in the process list and stays in the shell's history"}
 		}
@@ -123,6 +125,8 @@ func cmdChild(ctx context.Context, args []string) error {
 			}()
 		}
 		return childRun(ctx, dir, log, childRunOpts{trial: *trial, kept: *kept})
+	case "rehome":
+		return childRehome(ctx, os.Stdin, os.Stdout, dir)
 	case "status":
 		return childStatus(ctx, os.Stdout, dir)
 	case "pause", "resume":
@@ -315,6 +319,130 @@ func childAccount(system bool) string {
 	return firstNonEmpty(os.Getenv("USER"), os.Getenv("USERNAME"), "unknown")
 }
 
+// --- rehome ---
+
+// childRehome gives this machine another master: the one whose enrollment
+// code it is given (gap6-fleet-plan.md section 6, "Losing the master": a
+// master restored from a plain backup, or rebuilt from nothing, is a
+// stranger to its machines). It is enrollment again with the key this
+// machine already has: the code comes from the new master's `tenant fleet
+// enroll`, is read as install reads it, pins the new master's certificate
+// and spends the code (fleet.Enroll); the new master holds the machine as
+// pending until the operator types the six digits printed here, as for any
+// new machine.
+//
+// Only which master this machine trusts changes: child.json's id, name,
+// addresses and master fingerprint, swapped in one replace of the file. The
+// key and certificate, the ceiling, the tool list, the sandbox, the secret
+// list, the pause mark, the audit log and the memory copies stay: the copies
+// are sealed for the old fleet and read again on the new master only with
+// the recovery identity (tenant fleet recover).
+//
+// It runs with no child process on the directory: it holds the audit log for
+// as long as it works, so none can start meanwhile, and the old master's
+// link is not up while child.json changes under it. Nothing reaches it from
+// the link: it is a command on this machine, by an account that may write
+// the child's files.
+func childRehome(ctx context.Context, in io.Reader, out io.Writer, dir string) error {
+	path := fleet.ChildPath(dir)
+	old, err := fleet.LoadChild(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("no child is enrolled here (%s): `tenant child install` enrolls this machine", dir)
+	case errors.Is(err, fs.ErrPermission):
+		return exitError{2, err.Error() + "\nthis account may not read the child's files: run the command as the account that owns them (for the machine's own child, an elevated terminal)"}
+	case err != nil:
+		return err
+	}
+	system := isSystemChild(dir)
+	if system && !childElevated() {
+		return exitError{2, "this is the machine's own child: `tenant child rehome` needs an elevated terminal"}
+	}
+	id, err := fleet.LoadIdentity(fleet.ChildIdentityPath(dir))
+	if err != nil {
+		return exitError{2, "this machine's key cannot be read, so it cannot be given another master: " + err.Error()}
+	}
+	var oslog func(string)
+	if write, done, err := openChildOSLog(); err == nil {
+		defer done()
+		oslog = func(line string) { _ = write(line) }
+	}
+	audit, err := fleet.OpenAudit(dir, oslog)
+	if errors.Is(err, fleet.ErrAuditHeld) {
+		return exitError{2, "a child process is running on this directory: stop it first (its service, or the `tenant child run` holding it), then rehome, then start it again"}
+	}
+	if err != nil {
+		return err
+	}
+	defer audit.Close()
+	if err := audit.Ready(); err != nil {
+		return exitError{2, "this account may not write the child's audit log, so nothing was changed: " + err.Error()}
+	}
+	if err := childWritable(dir); err != nil {
+		return exitError{2, "this account may not write the child's files, so nothing was changed: " + err.Error()}
+	}
+
+	code, err := readEnrollCode(in, out)
+	if err != nil {
+		return err
+	}
+	next, digits, err := fleet.Enroll(ctx, code, id, fleet.Reported{OS: runtime.GOOS, User: childAccount(system),
+		Version: version.Version, Sandbox: old.Sandbox, Ceiling: string(old.Ceiling)})
+	if err != nil {
+		return fmt.Errorf("%w\nthis machine still trusts its master at %s, and nothing here was changed", err, strings.Join(old.MasterAddresses, ", "))
+	}
+	err = fleet.UpdateChild(path, func(c *fleet.Child) error {
+		if c.ID != old.ID || c.MasterFingerprint != old.MasterFingerprint {
+			return errors.New("child.json was changed while this ran")
+		}
+		c.ID, c.Name, c.MasterAddresses, c.MasterFingerprint = next.ID, next.Name, next.MasterAddresses, next.MasterFingerprint
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("the new master enrolled this machine, but child.json was not changed: %w\n"+
+			"this machine still trusts its old master; on the new one, revoke the pending %s and make a new code", err, next.Name)
+	}
+	if system && runtime.GOOS == "windows" {
+		// Writing as an administrator put that account on the directory again
+		// (internal/secrets), as for the pause mark; take it back off.
+		if err := sealSystemChild(dir); err != nil {
+			fmt.Fprintf(out, "note: the child's files could not be closed to this account again: %v\n", err)
+		}
+	}
+	// What the old link last said ("revoked", "rejected") is not this master's.
+	_ = os.Remove(fleet.ChildStatusPath(dir))
+	recorded := audit.Rehome(childAccount(false), old.MasterFingerprint, next.MasterFingerprint)
+
+	fmt.Fprintf(out, "This machine now trusts the master at %s, as %s (%s); it was %s under its old master.\n"+
+		"It waits for that master to confirm it.\n\n    confirmation code: %s\n\n"+
+		"Type that code on the new master (tenant fleet confirm %s). Until then that master sends this machine nothing, and the old master is refused.\n",
+		strings.Join(next.MasterAddresses, ", "), next.Name, next.ID, old.ID, digits, next.Name)
+	if next.ID != old.ID {
+		fmt.Fprintf(out, "Its memory copies were made as %s and stay here: the new master reads them with the old fleet's recovery identity "+
+			"(tenant fleet recover %s --was %s).\n", old.ID, next.Name, old.ID)
+	}
+	if fleet.Paused(dir) {
+		fmt.Fprintln(out, "It is paused on this machine, and stays so until `tenant child resume`.")
+	}
+	fmt.Fprintln(out, "Start the child again (its service, or `tenant child run`).")
+	if recorded != nil {
+		return fmt.Errorf("the machine was given its new master, but the audit log did not take the record of it: %w", recorded)
+	}
+	return nil
+}
+
+// childWritable reports whether this account may write in the child's
+// directory: a file is made there and removed.
+func childWritable(dir string) error {
+	f, err := os.CreateTemp(dir, ".rehome-*")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	_ = f.Close()
+	return os.Remove(name)
+}
+
 // --- run ---
 
 // childRunOpts are the two ways an update starts a child itself
@@ -451,7 +579,16 @@ func childServe(ctx context.Context, dir string, log *slog.Logger, hello func() 
 	mux, stopTools := buildChildMux(ctx, dir, gate.Confirm, gate.Current, log)
 	defer mux.Close()
 	who := childAccount(false)
-	cfg := fleet.ClientConfig{Dir: dir, Tools: gate.Tools(mux), Version: version.Version, User: who, Hello: hello, Log: log}
+	// The copies of this machine's memory the master sends (TEN-532): sealed
+	// snapshots it cannot read, kept inside the child's own directory, which
+	// the file tools refuse. Without them the child serves its tools and says
+	// it keeps no copy.
+	memory, err := shadow.OpenChildStore(childMemoryDir(dir))
+	if err != nil {
+		log.Warn("fleet child: no copy of this machine's memory can be kept", "err", err)
+		memory = nil
+	}
+	cfg := fleet.ClientConfig{Dir: dir, Tools: gate.Tools(mux), Version: version.Version, User: who, Hello: hello, Memory: memory, Log: log}
 	var ready chan childStaged
 	if upd != nil {
 		cfg.Update, ready = upd.piece, upd.ready

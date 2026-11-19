@@ -210,6 +210,12 @@ type fleetHub struct {
 	listen  string       // config.json's fleet.listen, or the default
 	relays  map[string]bool
 	cfgSeen [2]int64 // config.json's time and size when it was last read
+
+	// The machines' memory (fleetmemory.go): open while this process holds
+	// the fleet and the fleet key and recovery key are there.
+	mem        *fleetMemory
+	memProblem string // why mem is nil while mgr is not
+	memInputs  string // the key file and recovery key it was last tried with
 }
 
 // fleetRun is what a manager was started with: a change of either means
@@ -297,6 +303,7 @@ func (h *fleetHub) tick(ctx context.Context) {
 	// writes them the other way round, so an identity seen here means the
 	// bind address init set is on disk: the listener never starts on the
 	// address init was about to replace.
+	defer h.memoryTick()
 	path := fleet.MasterIdentityPath(h.cfgDir)
 	fi, err := os.Lstat(path)
 	h.readConfig()
@@ -326,7 +333,7 @@ func (h *fleetHub) tick(ctx context.Context) {
 		return
 	}
 	mgr, err = fleet.StartManager(fleet.ManagerConfig{Store: h.store, Identity: id, Addr: listen, Role: h.role,
-		Refused: h.refused, Alert: h.alert, Log: h.log})
+		Refused: h.refused, Alert: h.alert, Log: h.log, Connected: h.connected})
 	var held *fleet.HeldError
 	switch {
 	case errors.As(err, &held):
@@ -374,15 +381,84 @@ func (h *fleetHub) state(held bool, holder fleet.Holder, problem, say string) {
 // close ends this process's hold on the fleet, if it has one.
 func (h *fleetHub) close() {
 	h.mu.Lock()
-	mgr := h.mgr
+	mgr, mem := h.mgr, h.mem
 	h.mgr, h.run = nil, fleetRun{}
+	h.mem, h.memProblem, h.memInputs = nil, "", ""
 	h.mu.Unlock()
+	if mem != nil {
+		mem.close() // before the links: its comparisons end, and every shadow is written out
+	}
 	if mgr == nil {
 		return
 	}
 	_ = mgr.Close()
 	if h.comp != nil {
 		h.comp.Set(lifecycle.Stopped, nil)
+	}
+}
+
+// memoryTick opens the machines' memory once this process holds the fleet,
+// and tries again when the fleet key or the recovery key changed (init made
+// them since), or when another process held the memory. While it is open it
+// carries out deletions another process asked for.
+func (h *fleetHub) memoryTick() {
+	h.mu.Lock()
+	mgr, mem, tried := h.mgr, h.mem, h.memInputs
+	h.mu.Unlock()
+	if mgr == nil {
+		return
+	}
+	if mem != nil {
+		mem.sweep()
+		return
+	}
+	inputs := "none"
+	if fi, err := os.Stat(fleet.KeyPath(h.cfgDir)); err == nil {
+		inputs = fmt.Sprint(fi.ModTime().UnixNano(), fi.Size())
+	}
+	rec, _, err := h.store.Recovery()
+	inputs += " " + rec + fmt.Sprint(err != nil)
+	if inputs == tried {
+		return
+	}
+	mem, problem := openFleetMemory(h.cfgDir, h.dataDir, h.store, mgr, h.log, h.tell)
+	if problem == errMemoryHeld.Error() {
+		inputs = "" // tried again at the next tick
+	}
+	h.mu.Lock()
+	if h.mgr != mgr { // given up meanwhile
+		h.mu.Unlock()
+		if mem != nil {
+			mem.close()
+		}
+		return
+	}
+	said := h.memProblem
+	h.mem, h.memProblem, h.memInputs = mem, problem, inputs
+	h.mu.Unlock()
+	if mem == nil {
+		if problem != said {
+			h.tell("fleet: the machines' memory is unavailable: " + problem)
+		}
+		return
+	}
+	// Machines that connected before the memory was open are compared now.
+	if all, err := mgr.Machines(); err == nil {
+		for _, st := range all {
+			if st.Online {
+				mem.kick(st.ID)
+			}
+		}
+	}
+}
+
+// connected is told by the manager of each machine whose link is up.
+func (h *fleetHub) connected(id string) {
+	h.mu.Lock()
+	mem := h.mem
+	h.mu.Unlock()
+	if mem != nil {
+		mem.kick(id)
 	}
 }
 

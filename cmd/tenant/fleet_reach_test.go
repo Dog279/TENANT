@@ -150,15 +150,17 @@ func TestOnlyTheOperatorConfirmsAMachine(t *testing.T) {
 	}
 	// The fleet's tools are the spec's (section 4), and none of them enrolls,
 	// confirms, renames, revokes or sets permissions. The other two names are
-	// the settings file's keys. The ten tools that are built (fleet_note comes
-	// with the memory, TEN-532) are the ten the agent is offered, no more.
+	// the settings file's keys. The eleven tools of the spec are the eleven
+	// the agent is offered, no more. fleet_note (TEN-532) was looked at here:
+	// it writes a fact into the master's memory of a machine, sends nothing
+	// to the machine, and changes nothing of the fleet an operator controls.
 	var offered []string
 	for _, spec := range fleetToolSpecs() {
 		offered = append(offered, spec.Name)
 	}
 	if want := []string{"fleet_list", "fleet_exec", "fleet_process", "fleet_read", "fleet_list_dir", "fleet_write", "fleet_edit",
-		"fleet_copy", "fleet_tools", "fleet_call"}; !slices.Equal(offered, want) {
-		t.Errorf("the agent is offered %v, want the ten tools of the spec %v: a new one is looked at here first", offered, want)
+		"fleet_copy", "fleet_tools", "fleet_call", "fleet_note"}; !slices.Equal(offered, want) {
+		t.Errorf("the agent is offered %v, want the eleven tools of the spec %v: a new one is looked at here first", offered, want)
 	}
 	allowed := []string{"fleet_list", "fleet_exec", "fleet_process", "fleet_read", "fleet_list_dir", "fleet_write", "fleet_edit",
 		"fleet_copy", "fleet_tools", "fleet_call", "fleet_note", "fleet_schemes", "fleet_rules"}

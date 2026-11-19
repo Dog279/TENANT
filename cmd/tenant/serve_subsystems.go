@@ -372,6 +372,7 @@ func buildServeImprove(ctx context.Context, d serveImproveDeps) (*improve.Schedu
 		}
 	}
 	sched.Register(d.distillJob, d.distillEvery)
+	sched.Register(fleetDistillJob{d: d.distiller}, d.distillEvery) // each fleet machine's own episodes (TEN-532)
 
 	improveCfg := improveConfig{}
 	proposerRouter := d.router

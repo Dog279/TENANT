@@ -133,6 +133,12 @@ func fleetToolSpecs() []model.ToolSpec {
 		{Name: "fleet_call", Description: "Call any tool a fleet machine serves, by name, with that tool's own arguments (fleet_tools lists them). GATED: a tool that asks for itself asks the operator as usual, and a tool Tenant does not ship asks before it is sent.",
 			Parameters: obj(host+`,"tool":{"type":"string"},"arguments":{"type":"object","description":"the tool's own arguments"}`, "host", "tool"),
 			Gated:      true, Outbound: true},
+		// Outbound: a note that quotes what a machine returned is checked
+		// like any other flow of that text, so a machine's words do not
+		// become a note unseen.
+		{Name: "fleet_note", Description: "Record a fact about a fleet machine in that machine's memory, in your own words: one sentence, at most 1000 characters. Nothing is sent to the machine. It is recalled later as a note made with fleet_note.",
+			Parameters: obj(host+`,"fact":{"type":"string","description":"the fact, one sentence"}`, "host", "fact"),
+			Outbound:   true},
 	}
 }
 
@@ -312,6 +318,7 @@ type fleetTurnState struct {
 	mu      sync.Mutex
 	touched map[string]string // machine id → name
 	names   map[string]string // host name, lower case → machine id
+	calls   []fleetCallRecord // every call that went to a machine, in order
 }
 
 // fleetTurns holds each running turn's state under its span, weakly: the
@@ -391,12 +398,30 @@ func (p *fleetToolPlugin) Dispatch(ctx context.Context, call model.ToolCall) (st
 	if t == nil {
 		return refusal, true, nil
 	}
+	if call.Name == "fleet_note" {
+		return t.note(ctx, a.Fact) // nothing goes to the machine
+	}
+	out, isErr, err := p.onMachine(ctx, t, call.Name, a)
+	// What went to the machine and what came back is this turn's work on it:
+	// at the turn's end it goes into that machine's memory and no other's
+	// (fleetExtract). Its memory comes into the conversation with its first
+	// answer (fleetRecall).
+	t.remember(call, a, out, isErr)
+	if t.answered {
+		out += t.recall(ctx)
+	}
+	return out, isErr, err
+}
+
+// onMachine is a call that goes to the machine.
+func (p *fleetToolPlugin) onMachine(ctx context.Context, t *fleetTarget, tool string, a fleetArgs) (string, bool, error) {
 	switch {
-	case call.Name == "fleet_tools":
+	case tool == "fleet_tools":
 		return t.tools(ctx)
-	case call.Name == "fleet_copy":
+	case tool == "fleet_copy":
 		return p.copy(ctx, t, a)
-	case call.Name == "fleet_process" && a.Action == "result":
+	case tool == "fleet_process" && a.Action == "result":
+		t.sent = true
 		res, err := t.mgr.Result(ctx, t.m.ID, a.ID)
 		if err == nil {
 			t.turn.touch(t.m)
@@ -405,14 +430,14 @@ func (p *fleetToolPlugin) Dispatch(ctx context.Context, call model.ToolCall) (st
 			fleetToolLog.InfoContext(ctx, "fleet call result", "host", t.m.ID, "name", t.m.Name, "call", a.ID, "origin", t.origin.Name, "audit", res.Audit)
 		}
 		return t.say(ctx, "the result of call "+a.ID, res, err)
-	case call.Name == "fleet_call":
+	case tool == "fleet_call":
 		if refusal := t.askBefore(ctx, a); refusal != "" {
 			return refusal, true, nil
 		}
 	}
-	tool, args, read := fleetForward(call.Name, a)
-	res, err := t.run(ctx, tool, args, read)
-	return t.say(ctx, tool, res, err)
+	remote, args, read := fleetForward(tool, a)
+	res, err := t.run(ctx, remote, args, read)
+	return t.say(ctx, remote, res, err)
 }
 
 // --- arguments ---
@@ -446,6 +471,8 @@ type fleetArgs struct {
 
 	Tool      string          `json:"tool,omitempty"` // fleet_call
 	Arguments json.RawMessage `json:"arguments,omitempty"`
+
+	Fact string `json:"fact,omitempty"` // fleet_note
 }
 
 // parseFleetArgs reads and checks tool's arguments. Its errors are written
@@ -505,6 +532,16 @@ func parseFleetArgs(tool string, raw json.RawMessage) (fleetArgs, error) {
 			err = errors.New("direction must be to_host or from_host")
 		} else {
 			err = need("local_path", a.LocalPath, "remote_path", a.RemotePath)
+		}
+	case "fleet_note":
+		a.Fact = strings.Join(strings.Fields(a.Fact), " ")
+		switch {
+		case a.Fact == "":
+			err = errors.New("fact is required")
+		case len(a.Fact) > fleetNoteMax:
+			err = fmt.Errorf("fact is %d bytes; a note is at most %d: one sentence", len(a.Fact), fleetNoteMax)
+		case !utf8.ValidString(a.Fact) || strings.IndexFunc(a.Fact, control.HiddenRune) >= 0:
+			err = errors.New("fact must be plain text: no control, bidi or zero-width characters")
 		}
 	case "fleet_call":
 		args := bytes.TrimSpace(a.Arguments)
@@ -632,6 +669,11 @@ type fleetTarget struct {
 	m      fleet.Machine
 	origin approval.Origin
 	turn   *fleetTurnState
+
+	// What the call did, for the turn's record of it (remember).
+	sent     bool   // something went to the machine
+	answered bool   // and it answered
+	body     string // its answer as the model was shown it, inside the frame
 }
 
 func (t *fleetTarget) machine() approval.Machine { return approval.Machine{ID: t.m.ID, Name: t.m.Name} }
@@ -738,6 +780,7 @@ func (t *fleetTarget) run(ctx context.Context, tool string, args json.RawMessage
 	if len(args) > fleetMaxArgs {
 		return fleet.Result{}, fmt.Errorf("%w: its arguments are %d bytes as JSON, and the link's frame is %d with the escaping counted", errFleetTooLarge, len(args), transport.DefaultMaxFrameSize)
 	}
+	t.sent = true
 	start := time.Now()
 	res, err := t.mgr.Call(ctx, t.m.ID, fleet.Call{Tool: tool, Arguments: args, Confirm: func(cctx context.Context, action, detail string) bool {
 		o := t.origin
@@ -890,6 +933,7 @@ func (t *fleetTarget) say(ctx context.Context, what string, res fleet.Result, er
 		if theirs != "" {
 			t.label(ctx, theirs)
 		}
+		t.body = text
 		return text, true, nil
 	}
 	notes := ""
@@ -901,6 +945,7 @@ func (t *fleetTarget) say(ctx context.Context, what string, res fleet.Result, er
 	}
 	body := fleetShown(res.Text, fleetMaxShown)
 	t.label(ctx, body)
+	t.answered, t.body = true, body
 	return fleetFrame(t.m, what, notes, body), res.IsError, nil
 }
 
@@ -1009,6 +1054,7 @@ func (p *fleetToolPlugin) list(ctx context.Context) (string, bool, error) {
 
 // tools is fleet_tools: what the machine serves right now, asked of it.
 func (t *fleetTarget) tools(ctx context.Context) (string, bool, error) {
+	t.sent = true
 	served, err := t.mgr.Tools(ctx, t.m.ID)
 	if err != nil {
 		return t.say(ctx, "", fleet.Result{}, err)
@@ -1016,6 +1062,7 @@ func (t *fleetTarget) tools(ctx context.Context) (string, bool, error) {
 	t.turn.touch(t.m)
 	text, theirs := fleetToolListing(served)
 	t.label(ctx, theirs)
+	t.answered, t.body = true, text
 	return fleetFrame(t.m, "the tools it serves", "", text), false, nil
 }
 

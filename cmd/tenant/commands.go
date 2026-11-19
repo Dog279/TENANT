@@ -2333,6 +2333,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		Skills:             skillRetriever{st: skillStore, agentID: c.agent, tools: mainTools},
 		SystemPrompt:       mainPrompt,
 		RenderAgents:       func() string { return renderAgentsForOrchestrator(rt.AgentProfiles()) + fleetRoster() },
+		OnEpisode:          fleetOnEpisode, // each machine a turn worked on gets its part of it (TEN-532)
 		// Context compaction: when the budget fills, summarize old turns
 		// (via the summarizer role) instead of hard-truncating them.
 		Compactor: compressor,
@@ -2838,6 +2839,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 			}
 		}
 		sched.Register(distillJob, *distillEvery)
+		sched.Register(fleetDistillJob{d: distiller}, *distillEvery) // each fleet machine's own episodes (TEN-532)
 		improveCfg := improveConfig{}
 		// Pinned proposer router (TEN-195): reflection/summarizer/proposer calls
 		// use a stronger model when improve.profile is set; the embedder and the
@@ -3110,6 +3112,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 
 	// The fleet (TEN-531): the terminal app holds the fleet's links unless
 	// `tenant serve` already does, and /fleet says which (fleethub.go).
+	setFleetEmbedder(peerEmb) // re-embeds a machine's memory rebuilt from its copy (TEN-532)
 	life.AddFunc(lifecycle.Intake, "fleet listener", startFleetHub(ctx, c, "tui", broker, pushSys, log.With("source", "fleet")))
 	fleetCtl := newFleetTUIControl(c, stg, &stgMu)
 

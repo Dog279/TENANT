@@ -102,6 +102,7 @@ func TestFleetE2EProcess(t *testing.T) {
 		_ = os.Setenv(k, v)
 	}
 	e2eUpdateSeams(spec) // fleet_update_e2e_test.go: what an update of a machine needs here
+	e2eRehomeSeams()     // fleet_e2e_rehome_test.go: an init that hands the test its recovery identity
 	if spec.Hold {
 		fmt.Printf("E2E-PID %d\n", os.Getpid())
 		go e2eHold()
@@ -171,6 +172,9 @@ func e2eHold() {
 			cpu, rss := selfUsage()
 			fmt.Printf("E2E-STATS %d %d %d\n", runtime.NumGoroutine(), cpu.Nanoseconds(), rss)
 		}
+		if cmd, ok := strings.CutPrefix(sc.Text(), "memory "); ok {
+			fmt.Println("E2E-MEMORY " + e2eMemory(cmd)) // fleet_e2e_memory_test.go
+		}
 	}
 	os.Exit(3)
 }
@@ -206,6 +210,10 @@ func scriptedModel() string {
 }
 
 func scriptedChat(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/embeddings") && os.Getenv(e2eEmbedEnv) != "" {
+		scriptedEmbed(w, r)
+		return
+	}
 	if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/chat/completions") {
 		http.NotFound(w, r) // the model list, the tokenizer, embeddings: the callers fall back
 		return
@@ -260,6 +268,34 @@ func scriptedChat(w http.ResponseWriter, r *http.Request) {
 		fmt.Println("E2E-TURN " + base64.RawURLEncoding.EncodeToString(raw))
 		scriptedAnswer(w, req.Stream, "done", nil)
 	}
+}
+
+// e2eEmbedEnv makes the scripted model an embedder too: a master on it then
+// writes episodes, and its machines' memory (TEN-532).
+const e2eEmbedEnv = "TENANT_FLEET_E2E_EMBED"
+
+// scriptedEmbed answers the OpenAI embeddings API with a small vector per
+// text, made from the text.
+func scriptedEmbed(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Input []string `json:"input"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<20)).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	type item struct {
+		Embedding []float32 `json:"embedding"`
+		Index     int       `json:"index"`
+	}
+	out := struct {
+		Data []item `json:"data"`
+	}{}
+	for i, s := range req.Input {
+		out.Data = append(out.Data, item{Embedding: []float32{float32(len(s) % 97), float32(strings.Count(s, " ") % 13), 1}, Index: i})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
 }
 
 // scriptedText is a message's text: a string, or the text parts of a list.

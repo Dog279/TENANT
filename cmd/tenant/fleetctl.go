@@ -15,6 +15,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/subtle"
@@ -26,6 +27,8 @@ import (
 	"io/fs"
 	"maps"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"strconv"
@@ -34,11 +37,14 @@ import (
 	"time"
 	"unicode/utf8"
 
+	xterm "github.com/charmbracelet/x/term"
 	"github.com/mattn/go-isatty"
 
 	"tenant/internal/approval"
 	"tenant/internal/fleet"
+	"tenant/internal/fleet/shadow"
 	"tenant/internal/logs/catalog"
+	"tenant/internal/secrets"
 	"tenant/internal/tui"
 )
 
@@ -146,6 +152,7 @@ func fleetRule(p string) string {
 // state (defaultFleet, its live settings).
 type fleetOps struct {
 	cfgDir  string
+	dataDir string // where the machines' memory is kept (fleetmemory.go)
 	store   *fleet.Store
 	surface string // cli | tui, for the Security record
 	// schemes is the fleet's approval schemes, saved when changed. The command
@@ -274,15 +281,20 @@ func (o fleetOps) confirmMachine(ref, code string, set map[string]string) (fleet
 		}
 		return refuse(err)
 	}
-	// TEN-532: the first inventory (parsed facts about the machine) is taken
-	// here. Until then the record keeps what the machine reports in its hello,
-	// which the link stores when the machine first connects.
+	// The first inventory (TEN-532): facts about the machine, each built by
+	// the master from one field the machine reported, checked
+	// (fleetInventoryFacts). The process that holds the fleet writes them
+	// into the machine's memory, at its next tick; this may be another one.
+	inventory := ""
+	if err := markInventory(o.dataDir, got.ID); err != nil {
+		inventory = "; its inventory was not recorded: " + err.Error()
+	}
 	detail, _ := json.Marshal(struct {
 		Reported fleet.Reported    `json:"reported_by_the_machine"`
 		Set      map[string]string `json:"set_by_the_operator,omitempty"`
 		Kept     bool              `json:"scheme_kept_with_the_id,omitempty"`
 	}{got.Reported, set, p.Kept})
-	o.audit(got, "confirmed", string(detail))
+	o.audit(got, "confirmed", string(detail)+inventory)
 	return got, p, nil
 }
 
@@ -302,7 +314,6 @@ func (o fleetOps) revoke(ref string, deleteScheme bool) (fleet.Machine, error) {
 		o.audit(m, "revoked", "its approval scheme is kept under its id")
 		return m, nil
 	}
-	// TEN-532: the machine's memory (its shadow and snapshots) is deleted here too.
 	f, err := o.schemes()
 	if err != nil {
 		return m, fmt.Errorf("%s is revoked, but its approval scheme was not deleted: %w", fleetName(m.Name), err)
@@ -311,7 +322,14 @@ func (o fleetOps) revoke(ref string, deleteScheme bool) (fleet.Machine, error) {
 	if err := o.store.Remove(m.ID); err != nil {
 		return m, fmt.Errorf("%s is revoked, but its record was not removed: %w", fleetName(m.Name), err)
 	}
-	o.audit(m, "removed", "revoked; its record and approval scheme are deleted")
+	// Its memory goes with it (TEN-532): the shadow, its snapshots and what
+	// was kept aside. The copies on the machine are the machine's.
+	memory, err := removeFleetMemory(o.cfgDir, o.dataDir, m.ID)
+	if err != nil {
+		o.audit(m, "removed", "revoked; its record and approval scheme are deleted; its memory was not: "+err.Error())
+		return m, fmt.Errorf("%s is revoked and its record and approval scheme are deleted, but its memory was not: %w", fleetName(m.Name), err)
+	}
+	o.audit(m, "removed", "revoked; its record and approval scheme are deleted; "+memory)
 	return m, nil
 }
 
@@ -492,7 +510,7 @@ func cmdFleet(_ context.Context, args []string) error {
 		"init": fleetInitCmd, "enroll": fleetEnrollCmd, "list": fleetListCmd, "ls": fleetListCmd, "show": fleetShowCmd,
 		"confirm": fleetConfirmCmd, "rename": fleetRenameCmd, "revoke": fleetRevokeCmd,
 		"permissions": fleetPermissionsCmd, "perms": fleetPermissionsCmd, "relay": fleetRelayCmd,
-		"update": fleetUpdateCmd,
+		"update": fleetUpdateCmd, "recover": fleetRecoverCmd,
 	}[args[0]]
 	if run == nil {
 		return fleetUsage()
@@ -523,7 +541,10 @@ func fleetUsage() error {
                           whether a turn from that relay may reach the fleet at all (off by default)
   update <name> | --all [--version vX.Y.Z] [--allow-older] [--arch amd64|arm64]
                           send a machine a newer Tenant over its link, through the running
-                          Tenant that holds the fleet; the machine rolls back if it fails`)
+                          Tenant that holds the fleet; the machine rolls back if it fails
+  recover <name> [--was ID]
+                          read a machine's memory made under another fleet key (a master rebuilt
+                          from nothing): give the recovery identity at the terminal or on stdin`)
 }
 
 // fleetCLI is what a `tenant fleet` command works with.
@@ -555,7 +576,7 @@ func openFleetCLI(fs *flag.FlagSet, args []string) (*fleetCLI, error) {
 	c.lc = lc
 	store := fleet.Open(c.cfgDir)
 	return &fleetCLI{c: c, store: store, pos: pos, ops: fleetOps{
-		cfgDir: c.cfgDir, store: store, surface: surfaceCLI,
+		cfgDir: c.cfgDir, dataDir: c.dataDir, store: store, surface: surfaceCLI,
 		schemes: func() (*approval.Fleet, error) { return fileFleetSchemes(c.cfgDir, c.agent) },
 		local: func() (approval.Scheme, error) {
 			stg, err := loadSettings(c.cfgDir, c.agent)
@@ -698,9 +719,12 @@ func initFleet(cli *fleetCLI, listen string, addresses []string) (id fleet.Ident
 	if err != nil {
 		return id, false, err
 	}
-	// TEN-532: the fleet key and the recovery key are made here, and init
-	// finishes only once a test decryption proves the operator saved the
-	// recovery identity. Not built in this stage.
+	// The fleet key every machine's memory is encrypted to (TEN-532). A fleet
+	// made before there was one gets it now. The recovery key needs a person
+	// at a terminal and is init's own step (fleetInitCmd), not enroll's.
+	if err := ensureFleetKey(c.cfgDir); err != nil {
+		return id, created, err
+	}
 	if len(addresses) == 0 {
 		if have, err := cli.store.Addresses(); err != nil {
 			return id, created, err
@@ -745,8 +769,255 @@ func fleetInitCmd(args []string) error {
 	} else {
 		fmt.Printf("  machines dial  %s   (change: tenant fleet init --address HOST:PORT)\n", strings.Join(addrs, ", "))
 	}
+	fmt.Println("  fleet key      " + fleetKeyWords(cli.c.cfgDir))
+	recErr := ensureRecovery(cli.store)
+	if rec, proven, err := cli.store.Recovery(); err == nil && rec != "" {
+		fmt.Printf("  recovery key   proven %s; its identity is yours to keep, Tenant has only its public half\n", fleetTime(proven))
+	}
 	fmt.Println("  " + holderLine(cli.c.cfgDir, *wait))
+	return recErr
+}
+
+// ensureFleetKey makes the fleet key if the fleet has none: sealed by the
+// operating system's secret protector where there is one, an owner-only file
+// otherwise (shadow.CreateKey). A key that is there is left as it is: a
+// second one would orphan every snapshot made under the first.
+func ensureFleetKey(cfgDir string) error {
+	k, err := shadow.CreateKey(fleet.KeyPath(cfgDir))
+	if errors.Is(err, shadow.ErrKeyExists) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("the fleet key: %w", err)
+	}
+	return k.Close()
+}
+
+// fleetKeyWords says how the fleet key is kept, for init's summary.
+// It reads nothing of the file: the key is never read but into locked memory.
+func fleetKeyWords(cfgDir string) string {
+	if _, err := os.Lstat(fleet.KeyPath(cfgDir)); err != nil {
+		return "missing: " + err.Error()
+	}
+	if _, err := secrets.NewUserProtector(); err == nil {
+		return "sealed by this system's secret protector (" + fleet.KeyPath(cfgDir) + ")"
+	}
+	return "an owner-only file (" + fleet.KeyPath(cfgDir) + "): this system has no secret protector Tenant can use"
+}
+
+// recoveryTerminal is where init shows the recovery identity, once, and
+// reads it back. Tests replace openRecoveryTerminal.
+type recoveryTerminal struct {
+	// out is the terminal's screen.
+	out io.Writer
+	// read is one line typed at the terminal, not echoed, moved into locked
+	// memory; nil when the line was empty.
+	read func() (*secrets.LockedBuffer, error)
+}
+
+var openRecoveryTerminal = func() (*recoveryTerminal, error) {
+	isTTY := func(f *os.File) bool { return isatty.IsTerminal(f.Fd()) || isatty.IsCygwinTerminal(f.Fd()) }
+	if !isTTY(os.Stdin) || !isTTY(os.Stdout) {
+		return nil, errors.New("standard input and output are not both a terminal")
+	}
+	return &recoveryTerminal{out: os.Stdout, read: func() (*secrets.LockedBuffer, error) {
+		line, err := xterm.ReadPassword(os.Stdin.Fd())
+		fmt.Fprintln(os.Stdout)
+		if err != nil || len(line) == 0 {
+			clear(line)
+			return nil, err
+		}
+		return secrets.NewLockedBuffer(line) // which zeroes line
+	}}, nil
+}
+
+// errRecoveryNotSetUp ends an init that did all the rest and could not make
+// the recovery key: init exits 1, so nothing takes the fleet for finished.
+var errRecoveryNotSetUp = errors.New("the fleet is set up but its machines' memory is not: the recovery key needs a person at a terminal. Run `tenant fleet init` there")
+
+// recoveryTries is how many times the operator may give the identity back.
+const recoveryTries = 3
+
+// ensureRecovery makes the fleet's recovery key if it has none, at a
+// terminal (gap6-fleet-plan.md section 6, "Encryption"): the identity is
+// shown once, from locked memory and nowhere else, and the operator gives it
+// back; only once a test decryption opens with what they gave is the public
+// half recorded in fleet.json. Without a terminal nothing is shown, nothing
+// is recorded, and errRecoveryNotSetUp says so: the identity is never
+// written to a pipe or a log. A wrong identity or a cancel records nothing,
+// and the identity shown is void.
+func ensureRecovery(store *fleet.Store) error {
+	rec, proven, err := store.Recovery()
+	switch {
+	case err != nil:
+		return err
+	case rec != "" && proven.IsZero():
+		return proveRecovery(store, rec)
+	case rec != "":
+		return nil
+	}
+	tty, err := openRecoveryTerminal()
+	if err != nil {
+		fmt.Fprintf(fleetNotes, "note: the recovery key is not made: %v.\n", err)
+		return errRecoveryNotSetUp
+	}
+	identity, recipient, err := shadow.NewRecovery()
+	if err != nil {
+		return err
+	}
+	defer identity.Release()
+	fmt.Fprint(tty.out, "\nThe fleet's RECOVERY IDENTITY is below. With it, and only with it, your machines' memory can be read\n"+
+		"again if this master's fleet key is lost (a master rebuilt from nothing, or from a plain backup).\n"+
+		"Tenant does not keep it and will not show it again. Save it now, away from this computer\n"+
+		"(a password manager, or on paper), then clear this terminal's scrollback.\n\n    ")
+	if err := identity.With(func(p []byte) error {
+		_, err := tty.out.Write(p)
+		return err
+	}); err != nil {
+		return err
+	}
+	fmt.Fprint(tty.out, "\n\n")
+	for try := 1; try <= recoveryTries; try++ {
+		fmt.Fprint(tty.out, "Type or paste it back, to prove you saved it (it is not shown as you type; Enter alone cancels): ")
+		given, err := tty.read()
+		if err != nil || given == nil {
+			fmt.Fprintln(fleetNotes, "note: cancelled; nothing was recorded, and the identity shown above is void.")
+			return errRecoveryNotSetUp
+		}
+		err = shadow.ProveRecovery(given, recipient)
+		_ = given.Release()
+		if err == nil {
+			return store.SetRecovery(recipient, time.Now())
+		}
+		if !errors.Is(err, shadow.ErrNotRecovery) {
+			return err
+		}
+		fmt.Fprintf(tty.out, "That is not the recovery identity shown above (%d of %d tries).\n", try, recoveryTries)
+	}
+	fmt.Fprintln(fleetNotes, "note: the identity was not given back; nothing was recorded, and the identity shown above is void.")
+	return errRecoveryNotSetUp
+}
+
+// proveRecovery is init on a fleet whose recovery key was recorded and never
+// proven (doctor warns of it): the operator gives the identity they kept, and
+// only a test decryption that opens with it records the proof. Nothing new
+// is made and nothing is shown.
+func proveRecovery(store *fleet.Store, recipient string) error {
+	tty, err := openRecoveryTerminal()
+	if err != nil {
+		fmt.Fprintf(fleetNotes, "note: the recovery key is not proven: %v.\n", err)
+		return errRecoveryNotSetUp
+	}
+	for try := 1; try <= recoveryTries; try++ {
+		fmt.Fprint(tty.out, "This fleet's recovery key was never proven. Type or paste the recovery identity you kept (it is not shown as you type; Enter alone cancels): ")
+		given, err := tty.read()
+		if err != nil || given == nil {
+			fmt.Fprintln(fleetNotes, "note: cancelled; the recovery key is still not proven.")
+			return errRecoveryNotSetUp
+		}
+		err = shadow.ProveRecovery(given, recipient)
+		_ = given.Release()
+		if err == nil {
+			return store.SetRecovery(recipient, time.Now())
+		}
+		if !errors.Is(err, shadow.ErrNotRecovery) {
+			return err
+		}
+		fmt.Fprintf(tty.out, "That is not this fleet's recovery identity (%d of %d tries).\n", try, recoveryTries)
+	}
+	fmt.Fprintln(fleetNotes, "note: the identity given does not open this fleet's recovery key; it is still not proven.")
+	return errRecoveryNotSetUp
+}
+
+// fleetRecoverCmd is `tenant fleet recover <name> [--was ID]`: the operator
+// brings the fleet's recovery identity (of the fleet the machine's copies
+// were made under) so that the machine's memory, made under another fleet
+// key, is read and becomes its memory here. The machines' links and memory
+// are held by the running Tenant, so this hands the identity to it, as
+// `tenant fleet update` hands it an update: POST /fleet/recover with the
+// dashboard's token, the identity the request's body. The identity is read
+// at a terminal without being shown, or from the first line of standard
+// input; never from an argument.
+func fleetRecoverCmd(args []string) error {
+	fs := flag.NewFlagSet("fleet recover", flag.ContinueOnError)
+	was := fs.String("was", "", "the id the machine had under the master that made its copies (`tenant child status` on a re-homed machine names it)")
+	hub := fs.String("hub", "", "the running Tenant's dashboard address, when it is not where config.json says")
+	cli, err := openFleetCLI(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(cli.pos) != 1 {
+		return errors.New("usage: tenant fleet recover <name> [--was ID] [--hub ADDR]   (the recovery identity is read at the terminal or from standard input, never from an argument)")
+	}
+	m, err := cli.ops.machine(cli.pos[0])
+	if err != nil {
+		return err
+	}
+	identity, err := readRecoveryInput()
+	if err != nil {
+		return err
+	}
+	defer clear(identity)
+	token, _ := dashboardClientToken(cli.c.cfgDir, cli.c.lc, true)
+	base := attachBaseURL(*hub, cli.c.lc)
+	q := url.Values{"machine": {m.ID}, "confirm": {"yes"}}
+	if *was != "" {
+		q.Set("was", *was)
+	}
+	req, err := http.NewRequest(http.MethodPost, base+"/fleet/recover?"+q.Encode(), bytes.NewReader(identity))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("Authorization", "Bearer "+token)
+	client := &http.Client{Timeout: 3 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("no running Tenant answers at %s, and only the Tenant that holds the fleet (tenant serve) can read a machine's memory: nothing was sent (%v)", base, err)
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		return fmt.Errorf("the running Tenant at %s answered %s: nothing changed", base, resp.Status)
+	}
+	loc, _ := url.Parse(resp.Header.Get("Location"))
+	if loc == nil {
+		return errors.New("the running Tenant gave no answer")
+	}
+	if e := loc.Query().Get("err"); e != "" {
+		return exitError{1, fleetName(m.Name) + ": " + e}
+	}
+	fmt.Println(loc.Query().Get("msg"))
 	return nil
+}
+
+// readRecoveryInput reads the recovery identity for fleet recover: at a
+// terminal without echo, else the first line of standard input. Tests
+// replace it.
+var readRecoveryInput = func() ([]byte, error) {
+	var line []byte
+	if isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd()) {
+		fmt.Fprint(fleetNotes, "The fleet's recovery identity (it is not shown as you type): ")
+		b, err := xterm.ReadPassword(os.Stdin.Fd())
+		fmt.Fprintln(fleetNotes)
+		if err != nil {
+			return nil, err
+		}
+		line = b
+	} else {
+		r := bufio.NewReaderSize(io.LimitReader(os.Stdin, 1<<10), 1<<10)
+		b, err := r.ReadSlice('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("read the recovery identity: %w", err)
+		}
+		line = bytes.Clone(b)
+		clear(b)
+	}
+	if len(bytes.TrimSpace(line)) == 0 {
+		clear(line)
+		return nil, exitError{2, "no recovery identity: type it at the terminal, or give it on standard input (never as an argument)"}
+	}
+	return line, nil
 }
 
 func fleetEnrollCmd(args []string) error {
@@ -792,6 +1063,9 @@ func fleetEnrollCmd(args []string) error {
 			}
 		}
 	}
+	if rec, _, err := cli.store.Recovery(); err == nil && rec == "" {
+		fmt.Fprintln(w, "note: the fleet has no recovery key yet, so no machine's memory is kept: run `tenant fleet init` at a terminal")
+	}
 	fmt.Fprintln(w, holderLine(cli.c.cfgDir, *wait))
 	return nil
 }
@@ -832,15 +1106,23 @@ func fleetShowCmd(args []string) error {
 
 // show is showText with the machine's scheme looked up.
 func (o fleetOps) show(m fleet.Machine, link *fleet.MachineStatus) string {
-	f, err := o.schemes()
-	if err != nil {
-		return showText(m, link, nil, err)
+	var text string
+	if f, err := o.schemes(); err != nil {
+		text = showText(m, link, nil, err)
+	} else if s, err := f.Scheme(m.ID); err != nil {
+		text = showText(m, link, nil, err)
+	} else {
+		text = showText(m, link, &s, nil)
 	}
-	s, err := f.Scheme(m.ID)
-	if err != nil {
-		return showText(m, link, nil, err)
+	if m.State == fleet.StatePending {
+		return text
 	}
-	return showText(m, link, &s, nil)
+	// Its memory (TEN-532), above what the machine reports about itself.
+	const reported = "\n  Reported by the machine"
+	if i := strings.Index(text, reported); i >= 0 {
+		return text[:i] + "\n" + memoryLine(o.dataDir, m.ID) + text[i:]
+	}
+	return text + "\n" + memoryLine(o.dataDir, m.ID)
 }
 
 func fleetConfirmCmd(args []string) error {
@@ -934,7 +1216,7 @@ func fleetRevokeCmd(args []string) error {
 		return err
 	}
 	if *del {
-		fmt.Printf("revoked %s (%s): its certificate is refused, and its record and approval scheme are deleted\n", fleetName(m.Name), m.ID)
+		fmt.Printf("revoked %s (%s): its certificate is refused, its record and approval scheme are deleted, and %s\n", fleetName(m.Name), m.ID, memoryGoneWords(cli.c.dataDir, m.ID))
 	} else {
 		fmt.Printf("revoked %s (%s): its certificate is refused. Its approval scheme is kept under its id (adopt it: tenant fleet enroll <name> --adopt %s)\n", fleetName(m.Name), m.ID, m.ID)
 	}
