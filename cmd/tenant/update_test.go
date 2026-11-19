@@ -88,8 +88,9 @@ type fakeRelease struct {
 	srv     *httptest.Server
 	archive []byte
 	sums    string
+	assets  map[string][]byte // more assets of the release, by name (set before the run)
 
-	mu         sync.Mutex
+	mu        sync.Mutex
 	hubVersion string   // what /api/status reports
 	badSums    bool     // serve a checksums.txt that does not match
 	auth       []string // Authorization headers the release API saw
@@ -99,7 +100,7 @@ type fakeRelease struct {
 func newFakeRelease(t *testing.T, tag string, archive []byte) *fakeRelease {
 	t.Helper()
 	asset := selfupdate.AssetName(selfupdate.VersionOf(tag), runtime.GOOS, runtime.GOARCH)
-	f := &fakeRelease{archive: archive, sums: fmt.Sprintf("%x  %s\n", sha256.Sum256(archive), asset)}
+	f := &fakeRelease{archive: archive, sums: fmt.Sprintf("%x  %s\n", sha256.Sum256(archive), asset), assets: map[string][]byte{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.paths = append(f.paths, r.URL.Path)
@@ -110,10 +111,16 @@ func newFakeRelease(t *testing.T, tag string, archive []byte) *fakeRelease {
 		f.mu.Unlock()
 		switch {
 		case r.URL.Path == "/repos/o/r/releases/latest" || r.URL.Path == "/repos/o/r/releases/tags/"+tag:
-			_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": tag, "assets": []map[string]string{
+			list := []map[string]string{
 				{"name": asset, "url": f.srv.URL + "/assets/" + asset},
 				{"name": "checksums.txt", "url": f.srv.URL + "/assets/checksums.txt"},
-			}})
+			}
+			for name := range f.assets {
+				list = append(list, map[string]string{"name": name, "url": f.srv.URL + "/assets/" + name})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": tag, "assets": list})
+		case f.assets[strings.TrimPrefix(r.URL.Path, "/assets/")] != nil:
+			_, _ = w.Write(f.assets[strings.TrimPrefix(r.URL.Path, "/assets/")])
 		case r.URL.Path == "/assets/checksums.txt" || r.URL.Path == "/assets/"+asset:
 			if r.Header.Get("Accept") != "application/octet-stream" {
 				http.Error(w, "assets are served as octet-stream", http.StatusNotAcceptable)
