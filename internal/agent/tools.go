@@ -138,7 +138,8 @@ type ToolCallResult struct {
 	// Duration is how long the call took to return.
 	Duration time.Duration
 	// Labels carry sensitivity/provenance on the tool-result envelope. They are
-	// populated from the registered ToolSpec only for successful results.
+	// populated from the registered ToolSpec only for successful results; a
+	// failed call carries what its tool reported itself (ReportFlow).
 	Labels []model.InfoFlowLabel
 	// Images are the pictures the tool handed the model (TEN-493), saved and
 	// labelled by the agent from rawImages.
