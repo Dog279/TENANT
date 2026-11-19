@@ -61,7 +61,11 @@ const (
 type Selector struct {
 	Sessions []string
 	Episodes []int64
-	Facts    []int64
+	// Runs are run trace ids: the episodes recorded for those turns go. A
+	// fleet machine's memory finds the turns a forget of the master's
+	// episodes named by them (TEN-532).
+	Runs  []string
+	Facts []int64
 	// Skills are skill names.
 	Skills []string
 	// Match is text to forget wherever it appears: episodes, facts, skills
@@ -81,6 +85,6 @@ type Selector struct {
 
 // Empty reports whether the selector selects nothing.
 func (s Selector) Empty() bool {
-	return len(s.Sessions) == 0 && len(s.Episodes) == 0 && len(s.Facts) == 0 && len(s.Skills) == 0 &&
+	return len(s.Sessions) == 0 && len(s.Episodes) == 0 && len(s.Runs) == 0 && len(s.Facts) == 0 && len(s.Skills) == 0 &&
 		s.Match == "" && s.Before.IsZero() && len(s.ArchiveMonths) == 0
 }

@@ -69,60 +69,7 @@ func (p *Plan) Apply(ctx context.Context) (res *Result, err error) {
 
 	// Facts, their removed-source records, and SME sections.
 	err = p.inTx(ctx, factsDB, res, func(tx *sql.Tx) error {
-		changes, err := factChanges(ctx, tx, &s)
-		if err != nil {
-			return err
-		}
-		gone := map[int64]bool{}
-		deleted, unlinked := 0, 0
-		for _, c := range changes {
-			if c.delete {
-				if _, err := tx.ExecContext(ctx, `DELETE FROM facts WHERE id = ?`, c.id); err != nil {
-					return fmt.Errorf("delete fact %d: %w", c.id, err)
-				}
-				gone[c.id] = true
-				deleted++
-				continue
-			}
-			if _, err := tx.ExecContext(ctx, `UPDATE facts SET source_episodes = ?, source_run_ids = ? WHERE id = ?`,
-				jsonList(c.keepEpisodes), jsonList(c.keepRuns), c.id); err != nil {
-				return fmt.Errorf("unlink fact %d: %w", c.id, err)
-			}
-			for _, e := range c.lostEpisodes {
-				if err := tombstone(ctx, tx, c.id, "episode", idString(e), removedAt, p.Reason); err != nil {
-					return err
-				}
-			}
-			for _, r := range c.lostRuns {
-				if err := tombstone(ctx, tx, c.id, "run", r, removedAt, p.Reason); err != nil {
-					return err
-				}
-			}
-			unlinked++
-		}
-		count("facts", "delete", deleted)
-		count("facts kept, with a removed source recorded", "unlink", unlinked)
-		smes, err := smeChanges(ctx, tx, &s, gone)
-		if err != nil {
-			return err
-		}
-		smeDeleted, smeUnlinked := 0, 0
-		for _, c := range smes {
-			if c.delete {
-				if _, err := tx.ExecContext(ctx, `DELETE FROM sme_docs WHERE id = ?`, c.id); err != nil {
-					return err
-				}
-				smeDeleted++
-			} else {
-				if _, err := tx.ExecContext(ctx, `UPDATE sme_docs SET source_fact_ids = ? WHERE id = ?`, jsonList(c.keepFacts), c.id); err != nil {
-					return err
-				}
-				smeUnlinked++
-			}
-		}
-		count("SME section versions", "delete", smeDeleted)
-		count("SME section versions citing a removed fact", "unlink", smeUnlinked)
-		return nil
+		return forgetFacts(ctx, tx, &s, removedAt, p.Reason, count)
 	}, "facts_fts")
 	if err != nil {
 		return res, err
@@ -171,27 +118,7 @@ func (p *Plan) Apply(ctx context.Context) (res *Result, err error) {
 
 	// Episodes.
 	err = p.inTx(ctx, episodesDB, res, func(tx *sql.Tx) error {
-		unlink, err := episodesCitingRuns(ctx, tx, &s)
-		if err != nil {
-			return err
-		}
-		for _, id := range unlink {
-			if _, err := tx.ExecContext(ctx, `UPDATE episodes SET source_run_id = NULL WHERE id = ?`, id); err != nil {
-				return err
-			}
-		}
-		n := 0
-		for _, chunk := range chunks(sortedIDs(s.episodes), 500) {
-			r, err := tx.ExecContext(ctx, `DELETE FROM episodes WHERE id IN (`+inClause(len(chunk))+`)`, anys(chunk)...)
-			if err != nil {
-				return err
-			}
-			k, _ := r.RowsAffected()
-			n += int(k)
-		}
-		count("episodes (conversation turns)", "delete", n)
-		count("episodes citing a removed run", "unlink", len(unlink))
-		return nil
+		return forgetEpisodes(ctx, tx, &s, count)
 	}, "episodes_fts")
 	if err != nil {
 		return res, err
@@ -314,6 +241,90 @@ func (p *Plan) inTx(ctx context.Context, name string, res *Result, fn func(*sql.
 		}
 		return nil
 	})
+}
+
+// forgetFacts is a deletion's part in the facts store, inside tx: the facts
+// that go, the ones that keep their other sources, and SME sections.
+func forgetFacts(ctx context.Context, tx *sql.Tx, s *selection, removedAt int64, reason Reason, count func(what, action string, n int)) error {
+	changes, err := factChanges(ctx, tx, s)
+	if err != nil {
+		return err
+	}
+	gone := map[int64]bool{}
+	deleted, unlinked := 0, 0
+	for _, c := range changes {
+		if c.delete {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM facts WHERE id = ?`, c.id); err != nil {
+				return fmt.Errorf("delete fact %d: %w", c.id, err)
+			}
+			gone[c.id] = true
+			deleted++
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE facts SET source_episodes = ?, source_run_ids = ? WHERE id = ?`,
+			jsonList(c.keepEpisodes), jsonList(c.keepRuns), c.id); err != nil {
+			return fmt.Errorf("unlink fact %d: %w", c.id, err)
+		}
+		for _, e := range c.lostEpisodes {
+			if err := tombstone(ctx, tx, c.id, "episode", idString(e), removedAt, reason); err != nil {
+				return err
+			}
+		}
+		for _, r := range c.lostRuns {
+			if err := tombstone(ctx, tx, c.id, "run", r, removedAt, reason); err != nil {
+				return err
+			}
+		}
+		unlinked++
+	}
+	count("facts", "delete", deleted)
+	count("facts kept, with a removed source recorded", "unlink", unlinked)
+	smes, err := smeChanges(ctx, tx, s, gone)
+	if err != nil {
+		return err
+	}
+	smeDeleted, smeUnlinked := 0, 0
+	for _, c := range smes {
+		if c.delete {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM sme_docs WHERE id = ?`, c.id); err != nil {
+				return err
+			}
+			smeDeleted++
+		} else {
+			if _, err := tx.ExecContext(ctx, `UPDATE sme_docs SET source_fact_ids = ? WHERE id = ?`, jsonList(c.keepFacts), c.id); err != nil {
+				return err
+			}
+			smeUnlinked++
+		}
+	}
+	count("SME section versions", "delete", smeDeleted)
+	count("SME section versions citing a removed fact", "unlink", smeUnlinked)
+	return nil
+}
+
+// forgetEpisodes is a deletion's part in the episodes store, inside tx.
+func forgetEpisodes(ctx context.Context, tx *sql.Tx, s *selection, count func(what, action string, n int)) error {
+	unlink, err := episodesCitingRuns(ctx, tx, s)
+	if err != nil {
+		return err
+	}
+	for _, id := range unlink {
+		if _, err := tx.ExecContext(ctx, `UPDATE episodes SET source_run_id = NULL WHERE id = ?`, id); err != nil {
+			return err
+		}
+	}
+	n := 0
+	for _, chunk := range chunks(sortedIDs(s.episodes), 500) {
+		r, err := tx.ExecContext(ctx, `DELETE FROM episodes WHERE id IN (`+inClause(len(chunk))+`)`, anys(chunk)...)
+		if err != nil {
+			return err
+		}
+		k, _ := r.RowsAffected()
+		n += int(k)
+	}
+	count("episodes (conversation turns)", "delete", n)
+	count("episodes citing a removed run", "unlink", len(unlink))
+	return nil
 }
 
 func tombstone(ctx context.Context, tx *sql.Tx, factID int64, kind, id string, at int64, reason Reason) error {
