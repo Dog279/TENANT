@@ -63,7 +63,7 @@ Phase 6 adds alert rules.
 
 ### Non-goals
 
-- **OS log facilities.** No writing to the Windows Event Log, journald, os_log or syslog. Tenant's logs live in Tenant. (One line has been written there since TEN-535, outside this design: the reason serve or the TUI refused to start over a missing process protection, which a Tenant that is not running cannot show in its own viewer. It is also system 3030 in the log book. See `cmd/tenant/protectiongate.go`.)
+- **OS log facilities.** No writing to the Windows Event Log, journald, os_log or syslog. Tenant's logs live in Tenant. (One line has been written there since TEN-535, outside this design: the reason serve or the TUI refused to start over a missing process protection, which a Tenant that is not running cannot show in its own viewer. It is also system 3030 in the log book. See `cmd/tenant/protectiongate.go`. A second, only on a failure path: a command running without a process protection whose record, system 2030, the log book could not take, so that the failure is not lost in silence.)
 - **Other kinds of system.** Not a SIEM, not a metrics database, not a distributed log cluster. The roadmap defers multi-tenancy and Kubernetes.
 - **Replacing domain stores.** Memory provenance, skills history, eval trends and run records keep their own stores. The log book records that something happened and links to the domain record.
 - **Localized messages.** Messages are in English only.

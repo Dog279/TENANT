@@ -73,19 +73,26 @@ const (
 const tokenSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x2000a;;;OW)"
 
 var (
-	procNtGetNextThread = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtGetNextThread")
-	procNtQueryObject   = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtQueryObject")
-	procGetThreadId     = kernel32.NewProc("GetThreadId")
+	procNtOpenThread  = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtOpenThread")
+	procNtQueryObject = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtQueryObject")
 )
 
 // What a thread can be found to be, when it is not as Protect left it. Each
 // is the same at every start: the gate matches on the reason they make.
 const (
 	threadNotClosed  = "its access list, read back, is not the restricted one, and does not let its owner change it"
+	threadChanged    = "its access list, read again, is not the restricted one"
 	threadUnreadable = "its access list cannot be read back"
 	threadHidden     = "a thread does not let this process open it at all, so its access list cannot be checked"
-	threadsUnsettled = "the threads could not be counted while their number held still"
+	threadsTooMany   = "the process has more threads than a starting Tenant has, so they were not checked one by one"
 )
+
+// maxThreads bounds the threads Protect checks one by one. A Tenant has 4
+// to 12 threads when Protect runs, and a busy serve 26 to 29 (round four of
+// the independent test); only a program that adds threads to Tenant from
+// outside (with a handle from before Protect) gets near it, and that would
+// otherwise slow the start without bound.
+const maxThreads = 512
 
 // grantedAccess is the access h was opened with (OBJECT_BASIC_INFORMATION).
 func grantedAccess(h windows.Handle) (uint32, error) {
@@ -96,11 +103,22 @@ func grantedAccess(h windows.Handle) (uint32, error) {
 	return info[1], nil
 }
 
-// threadCount is how many threads this process has, from the system's list
-// of processes: a count that does not depend on what the threads' own
-// access lists let this process open. (A walk with NtGetNextThread passes
-// over a thread whose list grants this process nothing.) About 7 ms.
-func threadCount() (int, error) {
+// systemThread is SYSTEM_THREAD_INFORMATION, which follows each process in
+// the system's list of processes, one per thread.
+type systemThread struct {
+	KernelTime, UserTime, CreateTime int64
+	WaitTime                         uint32
+	StartAddress                     uintptr
+	UniqueProcess, UniqueThread      uintptr // CLIENT_ID
+	Priority, BasePriority           int32
+	ContextSwitches                  uint32
+	ThreadState, WaitReason          uint32
+}
+
+// ownThreadIDs lists this process's threads by id, from the system's list of
+// processes: a list that does not depend on what the threads' own access
+// lists let this process open. About 7 ms.
+func ownThreadIDs() ([]uintptr, error) {
 	buf := make([]byte, 1<<20)
 	for {
 		var n uint32
@@ -110,7 +128,7 @@ func threadCount() (int, error) {
 			continue
 		}
 		if err != nil {
-			return 0, fmt.Errorf("NtQuerySystemInformation: %w", err)
+			return nil, fmt.Errorf("NtQuerySystemInformation: %w", err)
 		}
 		break
 	}
@@ -118,14 +136,133 @@ func threadCount() (int, error) {
 	for off := uintptr(0); off < uintptr(len(buf)); {
 		p := (*windows.SYSTEM_PROCESS_INFORMATION)(unsafe.Pointer(&buf[off]))
 		if p.UniqueProcessID == pid {
-			return int(p.NumberOfThreads), nil
+			first := off + unsafe.Sizeof(*p)
+			if first+uintptr(p.NumberOfThreads)*unsafe.Sizeof(systemThread{}) > uintptr(len(buf)) {
+				return nil, errors.New("the system's list of this process's threads is cut short")
+			}
+			ids := make([]uintptr, p.NumberOfThreads)
+			for i, th := range unsafe.Slice((*systemThread)(unsafe.Pointer(&buf[first])), p.NumberOfThreads) {
+				if th.UniqueProcess != pid {
+					return nil, errors.New("the system's list of this process's threads names another process")
+				}
+				ids[i] = th.UniqueThread
+			}
+			return ids, nil
 		}
 		if p.NextEntryOffset == 0 {
 			break
 		}
 		off += uintptr(p.NextEntryOffset)
 	}
-	return 0, errors.New("this process is not in the system's list of processes")
+	return nil, errors.New("this process is not in the system's list of processes")
+}
+
+// openThread opens this process's thread id with whatever its access list
+// grants this process. Naming the process as well as the thread, the system
+// refuses an id that is not a thread of this process (STATUS_INVALID_CID),
+// so an id freed and given to another process's thread meanwhile is never
+// opened.
+func openThread(id uintptr) (windows.Handle, windows.NTStatus) {
+	var h windows.Handle
+	oa := windows.OBJECT_ATTRIBUTES{Length: uint32(unsafe.Sizeof(windows.OBJECT_ATTRIBUTES{}))}
+	cid := [2]uintptr{uintptr(windows.GetCurrentProcessId()), id}
+	st, _, _ := procNtOpenThread.Call(uintptr(unsafe.Pointer(&h)), windows.MAXIMUM_ALLOWED, uintptr(unsafe.Pointer(&oa)), uintptr(unsafe.Pointer(&cid)))
+	return h, windows.NTStatus(st)
+}
+
+// checkThreads holds every thread the system lists for this process to
+// threadReadBack, by its id, so the threads checked are exactly the threads
+// listed (decision A80, and round four of the independent test: a count of
+// the threads a walk reached could be made to agree by ending one).
+//
+// A thread whose list may be changed is first given set (Protect; nil only
+// reads, for Now). Each is then opened by its id, and:
+//   - opened: its list is read back and compared entry by entry;
+//   - STATUS_INVALID_CID: no thread of this process has that id any more,
+//     which only a thread that has ended can be (a live thread keeps its id),
+//     and an ended thread runs nothing;
+//   - refused, or anything else: the thread is there and cannot be checked,
+//     so the control is off. A hidden thread cannot pass for an ended one.
+//
+// A thread that starts after the list was taken is not in it; it gets the
+// restricted list from the token's default, which is set before this runs.
+// More than limit threads (0: no limit) is off too, without opening any.
+func checkThreads(set *windows.SECURITY_DESCRIPTOR, limit int) error {
+	want, err := windows.SecurityDescriptorFromString(threadReadBack)
+	if err != nil {
+		return err
+	}
+	wantACL, _, err := want.DACL()
+	if err != nil {
+		return err
+	}
+	list, err := ownThreadIDs()
+	if err != nil {
+		return err
+	}
+	if limit > 0 && len(list) > limit {
+		return &failure{reason: threadsTooMany, detail: strconv.Itoa(len(list)) + " threads"}
+	}
+	mismatch := threadChanged
+	if set != nil {
+		mismatch = threadNotClosed
+	}
+	var causes, ids []string
+	for _, id := range list {
+		cause := ""
+		h, st := openThread(id)
+		switch {
+		case st == windows.STATUS_INVALID_CID:
+			continue // ended since the list was taken
+		case st == windows.STATUS_ACCESS_DENIED:
+			cause = threadHidden
+		case st != 0:
+			cause = "opening it: " + st.Error()
+		default:
+			cause = checkThread(h, set, wantACL, mismatch)
+			windows.CloseHandle(h)
+		}
+		if cause != "" {
+			if !slices.Contains(causes, cause) {
+				causes = append(causes, cause)
+			}
+			ids = append(ids, strconv.FormatUint(uint64(id), 10))
+		}
+	}
+	if len(causes) > 0 {
+		// The cause is the reason; which threads differ at every start and
+		// are the detail.
+		slices.Sort(causes)
+		return &failure{reason: strings.Join(causes, "; "), detail: "thread ids " + strings.Join(ids, ", ")}
+	}
+	return nil
+}
+
+// checkThread gives h's thread set where it may, reads its list back and
+// says what is wrong with it ("" when it is the restricted one).
+func checkThread(h windows.Handle, set *windows.SECURITY_DESCRIPTOR, wantACL *windows.ACL, mismatch string) string {
+	g, err := grantedAccess(h)
+	if err == nil && set != nil && g&windows.WRITE_DAC != 0 {
+		err = windows.SetKernelObjectSecurity(h, windows.DACL_SECURITY_INFORMATION, set)
+	}
+	switch {
+	case err != nil:
+		return err.Error()
+	case g&windows.READ_CONTROL == 0:
+		return threadUnreadable
+	}
+	got, err := windows.GetSecurityInfo(h, windows.SE_KERNEL_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	var acl *windows.ACL
+	if err == nil {
+		acl, _, err = got.DACL()
+	}
+	switch {
+	case err != nil:
+		return threadUnreadable
+	case !sameACL(acl, wantACL):
+		return mismatch
+	}
+	return ""
 }
 
 // sameACL: a and b hold the same entries in the same order.
@@ -269,111 +406,15 @@ func restrictThreads(sd *windows.SECURITY_DESCRIPTOR) error {
 	// Every thread's list is established, never inferred (decision A80): a
 	// program in the moment before Protect can give a thread a list that
 	// refuses its owner WRITE_DAC and lets everyone in, one that grants this
-	// process nothing (a walk then passes over it), or one with an entry for
-	// a SID this process does not hold (another logon session of the user).
-	// So each thread whose list may be changed is given threadSDDL, every
-	// thread's list is then read back (the owner keeps READ_CONTROL for
-	// that) and compared entry by entry with threadReadBack, and the threads
-	// walked are counted against the system's own count of them. Threads
-	// come and go while this runs, so a count that differs is taken again,
-	// a few times, before it counts against the control.
-	want, err := windows.SecurityDescriptorFromString(threadReadBack)
-	if err != nil {
-		return err
+	// process nothing, or one with an entry for a SID this process does not
+	// hold (another logon session of the user). checkThreads sets, reads back
+	// and compares every thread the system lists.
+	err = checkThreads(sd, maxThreads)
+	var f *failure
+	if errors.As(err, &f) && f.reason != threadsTooMany {
+		f.reason = "a thread that existed at start could not be given the access list: " + f.reason
 	}
-	wantACL, _, err := want.DACL()
-	if err != nil {
-		return err
-	}
-	var causes, ids []string
-	for try := 0; ; try++ {
-		causes, ids = nil, nil
-		walked, err := eachThread(func(h windows.Handle) {
-			var cause string
-			g, err := grantedAccess(h)
-			if err == nil && g&windows.WRITE_DAC != 0 {
-				err = windows.SetKernelObjectSecurity(h, windows.DACL_SECURITY_INFORMATION, sd)
-			}
-			switch {
-			case err != nil:
-				cause = err.Error()
-			case g&windows.READ_CONTROL == 0:
-				cause = threadUnreadable
-			default:
-				got, err := windows.GetSecurityInfo(h, windows.SE_KERNEL_OBJECT, windows.DACL_SECURITY_INFORMATION)
-				var acl *windows.ACL
-				if err == nil {
-					acl, _, err = got.DACL()
-				}
-				switch {
-				case err != nil:
-					cause = threadUnreadable
-				case !sameACL(acl, wantACL):
-					cause = threadNotClosed
-				}
-			}
-			if cause != "" {
-				if !slices.Contains(causes, cause) {
-					causes = append(causes, cause)
-				}
-				id, _, _ := procGetThreadId.Call(uintptr(h)) // 0 where the list does not let it be read
-				ids = append(ids, strconv.FormatUint(uint64(id), 10))
-			}
-		})
-		if err != nil {
-			return err
-		}
-		counted, err := threadCount()
-		if err != nil {
-			return err
-		}
-		if counted == walked {
-			break
-		}
-		if try == 4 {
-			cause := threadsUnsettled
-			if counted > walked {
-				cause = threadHidden
-			}
-			causes = append(causes, cause)
-			ids = append(ids, "("+strconv.Itoa(walked)+" walked, "+strconv.Itoa(counted)+" counted)")
-			break
-		}
-	}
-	if len(causes) > 0 {
-		// The cause is the reason; which threads, and how many, differ at
-		// every start and are the detail.
-		slices.Sort(causes)
-		return &failure{reason: "a thread that existed at start could not be given the access list: " + strings.Join(causes, "; "),
-			detail: "thread ids " + strings.Join(ids, ", ")}
-	}
-	return nil
-}
-
-// eachThread calls do with a handle to each thread of this process, opened
-// with whatever its list grants this process (NtGetNextThread), and returns
-// how many it walked. A thread whose list grants this process nothing is not
-// walked: Windows passes over it. (A list of every thread on the system, a
-// Toolhelp snapshot, cost about 55 ms at every start.)
-func eachThread(do func(windows.Handle)) (int, error) {
-	n := 0
-	var h windows.Handle
-	for {
-		var next windows.Handle
-		st, _, _ := procNtGetNextThread.Call(uintptr(windows.CurrentProcess()), uintptr(h), windows.MAXIMUM_ALLOWED, 0, 0, uintptr(unsafe.Pointer(&next)))
-		if h != 0 {
-			windows.CloseHandle(h)
-		}
-		if windows.NTStatus(st) == windows.STATUS_NO_MORE_ENTRIES {
-			return n, nil
-		}
-		if st != 0 {
-			return n, fmt.Errorf("listing the threads: NtGetNextThread: %w", windows.NTStatus(st))
-		}
-		h = next
-		n++
-		do(h)
-	}
+	return err
 }
 
 // keepOrdinary keeps, from before the default changes: a primary copy of the
@@ -439,9 +480,10 @@ const werExcluded = `Software\Microsoft\Windows\Windows Error Reporting\Excluded
 // with it, and whole that everything the control covers was read.
 //
 //   - The process's access list, and the one new threads get, are read and
-//     held to restrictedSDDL's terms. A thread's own list is closed to this
-//     process as it is to any program of the user, so the threads that exist
-//     are as they were at start.
+//     held to restrictedSDDL's terms, and every thread's own list is read
+//     again (the owner keeps READ_CONTROL on threads) and held to
+//     threadReadBack: a list changed after the start through a handle taken
+//     before Protect is no longer reported as in force.
 //   - The exclusion from Windows Error Reporting is a value in the user's
 //     registry, which any program of the user can delete.
 //   - The handle the console host holds is the console host's, and is not
@@ -459,9 +501,16 @@ func reread(id string) (found string, whole bool) {
 		return found, true
 	case "windows.thread-dacl":
 		if dacl, err := tokenDefaultDACLOf(ownToken); err == nil && !closedToTheUser(dacl, ownerThreadRights) {
-			found = "the access list a new thread gets gives the user's other programs more than the rights the owner keeps"
+			return "the access list a new thread gets gives the user's other programs more than the rights the owner keeps", true
 		}
-		return found, false
+		var f *failure
+		switch err := checkThreads(nil, 0); {
+		case err == nil:
+			return "", true
+		case errors.As(err, &f):
+			return "a thread: " + f.reason, true
+		}
+		return "", false // the threads could not be listed
 	case "windows.wer-exclusion":
 		exe, err := os.Executable()
 		if err != nil {

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"tenant/internal/config"
+	"tenant/internal/logs"
 	"tenant/internal/logs/event/eventtest"
 	"tenant/internal/procprotect"
 	"tenant/internal/version"
@@ -243,6 +244,20 @@ func newGateFixture(t *testing.T, r procprotect.Report, typed string, interactiv
 	return f
 }
 
+// workingBook is a log book whose logbook.db opens, as serve's does.
+func workingBook(t *testing.T) *logs.Hub {
+	t.Helper()
+	hub, err := logs.Open(t.TempDir(), logs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.OpenStore(nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { hub.Close() })
+	return hub
+}
+
 // logBookText is every text line under a log book root.
 func logBookText(t *testing.T, root string) string {
 	t.Helper()
@@ -368,7 +383,7 @@ func TestStartGate(t *testing.T) {
 		if err := startGate(ctx, f.c, "serve", true); err != nil {
 			t.Fatalf("acknowledged, no terminal: %v", err)
 		}
-		warnUnprotected(ctx, f.c, feed)
+		warnUnprotected(ctx, f.c, workingBook(t), feed)
 	}
 	if line := <-feed; len(feed) != 1 || !strings.Contains(line, "running without the test.a control (test.a): operation not permitted. Acknowledged 20") {
 		t.Errorf("the status feed: %q, and %d more", line, len(feed))
@@ -388,6 +403,16 @@ func TestStartGate(t *testing.T) {
 	if fields["acknowledged"] != acked || fields["leaves"] != "what test.a leaves open" || fields["version"] != version.Version {
 		t.Errorf("the warning's fields: %v; want acknowledged=%s", fields, acked)
 	}
+	if len(*f.systemLog) != 0 {
+		t.Errorf("a warning the log book took went to the system's log too: %q", *f.systemLog)
+	}
+	// serve's log folder could not be opened (it logs to memory only): the
+	// warning goes to the system's log as well.
+	warnUnprotected(ctx, f.c, logs.NewMemory(0), nil)
+	if len(*f.systemLog) != 1 || !strings.Contains((*f.systemLog)[0], "is running without a process protection: the test.a control (test.a) could not be applied: operation not permitted") ||
+		!strings.Contains((*f.systemLog)[0], "could not be written to its log book: the log folder could not be opened") {
+		t.Errorf("a warning the log book could not take: the system's log has %q", *f.systemLog)
+	}
 
 	// Every control on: no question, no warning, and the settings are not read.
 	f = newGateFixture(t, procprotect.Report{Controls: []procprotect.Control{{ID: "test.on", OK: true}}}, "", false)
@@ -398,7 +423,7 @@ func TestStartGate(t *testing.T) {
 	if err := startGate(ctx, f.c, "serve", true); err != nil {
 		t.Errorf("every control on: %v", err)
 	}
-	warnUnprotected(ctx, f.c, nil)
+	warnUnprotected(ctx, f.c, workingBook(t), nil)
 	if len(rec.Events()) != 0 {
 		t.Errorf("every control on, yet a warning: %+v", rec.Events())
 	}
