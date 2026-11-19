@@ -207,6 +207,27 @@ This needs `cosign` on the machine's PATH, a release that carries a signature bu
 release build of Tenant on the machine; a development build names no release, and refuses every
 update on the default rule (its `tenant child status` says so).
 
+**The project key (TEN-542).** A release binary of the main repository also carries the
+project's Ed25519 public key, and the main releases carry `checksums.txt.sig`, a signature over
+the checksums with that key (SECURITY.md, "Release signatures"). The master sends it with the
+checksums and the bundle. A machine whose own Tenant carries the key verifies that signature
+with nothing installed, and then it alone decides: if it verifies the release is taken (cosign
+is not needed); if it is malformed or does not verify the update is refused at once, without
+trying cosign. When the master sent no project signature (its Tenant is older, or the release
+carries none) the machine falls back to cosign as above, and says so in its reason when cosign
+is not there either. A machine whose Tenant carries no key (a fork's release) ignores the
+project signature and needs cosign. `tenant fleet update` says which check the machine passed:
+
+```
+web1: the machine verified the release's signature itself, with the project key its own Tenant carries, and takes the archive only if it hashes to what that release lists
+web1: the machine verified the release's signature itself, the release workflow's signature, against the release its own Tenant was built from, and takes the archive only if it hashes to what that release lists
+```
+
+The other checks keep their order: the archive's name is the machine's for the version named,
+and the verified checksums list it with the SHA-256 the master named. A master whose own binary
+carries the key checks the project signature itself when it fetches the release, as `tenant
+update` does, and sends nothing when it does not verify. Nothing changes for a machine set to `updates master`.
+
 To run a build of your own on a machine, set it to take its master's hash instead:
 
 ```

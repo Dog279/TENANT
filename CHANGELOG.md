@@ -5,6 +5,19 @@ Releases page.
 
 ## Unreleased
 
+- **The main releases are signed with a project key as well** (TEN-542). Beside cosign's
+  keyless bundle, a release of the main repository carries `checksums.txt.sig`, an Ed25519
+  signature over `checksums.txt` made by the release workflow with a key held as a repository
+  secret; the public key is built into the release binary. A binary that carries the key takes,
+  with `tenant update`, only a release whose signature verifies under it, with nothing
+  installed; a missing, malformed or wrong signature refuses the update, and no flag skips it.
+  cosign is still checked when it is installed, and then both must pass. A fleet machine on the
+  default rule takes a release when cosign verifies it or, when its Tenant carries the key, when
+  the project signature its master sent verifies; one that is sent and wrong refuses at once.
+  `tenant fleet update` says which check each machine passed. A fork's binaries and development
+  builds carry no key and update exactly as before. The maintainer makes and replaces the key
+  with `go run ./scripts/releasekey keygen` (SECURITY.md, "Release signatures"); a repository
+  without the secret and the variable releases as before.
 - **A fleet: one Tenant that owns your other machines** (TEN-531, the first of three parts).
   Install Tenant on a machine you own and run `tenant child install` with a one-time code from
   the master (`tenant fleet enroll <name>`): the machine becomes a **child**. It has no model

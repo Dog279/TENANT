@@ -225,6 +225,79 @@ Plugins are **read-by-default**. Mutating and destructive operations are gated:
   loopback bind answers only to loopback host names; it serves plain HTTP, so
   a non-loopback bind requires an explicit insecure override.
 
+### Release signatures
+
+A release publishes `checksums.txt` (the SHA-256 of every archive) and, beside
+it, up to two signatures over that file. `tenant update`, the install scripts
+and a fleet master check the archive against `checksums.txt`; the signatures
+say who made `checksums.txt`.
+
+- **cosign** (`checksums.txt.sigstore.json`). Made keylessly by the release
+  workflow through GitHub's OIDC token and recorded in Sigstore's public
+  transparency log. It ties the release to a run of *this repository's*
+  `release.yml`: there is no long-lived secret to steal, and any fork can make
+  the same kind of signature from its own workflow. Checking it needs the
+  `cosign` program (and its trust root) on the machine. `tenant update` checks
+  it when cosign is on PATH; a fleet machine checks it offline.
+- **The project key** (`checksums.txt.sig`, TEN-542). An Ed25519 signature made
+  by the main repository's release workflow with a private key held as the
+  repository secret `TENANT_RELEASE_SIGNING_KEY`; the public half is built into
+  the release binary (`TENANT_RELEASE_PUBKEYS`, up to three keys). It ties the
+  release to whoever holds that key. Checking it needs nothing installed: the
+  binary verifies it with Go's standard library. It is only as good as the
+  key's custody, and the key is guarded and replaced by hand.
+
+A binary that carries the project key takes, with `tenant update`, only a
+release whose `checksums.txt.sig` verifies under one of its keys: a missing,
+malformed or wrong signature refuses the update and changes nothing, and no
+flag skips it. cosign is still checked when it is installed, and then both must
+pass. A fleet machine on the default update rule takes a release when cosign
+verifies it or, when its own binary carries the key and its master sent the
+project signature, when that verifies; a project signature that is sent and
+does not verify refuses the update without trying cosign. A fork's binaries,
+and every development build, carry no key: for them nothing about updating
+changes, and `checksums.txt.sig` is not looked at.
+
+**Making the first key (the maintainer, once).** Nothing in the repository
+creates a key, a secret or a variable.
+
+1. On a trusted machine, from the repository root:
+   `go run ./scripts/releasekey keygen -out <path outside the repository>`.
+   It writes the private key to that file (owner-only, never over an existing
+   file) and prints the public key.
+2. In the GitHub repository's settings, *Secrets and variables > Actions*: add
+   the file's contents as the **secret** `TENANT_RELEASE_SIGNING_KEY`, and the
+   printed public key as the **variable** `TENANT_RELEASE_PUBKEYS`. Then keep
+   the file offline or delete it.
+3. Tag a release. The workflow's "Check the project key" step fails the
+   release before anything is built if only one of the two is set, the variable
+   does not parse, or the secret's public half is not in the variable. After
+   GoReleaser publishes, "Sign checksums.txt with the project key" signs,
+   verifies its own signature, and uploads `checksums.txt.sig`.
+4. Check it: install the new release and run
+   `tenant update --version <tag> --force --yes` (a reinstall of the same
+   version through the full path). It prints `verified checksum and the
+   project key's signature (...)`, or `verified checksum, the project key's
+   signature and the release workflow's signature` with cosign installed. The
+   release workflow's smoke job runs the same command on three systems for a
+   public repository. Binaries of releases from before the key carry none, so
+   updating *from* them shows nothing new.
+
+**Replacing the key.** Make the new key with `keygen`. In release N, set
+`TENANT_RELEASE_PUBKEYS` to `<old>,<new>` and keep signing with the old secret:
+binaries of release N trust both. From release N+1, put the new private key in
+`TENANT_RELEASE_SIGNING_KEY`. Once no machine you care about runs a release
+older than N, drop the old public key from the variable. A binary from before
+release N trusts only the old key and cannot take a release signed with the new
+one; it is moved on by installing release N first (`tenant update --version
+vN`). If the key is lost or stolen, remove it from the variable at once: the
+releases made after that carry only the new key, but binaries already out there
+still trust the stolen one until they update.
+
+The workflow signs after GoReleaser has published the release, so for the few
+seconds between the two a binary that carries the key refuses the new release
+as unsigned; running `tenant update` again then works.
+
 ### Chrome process sandbox
 
 Tenant launches Chrome with its process sandbox enabled by default and does
@@ -276,6 +349,10 @@ as a workaround for Chrome installation or permission problems. Run
   impact beyond what the permission model already guards against.
 
 ## Security Document Changelog
+
+- 2026-11-19 (TEN-542): added Release signatures: what cosign and the project
+  key each prove, what a binary that carries the key refuses, what a fork
+  gets, and how the maintainer makes and replaces the key.
 
 - 2026-11-10: stated who is trusted (the local user account and its processes;
   the container sandbox protects the host from a command, not from them). The
