@@ -102,10 +102,27 @@ func cmdChild(ctx context.Context, args []string) error {
 	case "install":
 		return childInstall(ctx, os.Stdin, os.Stdout, dir, childInstallOpts{system: *system, ceiling: *ceiling, sandbox: *sandboxName})
 	case "run":
-		if *hidden {
-			hideConsoleWindow()
+		log := newLogger()
+		if !*trial && !*kept { // an update's own runs end when the child that started them closes their input
+			// As serve's (sessionend_windows.go): on Windows a helper process
+			// owns the window by which a logoff or a shutdown is told, and hides
+			// the console for --hidden. main answers it once this has returned.
+			ending, err := watchSessionEnd("child", dir, *hidden)
+			if err != nil {
+				log.Warn("fleet child: a logoff or shutdown will end the child without a clean stop", "err", err)
+			}
+			var stop context.CancelFunc
+			ctx, stop = context.WithCancel(ctx)
+			defer stop()
+			go func() {
+				select {
+				case <-ending: // nil, so never, where there is no window
+					stop()
+				case <-ctx.Done():
+				}
+			}()
 		}
-		return childRun(ctx, dir, newLogger(), childRunOpts{trial: *trial, kept: *kept})
+		return childRun(ctx, dir, log, childRunOpts{trial: *trial, kept: *kept})
 	case "status":
 		return childStatus(ctx, os.Stdout, dir)
 	case "pause", "resume":

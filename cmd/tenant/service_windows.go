@@ -208,7 +208,7 @@ func (s serviceSpec) uninstall(ctx context.Context) error {
 		}
 		return nil
 	}
-	if s.Child == "" { // a child has no window to be asked through; ending its task ends it
+	if s.Child == "" { // a child is not asked through its window (childctl.go): ending its task ends it
 		askTaskToStop(s.DataDir, s.StopBudget+taskStopMargin)
 	}
 	_, _ = runCmd(ctx, "schtasks", "/End", "/TN", s.Label) // not running is fine

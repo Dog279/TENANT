@@ -87,7 +87,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	// (sessionend_windows.go). main says when serve has returned
 	// (sessionEndFinished), after every deferred close here: Windows may end
 	// the process once it hears that.
-	sessionEnding, sessionErr := watchSessionEnd(c.dataDir, *hidden)
+	sessionEnding, sessionErr := watchSessionEnd("serve", c.dataDir, *hidden)
 	// A process protection that could not be applied is acknowledged before
 	// anything else is loaded: the config, a secret, a store (TEN-535).
 	if err := startGate(ctx, c, "serve", !*hidden); err != nil {
