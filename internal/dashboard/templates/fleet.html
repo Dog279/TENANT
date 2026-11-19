@@ -214,6 +214,29 @@
 </div>
 {{end}}
 
+{{if or (eq $m.State "confirmed") $m.Update}}
+<div class="card">
+  <div class="card-head">Update <span class="dim">· a newer Tenant, fetched and checked here as this Tenant checks its own, and sent over the link: the machine needs no internet</span></div>
+  {{with $m.Update}}
+  <div><span class="{{if eq .Stage "done"}}on-tag{{else if .Running}}risk{{else}}act-errtag{{end}}">{{.Words}}</span>{{with .To}} to {{.}}{{end}} <span class="dim">· started {{.Started}}{{with .Finished}}, ended {{.}}{{end}}</span></div>
+  {{range .Lines}}<div class="dim">{{.}}</div>{{end}}
+  {{if .Running}}<p class="mt"><a class="linkbtn" href="{{$m.Href}}">Reload</a> to see how far it has got.</p>{{end}}
+  {{end}}
+  {{if ne $m.State "confirmed"}}
+  {{else if not $m.Online}}
+  <div class="dim mt">This machine is offline. An update goes only to a machine that is online: nothing is queued.</div>
+  {{else if not (and $m.Update $m.Update.Running)}}
+  <form method="POST" action="/fleet/update" class="cronactions mt" data-on:submit__prevent__throttle.1s="@post('/fleet/update', {contentType:'form', retryMaxCount:0})">
+    <input type="hidden" name="machine" value="{{$m.ID}}">
+    <input type="hidden" name="confirm" value="yes">
+    <input type="text" name="version" class="cinput short" maxlength="48" placeholder="latest" aria-label="The version to install, or empty for the latest release">
+    <label class="dim"><input type="checkbox" name="allow_older" value="yes"> allow an older version</label>
+    <details class="confirm-step go"><summary class="btn sm"><span class="c-open">Update this machine</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Update this machine"><p>The machine restarts into the new version, and its background commands end. If the new version does not reach this Tenant within a minute, the machine puts the old one back and connects on it.</p><button type="submit" class="btn sm">Yes, update it</button></div></details>
+  </form>
+  {{end}}
+</div>
+{{end}}
+
 <div class="card">
   <div class="card-head">Name and removal</div>
   {{if ne $m.State "revoked"}}

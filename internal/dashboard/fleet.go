@@ -54,6 +54,13 @@ type FleetControl interface {
 	// fresh copy of this Tenant's own, from "defaults" with the fleet's rules
 	// laid over what it has.
 	Recopy(machine, from string) error
+	// Update starts sending the machine a newer Tenant over its link (`tenant
+	// fleet update`): version "" is the latest release; allowOlder lets one
+	// older than the machine runs go; arch names the machine's processor when
+	// it is too old to say. It refuses at once what cannot start (offline,
+	// not confirmed, held by another process); the rest shows in the
+	// machine's Update.
+	Update(machine, version, arch string, allowOlder bool) error
 }
 
 // The memory states of the spec's section 7. TEN-532 supplies them; until
@@ -109,6 +116,25 @@ type FleetMachine struct {
 	// Start is what a pending machine would be confirmed with; nil when that
 	// can't be worked out, and then it can't be confirmed.
 	Start *FleetStart
+	// Update is the machine's last update from this process; nil with none.
+	Update *FleetUpdate
+}
+
+// FleetUpdate is how far a machine's update has got. Lines are what the
+// operator is told, in order; what the machine said in them is quoted.
+type FleetUpdate struct {
+	From, To string
+	// Stage is fetching, sending or applying while it runs; then done,
+	// rolled_back, failed or refused.
+	Stage             string
+	Running           bool
+	Lines             []string
+	Started, Finished string
+}
+
+// Words is the stage as the page says it.
+func (u FleetUpdate) Words() string {
+	return strings.ReplaceAll(u.Stage, "_", " ")
 }
 
 // FleetStart is the approval settings a pending machine starts with.
@@ -253,6 +279,9 @@ func (s *Server) mountFleetSSR(mux *http.ServeMux) {
 		return s.fleetRuleMode(r.FormValue("machine"), strings.TrimSpace(r.FormValue("pattern"))) != "allow"
 	}, s.handleFleetRuleRemove))
 	mux.HandleFunc("POST /fleet/scheme", needConfirm(nil, s.handleFleetScheme))
+	// An update restarts the machine's Tenant and ends its background
+	// commands: it asks first.
+	mux.HandleFunc("POST /fleet/update", needConfirm(nil, s.handleFleetUpdate))
 }
 
 // The page's fixed words.
@@ -590,6 +619,27 @@ func (s *Server) handleFleetScheme(w http.ResponseWriter, r *http.Request) {
 	s.fleetDone(w, r, m.ID, "The fleet's rules are laid over the approval settings of "+m.Name+" again.", "")
 }
 
+// handleFleetUpdate is POST /fleet/update (machine, version, allow_older=yes,
+// arch): start updating a machine over its link. What can be refused at once
+// is the flash; the rest is the machine's Update on its page and in the API.
+func (s *Server) handleFleetUpdate(w http.ResponseWriter, r *http.Request) {
+	if s.fleet == nil {
+		s.fleetDone(w, r, "", "", "")
+		return
+	}
+	m, found := s.fleetMachine(r)
+	if !found {
+		s.fleetDone(w, r, "", "", fleetGone)
+		return
+	}
+	err := s.fleet.Update(m.ID, strings.TrimSpace(r.FormValue("version")), strings.TrimSpace(r.FormValue("arch")), r.FormValue("allow_older") == "yes")
+	if err != nil {
+		s.fleetDone(w, r, m.ID, "", s.flashFor(r.Context(), "fleet update", err, "Couldn't start updating that machine. Nothing was sent."))
+		return
+	}
+	s.fleetDone(w, r, m.ID, "Updating "+m.Name+": this page shows how far it has got when you reload it.", "")
+}
+
 // --- GET /api/fleet ---
 
 // restFleet is the Fleet page as JSON: read-only. The operator's changes are
@@ -624,6 +674,18 @@ type restFleetMachine struct {
 	Permissions  map[string]string `json:"permissions,omitempty"`
 	ToolRules    map[string]string `json:"tool_rules,omitempty"`
 	Drift        []restFleetDrift  `json:"drift,omitempty"`
+	Update       *restFleetUpdate  `json:"update,omitempty"`
+}
+
+// restFleetUpdate is a machine's last update from this process.
+type restFleetUpdate struct {
+	From     string   `json:"from,omitempty"`
+	To       string   `json:"to,omitempty"`
+	Stage    string   `json:"stage"` // fetching | sending | applying | done | rolled_back | failed | refused
+	Running  bool     `json:"running"`
+	Lines    []string `json:"lines"`
+	Started  string   `json:"started"`
+	Finished string   `json:"finished,omitempty"`
 }
 
 type restFleetReported struct {
@@ -658,6 +720,9 @@ func (s *Server) handleFleetAPI(w http.ResponseWriter, r *http.Request) {
 			Certificate: m.Certificate, Enrolled: m.Enrolled, Confirmed: m.Confirmed, Revoked: m.Revoked,
 			Reported: restFleetReported{m.OS, m.User, m.Version, m.Sandbox, m.Ceiling},
 			Memory:   m.Memory, MemoryDetail: m.MemoryDetail, ToolRules: ruleMap(m.Rules),
+		}
+		if u := m.Update; u != nil {
+			rm.Update = &restFleetUpdate{From: u.From, To: u.To, Stage: u.Stage, Running: u.Running, Lines: u.Lines, Started: u.Started, Finished: u.Finished}
 		}
 		if rm.Memory == FleetMemoryUnknown {
 			rm.Memory = "not_available"

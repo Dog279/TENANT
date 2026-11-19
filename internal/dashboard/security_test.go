@@ -300,6 +300,7 @@ var reviewedMutations = map[string]confirmGate{
 	"POST /fleet/rules/add":    unless("mode", "ask", "deny"),
 	"POST /fleet/rules/remove": always, // unless the rule itself is allow (fleetRuleMode); the harness has none
 	"POST /fleet/scheme":       always,
+	"POST /fleet/update":       always, // restarts the machine's Tenant and ends its background commands (TEN-533)
 	// Sign-in.
 	"POST /auth/login":  noStep,
 	"POST /auth/logout": noStep,

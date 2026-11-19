@@ -110,6 +110,11 @@ func (d dashFleet) View() dashboard.FleetView {
 		}
 		mv := dashMachine(m, link)
 		mv.Memory, mv.MemoryDetail = fleetMemoryOf.State(m.ID)
+		if u := fleetUpdater(); u != nil {
+			if st, ok := u.State(m.ID); ok {
+				mv.Update = dashUpdate(st)
+			}
+		}
 		if m.State == fleet.StatePending {
 			if _, p, err := d.ops.preview(m, nil); err == nil {
 				mv.Start = dashStart(p)
@@ -284,4 +289,30 @@ func (d dashFleet) Recopy(id, from string) error {
 		return err
 	}
 	return d.ops.recopy(f, m, from)
+}
+
+// dashUpdate is a machine's last update as the page shows it.
+func dashUpdate(st fleetUpdateState) *dashboard.FleetUpdate {
+	return &dashboard.FleetUpdate{From: st.From, To: st.To, Stage: st.Stage, Running: !st.Over(), Lines: st.Lines,
+		Started: dashTime(st.Started), Finished: dashTime(st.Finished)}
+}
+
+// Update starts updating a machine over its link, in this process, which
+// must be the one that holds the fleet: only it has the links.
+func (d dashFleet) Update(id, version, arch string, allowOlder bool) error {
+	m, err := d.machine(id)
+	if err != nil {
+		return err
+	}
+	mgr, upd := fleetManager(), fleetUpdater()
+	if mgr == nil || upd == nil {
+		if elsewhere := fleetHeldElsewhere(); elsewhere != "" {
+			return dashboard.PlainError("Nothing was sent: " + strings.TrimPrefix(elsewhere, "fleet: ") + ", and a machine is updated from the process that holds the fleet.")
+		}
+		return dashboard.PlainError("Nothing was sent: no process holds the fleet right now, so no machine is online.")
+	}
+	if err := upd.Start(mgr, m.ID, fleetUpdateOpts{version: version, arch: arch, allowOlder: allowOlder}); err != nil {
+		return dashboard.PlainError("Nothing was sent: " + err.Error() + ".")
+	}
+	return nil
 }

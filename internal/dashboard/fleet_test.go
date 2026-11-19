@@ -134,6 +134,21 @@ func (f *fakeFleet) Recopy(id, from string) error {
 	return err
 }
 
+func (f *fakeFleet) Update(id, version, arch string, allowOlder bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	m, err := f.change("update", id, version, arch, fmt.Sprint(allowOlder))
+	switch {
+	case err != nil:
+		return err
+	case !m.Online:
+		return PlainError("Nothing was sent: " + m.Name + " is offline. Nothing is queued.")
+	}
+	m.Update = &FleetUpdate{From: "1.2.3", To: version, Stage: "fetching", Running: true, Started: "2026-11-19 09:00",
+		Lines: []string{"fetching " + version + " for linux/amd64"}}
+	return nil
+}
+
 func (f *fakeFleet) called() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1066,5 +1081,104 @@ func TestFleetConfirmWaitWords(t *testing.T) {
 	rec := sendForm(s.Handler(), http.MethodPost, "/fleet/confirm", url.Values{"machine": {fleetPending}, "code": {fleetCode}}, here)
 	if _, _, errMsg := fleetFlash(rec); errMsg != "Too many wrong codes for this machine. Try again in 8 seconds." || len(f.called()) != 0 {
 		t.Errorf("seven and a half seconds into a wait: %q, calls %q", errMsg, f.called())
+	}
+}
+
+// --- updating a machine ---
+
+// The Update action refuses before the control: a request that is not signed
+// in, one without its second click, and a machine the fleet does not have.
+// A machine the control will not update (offline) is refused in its words.
+func TestFleetUpdateRefusals(t *testing.T) {
+	f := fleetFake(3)
+	s := fleetServer(f)
+	h := s.served()
+	form := url.Values{"machine": {fleetConfirmed}, "version": {"v2.0.0"}, "confirm": {"yes"}}
+	for _, tc := range []struct {
+		name string
+		form url.Values
+		set  func(*http.Request)
+		code int
+		want string
+	}{
+		{"signed out", form, func(r *http.Request) { here(r); r.Header.Del("Cookie") }, http.StatusUnauthorized, ""},
+		{"a wrong API key", form, bearer("nope"), http.StatusForbidden, ""},
+		{"another site", form, and(here, header("Origin", "http://evil.example")), http.StatusForbidden, ""},
+		{"without the second click", withField(url.Values{"machine": {fleetConfirmed}}), here, http.StatusPreconditionRequired, notConfirmed},
+		{"an unknown machine", withField(form, "machine", "m9999999999999999"), here, http.StatusSeeOther, fleetGone},
+		{"no machine", withField(form, "machine", ""), here, http.StatusSeeOther, fleetGone},
+	} {
+		before := f.called()
+		rec := sendForm(h, http.MethodPost, "/fleet/update", tc.form, tc.set)
+		_, msg, errMsg := fleetFlash(rec)
+		if rec.Code != tc.code || msg != "" || !strings.Contains(errMsg+rec.Body.String(), tc.want) {
+			t.Errorf("%s: %d, msg %q, err %q, want %d with %q", tc.name, rec.Code, msg, errMsg, tc.code, tc.want)
+		}
+		if got := f.called(); !slices.Equal(got, before) {
+			t.Errorf("%s reached the control: %q", tc.name, got[len(before):])
+		}
+		if f.machine(fleetConfirmed).Update != nil {
+			t.Fatalf("%s started an update", tc.name)
+		}
+	}
+	// An offline machine: the control's own refusal, in its plain words.
+	offline := "m0000000000000002"
+	rec := sendForm(h, http.MethodPost, "/fleet/update", withField(form, "machine", offline), here)
+	if _, msg, errMsg := fleetFlash(rec); rec.Code != http.StatusSeeOther || msg != "" || !strings.Contains(errMsg, "is offline. Nothing is queued.") {
+		t.Errorf("an offline machine: %d, msg %q, err %q", rec.Code, msg, errMsg)
+	}
+}
+
+// The Update action starts the control's update, with what the form asked
+// for, from a signed-in browser or with the API key (the command line), and
+// the machine's page and the API then show how far it has got.
+func TestFleetUpdateStartsAndShows(t *testing.T) {
+	f := fleetFake(3)
+	s := fleetServer(f)
+	h := s.served()
+	rec := sendForm(h, http.MethodPost, "/fleet/update", url.Values{"machine": {fleetConfirmed}, "version": {" v2.0.0 "}, "allow_older": {"yes"},
+		"arch": {"arm64"}, "confirm": {"yes"}}, here)
+	if page, msg, errMsg := fleetFlash(rec); rec.Code != http.StatusSeeOther || page != "/fleet/"+fleetConfirmed || errMsg != "" || !strings.Contains(msg, "Updating") {
+		t.Fatalf("update: %d %s msg %q err %q", rec.Code, page, msg, errMsg)
+	}
+	if got := f.called(); !slices.Equal(got, []string{"update|" + fleetConfirmed + "|v2.0.0|arm64|true"}) {
+		t.Errorf("the control was asked %q", got)
+	}
+	// The command line's way in: the API key, no browser.
+	f.mu.Lock()
+	f.view.Machines[1].Update = nil
+	f.mu.Unlock()
+	if rec := sendForm(h, http.MethodPost, "/fleet/update", url.Values{"machine": {fleetConfirmed}, "confirm": {"yes"}}, func(r *http.Request) {
+		r.RemoteAddr, r.Host = "127.0.0.1:50000", "127.0.0.1:9770"
+		bearer("s3cret")(r)
+	}); rec.Code != http.StatusSeeOther {
+		t.Errorf("with the API key: %d %s", rec.Code, rec.Body.String())
+	}
+	f.mu.Lock()
+	f.view.Machines[1].Update = &FleetUpdate{From: "1.2.3", To: "2.0.0", Stage: "rolled_back", Started: "2026-11-19 09:00", Finished: "2026-11-19 09:02",
+		Lines: []string{"fetched tenant_2.0.0_linux_x86_64.tar.gz (40.0 MB)", `rolled back to "1.2.3": "<b>it exited</b>"`}}
+	f.mu.Unlock()
+	page := get(t, s, "/fleet/"+fleetConfirmed).Body.String()
+	for _, want := range []string{"rolled back", "fetched tenant_2.0.0_linux_x86_64.tar.gz", htmlText(`"<b>it exited</b>"`), `action="/fleet/update"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the machine's page lacks %q", want)
+		}
+	}
+	if strings.Contains(page, "<b>it exited</b>") {
+		t.Error("the machine's words reached the page unescaped")
+	}
+	var api restFleet
+	if err := json.Unmarshal(get(t, s, "/api/fleet").Body.Bytes(), &api); err != nil {
+		t.Fatal(err)
+	}
+	if u := api.Machines[1].Update; u == nil || u.Stage != "rolled_back" || u.Running || len(u.Lines) != 2 || u.To != "2.0.0" {
+		t.Errorf("the API's update: %+v", u)
+	}
+	// An offline machine's page offers no Update; a pending one has no card.
+	if page := get(t, s, "/fleet/m0000000000000002").Body.String(); strings.Contains(page, `action="/fleet/update"`) || !strings.Contains(page, "nothing is queued") {
+		t.Error("the offline machine's page offers an update, or does not say why it does not")
+	}
+	if page := get(t, s, "/fleet/"+fleetPending).Body.String(); strings.Contains(page, `action="/fleet/update"`) {
+		t.Error("a pending machine's page offers an update")
 	}
 }
