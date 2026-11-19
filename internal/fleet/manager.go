@@ -160,7 +160,7 @@ func newManager(cfg ManagerConfig) (*Manager, error) {
 		holder:      filepath.Join(filepath.Dir(cfg.Store.path), holderFileName),
 		linkVersion: LinkVersion, inFlight: defaultInFlight, callTime: defaultCallTime, helloTime: helloTime,
 		headerTime: headerTime, addressEvery: 2 * time.Second,
-		ctx:          ctx, cancel: cancel,
+		ctx: ctx, cancel: cancel,
 		sem:   make(chan struct{}, maxPreUpgrade),
 		links: map[string]*link{}, last: map[string]lastSeen{},
 	}, nil
@@ -249,24 +249,27 @@ func (m *Manager) serve(ln net.Listener) {
 }
 
 // limited bounds how many connections can be in their handshake or their
-// HTTP request at once: Accept waits while that many are. A connection gives
-// its place back when it is closed or becomes a link (ConnState).
+// HTTP request at once: a connection is handed to the server only when there
+// is a place for it, and the ones behind it wait in the listener's queue. A
+// connection gives its place back when it is closed or becomes a link
+// (ConnState).
 type limited struct {
 	net.Listener
 	m *Manager
 }
 
 func (l limited) Accept() (net.Conn, error) {
-	select {
-	case l.m.sem <- struct{}{}:
-	case <-l.m.ctx.Done():
-		return nil, net.ErrClosed
-	}
 	c, err := l.Listener.Accept()
 	if err != nil {
-		<-l.m.sem
+		return nil, err
 	}
-	return c, err
+	select {
+	case l.m.sem <- struct{}{}:
+		return c, nil
+	case <-l.m.ctx.Done():
+		_ = c.Close()
+		return nil, net.ErrClosed
+	}
 }
 
 // Addr is the address the fleet port is bound to.

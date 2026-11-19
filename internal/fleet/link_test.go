@@ -222,7 +222,8 @@ func (r *rig) echo(t *testing.T, id string) {
 
 // fakeTools is a child's tool mux.
 type fakeTools struct {
-	started chan model.ToolCall // every call, as it starts
+	started chan model.ToolCall  // every call, as it starts
+	ctxs    chan context.Context // the context of every "keep" call
 	fns     map[string]func(ctx context.Context, args json.RawMessage) (string, bool, error)
 
 	mu   sync.Mutex
@@ -245,11 +246,13 @@ func (f *fakeTools) release() {
 }
 
 func newFakeTools() *fakeTools {
-	f := &fakeTools{started: make(chan model.ToolCall, 1024), held: make(chan struct{})}
+	f := &fakeTools{started: make(chan model.ToolCall, 1024), ctxs: make(chan context.Context, 16), held: make(chan struct{})}
 	f.fns = map[string]func(context.Context, json.RawMessage) (string, bool, error){
 		"echo": func(_ context.Context, args json.RawMessage) (string, bool, error) { return string(args), false, nil },
 		"fail": func(context.Context, json.RawMessage) (string, bool, error) { return "it failed", true, nil },
-		"err":  func(context.Context, json.RawMessage) (string, bool, error) { return "", false, errors.New("no such thing") },
+		"err": func(context.Context, json.RawMessage) (string, bool, error) {
+			return "", false, errors.New("no such thing")
+		},
 		"wait": func(ctx context.Context, _ json.RawMessage) (string, bool, error) {
 			<-ctx.Done()
 			return "stopped: " + ctx.Err().Error(), true, nil
@@ -279,6 +282,10 @@ func newFakeTools() *fakeTools {
 			return strings.Repeat(a.Fill, a.N), false, nil
 		},
 		"panic": func(context.Context, json.RawMessage) (string, bool, error) { panic("boom") },
+		"keep": func(ctx context.Context, _ json.RawMessage) (string, bool, error) {
+			f.ctxs <- ctx
+			return "kept", false, nil
+		},
 	}
 	return f
 }

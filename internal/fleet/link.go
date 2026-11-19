@@ -116,11 +116,11 @@ const (
 	// What the master takes from one child. Requests and cancellations are
 	// paid for from a bucket; a result is paid for by the request it answers.
 	// Anything else is a strike, and so is anything unpaid.
-	requestBurst     = 256
-	requestsPerSec   = 32
-	maxStrikes       = 16
-	maxPreUpgrade    = 128 // connections that are not a link yet, at once
-	headerTime       = 10 * time.Second
+	requestBurst   = 256
+	requestsPerSec = 32
+	maxStrikes     = 16
+	maxPreUpgrade  = 128 // connections that are not a link yet, at once
+	headerTime     = 10 * time.Second
 )
 
 // Errors of the master's end. Test with errors.Is.
