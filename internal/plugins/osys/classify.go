@@ -80,9 +80,12 @@ func Classify(command string) (dangerous bool, reason string) {
 // Tenant an agent runs in (TEN-498): the operator must say yes to them.
 var selfVerbs = map[string]bool{"service": true, "update": true}
 
-// selfLaunchers run the command that follows their options (and VAR=x, and
-// numbers: nice -n 10), with sh's keywords that do the same. selfShells run
-// the command line given after their -c, /c or -Command.
+// selfLaunchers run the command that follows their options, VAR=x and
+// numbers or durations (nice -n 10, timeout 30s: no program is named 5 or
+// 30s), with sh's keywords that do the same; Start-Process (start, saps) is
+// read by selfStart too. selfShells run the command line given after their
+// -c, /c or -Command, and Windows PowerShell 5.1 its bare arguments (pwsh
+// takes them as a file). selfEvals run the rest of the line as one.
 //
 // A TRIPWIRE, NOT A BOUNDARY: a variable, an alias, a script file or a
 // launcher not listed here gets `tenant update` past any reading of the
@@ -90,11 +93,18 @@ var selfVerbs = map[string]bool{"service": true, "update": true}
 // insist on a terminal.
 var (
 	selfLaunchers = map[string]bool{"sudo": true, "doas": true, "env": true, "nohup": true, "exec": true,
-		"command": true, "time": true, "nice": true, "start": true, "start-process": true, ".": true,
+		"command": true, "time": true, "nice": true, "timeout": true, "xargs": true, "start": true,
+		"start-process": true, "saps": true, ".": true,
 		"!": true, "if": true, "then": true, "else": true, "elif": true, "do": true, "while": true, "until": true}
 	selfShells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true,
 		"cmd": true, "powershell": true, "pwsh": true}
+	selfEvals      = map[string]bool{"eval": true, "iex": true, "invoke-expression": true}
 	selfAssignment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
+	selfDuration   = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?[smhd]?$`)
+	// selfStartValues are the parameters of Start-Process besides -FilePath
+	// and -ArgumentList that take a value.
+	selfStartValues = []string{"credential", "workingdirectory", "redirectstandarderror", "redirectstandardinput",
+		"redirectstandardoutput", "verb", "windowstyle"}
 )
 
 // selfCommand reports a command of the line whose running word is tenant
@@ -188,31 +198,86 @@ func selfRuns(w []string, depth int) bool {
 	switch {
 	case name == "tenant":
 		return len(rest) > 0 && selfVerbs[strings.ToLower(rest[0])]
+	case selfEvals[name]:
+		return selfCommand(strings.Join(rest, " "), depth+1)
 	case selfShells[name]:
+		ps := name == "powershell" || name == "pwsh"
 		for i, a := range rest {
 			l := strings.ToLower(a)
-			c := (name == "cmd" && (l == "/c" || l == "/k")) ||
-				((name == "powershell" || name == "pwsh") && len(l) > 1 && (l[0] == '-' || l[0] == '/') && strings.HasPrefix("command", l[1:])) ||
-				(len(l) > 1 && l[0] == '-' && l[1] != '-' && strings.Contains(l, "c") && name != "cmd" && name != "powershell" && name != "pwsh")
-			if c {
+			flag := len(l) > 1 && (l[0] == '-' || (l[0] == '/' && (ps || name == "cmd")))
+			switch {
+			case name == "cmd" && (l == "/c" || l == "/k"),
+				ps && flag && strings.HasPrefix("command", l[1:]),
+				!ps && name != "cmd" && flag && l[1] != '-' && strings.Contains(l, "c"):
 				return selfCommand(strings.Join(rest[i+1:], " "), depth+1)
+			case ps && flag && strings.HasPrefix("file", l[1:]):
+				return false
+			case name == "powershell" && !flag:
+				// The first bare word, or the one after an option's value.
+				return selfCommand(strings.Join(rest[i:], " "), depth+1) ||
+					(i > 0 && strings.HasPrefix(rest[i-1], "-") && selfCommand(strings.Join(rest[i+1:], " "), depth+1))
 			}
 		}
 	case selfLaunchers[name]:
+		if (name == "start" || name == "start-process" || name == "saps") && selfStart(rest) {
+			return true
+		}
 		for i, a := range rest {
 			if a == "-S" || a == "--split-string" { // env -S 'CMD ARGS'
 				return selfCommand(strings.Join(rest[i+1:], " "), depth+1)
 			}
-			if a == "" || strings.HasPrefix(a, "-") || (len(a) == 2 && a[0] == '/') || selfAssignment.MatchString(a) || uniqCount.MatchString(a) {
+			if a == "" || strings.HasPrefix(a, "-") || (len(a) == 2 && a[0] == '/') || selfAssignment.MatchString(a) || selfDuration.MatchString(a) {
 				continue
 			}
 			// The first other word runs; after an option (sudo -u root) it may
-			// be that option's value, and the word after it runs.
+			// be that option's value, and the launcher goes on after it.
 			return selfRuns(rest[i:], depth+1) ||
-				(i > 0 && strings.HasPrefix(rest[i-1], "-") && selfRuns(rest[i+1:], depth+1))
+				(i > 0 && strings.HasPrefix(rest[i-1], "-") && selfRuns(append([]string{w[0]}, rest[i+1:]...), depth+1))
 		}
 	}
 	return false
+}
+
+// selfStart reads PowerShell's Start-Process: the program is the value of
+// -FilePath (-Path, -PSPath, or a start of the name) or the first bare word;
+// its first argument is the first item of -ArgumentList (-Args) or of the
+// second bare word, a comma list.
+func selfStart(rest []string) bool {
+	var file, args string
+	var bare []string
+	for i := 0; i < len(rest); i++ {
+		a := rest[i]
+		if !strings.HasPrefix(a, "-") {
+			bare = append(bare, a)
+			continue
+		}
+		p, v, glued := strings.Cut(strings.ToLower(a[1:]), ":")
+		if !glued && i+1 < len(rest) {
+			v = rest[i+1]
+		}
+		switch {
+		case p == "":
+			continue
+		case strings.HasPrefix("filepath", p) || p == "path" || p == "pspath":
+			file = v
+		case strings.HasPrefix("argumentlist", p) || p == "args":
+			args = v
+		case !slices.ContainsFunc(selfStartValues, func(s string) bool { return strings.HasPrefix(s, p) }):
+			continue // a switch
+		}
+		if !glued {
+			i++
+		}
+	}
+	if file == "" && len(bare) > 0 {
+		file, bare = bare[0], bare[1:]
+	}
+	if args == "" && len(bare) > 0 {
+		args = bare[0]
+	}
+	verb, _, _ := strings.Cut(strings.Trim(strings.ToLower(args), ` '",`), ",")
+	verb, _, _ = strings.Cut(strings.Trim(verb, ` '"`), " ")
+	return len(file) > 0 && selfRuns([]string{file, verb}, 8)
 }
 
 // segmentSplit separates the commands of a compound line.
