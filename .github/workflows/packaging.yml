@@ -77,6 +77,14 @@ jobs:
           sh scripts/install.sh
           "$RUNNER_TEMP/bin/tenant" version
 
+      # install.sh signs the copy with the hardened runtime before it moves it
+      # into place (process protection, TEN-535). This job is where the real
+      # codesign runs against it.
+      - name: The installed binary carries the hardened runtime
+        if: runner.os == 'macOS'
+        run: |
+          /usr/bin/codesign -dv "$RUNNER_TEMP/bin/tenant" 2>&1 | tee /dev/stderr | grep -q '^CodeDirectory .*flags=0x[0-9a-fA-F]*(.*runtime.*)'
+          /usr/bin/codesign --verify --strict "$RUNNER_TEMP/bin/tenant"
       - name: Install the snapshot with install.ps1
         if: runner.os == 'Windows'
         shell: powershell

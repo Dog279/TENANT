@@ -5441,6 +5441,7 @@ Writes the `system` log.
 | [2020](#system-2020) | warning | Shutdown | `Shutdown step {stage}/{step} failed: {err}` |
 | [2021](#system-2021) | warning | Shutdown | `Shutdown step {stage}/{step} did not finish within the stop budget; abandoned after {after}` |
 | [2022](#system-2022) | warning | Shutdown | `Shutdown step {stage}/{step} skipped: the stop budget ran out` |
+| [2030](#system-2030) | warning | Lifecycle | `Running without a process protection: {name} ({control}) could not be applied: {reason}` |
 | [2101](#system-2101) | warning | Component | `{component} is degraded: {err}` |
 | [2102](#system-2102) | warning | Component | `Child process {component} failed: {err}` |
 | [2110](#system-2110) | warning | Component | `{component} unavailable ({effect}): {err}` |
@@ -5448,6 +5449,7 @@ Writes the `system` log.
 | [2501](#system-2501) | warning | Update | `The update from {from} to {to} was interrupted at {step}; running {running}` |
 | [3010](#system-3010) | error | Lifecycle | `{role} stopped with an error: {err}` |
 | [3020](#system-3020) | error | Shutdown | `Shutdown step {stage}/{step} panicked: {panic}` |
+| [3030](#system-3030) | error | Lifecycle | `{role} did not start: {why}` |
 | [3101](#system-3101) | error | Component | `{component} failed: {err}` |
 | [4001](#system-4001) | critical | Audit | `A Security record was not written: {err}` |
 | [4002](#system-4002) | info | Audit | `Security records are written again, after {failed} were not` |
@@ -5457,6 +5459,7 @@ Writes the `system` log.
 | [5004](#system-5004) | warning | Configuration | `A changed key did not reload into the live model provider: {err}` |
 | [5010](#system-5010) | warning | Agent profile | `Agent profile {profile}: model {configured} is served as {served}; using that` |
 | [5011](#system-5011) | warning | Agent profile | `Agent profile {profile}: the endpoint does not serve model {configured}; its calls may fail` |
+| [5020](#system-5020) | warning | Configuration | `A secret is in an environment variable ({names}), which macOS shows to your other programs` |
 
 ### system 1
 
@@ -5711,6 +5714,21 @@ Writes the `system` log.
 
 **What to do.** As for the timed-out stop: the data on disk is safe, and the next start reports the unclean stop.
 
+### system 2030
+
+`Running without a process protection: {name} ({control}) could not be applied: {reason}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Lifecycle · **Log:** system
+- **Fields:** `control`, `name`, `reason`, `leaves`, `acknowledged`, `version`
+- **Keywords:** `lifecycle`
+- **Find it:** `provider:system id:2030`
+
+**What it means.** Tenant started although the operating system could not apply one of its process protections, because the operator acknowledged exactly that at a terminal. It is written at every such start. leaves says what the missing control leaves open; acknowledged is when the operator said yes.
+
+**Why it happens.** The system refuses the control for the reason given, and a person answered yes to "Continue without it?" for this control, this reason and this version.
+
+**What to do.** None if that is accepted. Removing the cause named in reason restores the protection at the next start; tenant doctor shows every control.
+
 ### system 2101
 
 `{component} is degraded: {err}`
@@ -5809,6 +5827,21 @@ Writes the `system` log.
 **Why it happens.** A bug in that component's stop.
 
 **What to do.** Report it with the stack. The component may not have released what it held; check its store with tenant doctor.
+
+### system 3030
+
+`{role} did not start: {why}`
+
+- **Level:** error · **Channel:** operational · **Task:** Lifecycle · **Log:** system
+- **Fields:** `role`, `why`, `version`
+- **Keywords:** `lifecycle`
+- **Find it:** `provider:system id:3030`
+
+**What it means.** Tenant refused to start. The operating system could not apply one of its process protections, there was no terminal to ask at, and nobody had acknowledged that control failing for that reason in this version. why names the control, the system's reason and what its absence leaves open. The same line is in the system's own log: the Application event log on Windows, syslog or the journal elsewhere.
+
+**Why it happens.** A service or a scheduled start met a control the system refuses, on a system where that was never acknowledged, or after an update: a new version asks again.
+
+**What to do.** Run tenant service start (or tenant serve) at a terminal, read what is missing and answer the question. tenant doctor shows every control and why it is off.
 
 ### system 3101
 
@@ -5940,6 +5973,21 @@ Writes the `system` log.
 **Why it happens.** The model name is wrong, or the server loaded another model.
 
 **What to do.** Set the profile's model to one of served, or load the model on the server.
+
+### system 5020
+
+`A secret is in an environment variable ({names}), which macOS shows to your other programs`
+
+- **Level:** warning · **Channel:** operational · **Task:** Configuration · **Log:** system
+- **Fields:** `names`
+- **Keywords:** `config`
+- **Find it:** `provider:system id:5020`
+
+**What it means.** Tenant started on macOS with a variable it reads as a secret set. macOS lets a user's programs read each other's starting environment, and process protection does not change that. names lists the variables, never their values.
+
+**Why it happens.** A key was exported in the shell, or set in the service's unit, instead of being saved in the credentials store.
+
+**What to do.** Save the key with /configure <plugin> or the dashboard's keys page, remove the variable, and start Tenant again.
 
 ## toolmux
 

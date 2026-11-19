@@ -15,6 +15,7 @@ import (
 	"tenant/internal/agent"
 	"tenant/internal/logs"
 	"tenant/internal/orchestra"
+	"tenant/internal/procprotect"
 	"tenant/internal/version"
 )
 
@@ -43,6 +44,9 @@ type restStatus struct {
 	ToolsTotal   int      `json:"tools_total"`
 	Status       string   `json:"status"`
 	Version      string   `json:"version"` // the running build (TEN-498): `tenant service status`, the update health check
+	// Protection is this process's protection as it stands now (TEN-535):
+	// doctor reports it, and not its own, when a Tenant is running.
+	Protection procprotect.Report `json:"process_protection"`
 
 	TurnActive       bool                    `json:"turn_active"`
 	TurnAgeSecs      int                     `json:"turn_age_secs,omitempty"`
@@ -137,6 +141,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		ToolsTotal:   len(tools),
 		Status:       "ok",
 		Version:      version.Version,
+		Protection:   procprotect.Now(),
 	}
 	if s.tools != nil {
 		st.Plugins = s.tools.Plugins()

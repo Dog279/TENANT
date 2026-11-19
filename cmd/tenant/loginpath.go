@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+
+	"tenant/internal/procprotect"
 )
 
 // fillLoginPath gives Tenant on macOS the PATH a login shell has (TEN-489).
@@ -19,7 +21,7 @@ func fillLoginPath() {
 		return
 	}
 	dirs := filepath.SplitList(os.Getenv("PATH"))
-	if out, err := exec.Command("/usr/libexec/path_helper", "-s").Output(); err == nil {
+	if out, err := procprotect.Output(exec.Command("/usr/libexec/path_helper", "-s")); err == nil {
 		// Output: PATH="a:b:c"; export PATH;
 		if _, v, ok := strings.Cut(string(out), `PATH="`); ok {
 			v, _, _ = strings.Cut(v, `"`)

@@ -45,6 +45,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"tenant/internal/procprotect"
 )
 
 // containerLabelKey and friends tag every container the backend starts, so the
@@ -407,7 +409,7 @@ func (b *containerBackend) runSpec(ctx context.Context, cmd Command, pol Policy,
 	}
 
 	started := time.Now()
-	runErr := c.Run()
+	runErr := procprotect.Run(c)
 	wit.flush()
 	spec.witness = wit
 	res := Result{Output: out.String(), PID: pidOf(c)}
@@ -617,7 +619,7 @@ func (b *containerBackend) imageID(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", unavailable(err, fixEndpoint)
 	}
-	out, err := c.Output()
+	out, err := procprotect.Output(c)
 	if err = done(err); err != nil {
 		return "", fmt.Errorf("container: could not read the id of image %s: %w", b.image, err)
 	}
@@ -769,7 +771,7 @@ func (b *containerBackend) reap(name string) error {
 	if err != nil {
 		return err
 	}
-	return c.Run()
+	return procprotect.Run(c)
 }
 
 // SweepLeftovers kills this install's leftover sandbox containers at startup:
@@ -782,7 +784,7 @@ func (b *containerBackend) SweepLeftovers(ctx context.Context) (int, error) {
 	}
 	for _, id := range ids {
 		if rc, done, err := b.control(ctx, "a container removal", "rm", "-f", id); err == nil {
-			_ = done(rc.Run())
+			_ = done(procprotect.Run(rc))
 		}
 	}
 	return len(ids), nil
@@ -808,7 +810,7 @@ func (b *containerBackend) labelledContainers(ctx context.Context, label, want s
 	if err != nil {
 		return nil, err
 	}
-	list, err := lc.Output()
+	list, err := procprotect.Output(lc)
 	if err = done(err); err != nil {
 		return nil, err
 	}
@@ -844,7 +846,7 @@ func StopAllContainers(ctx context.Context) (found, failed int, err error) {
 	for _, id := range ids {
 		rc, done, cerr := b.control(ctx, "a container removal", "rm", "-f", id)
 		if cerr == nil {
-			cerr = done(rc.Run())
+			cerr = done(procprotect.Run(rc))
 		}
 		if cerr != nil {
 			failed++
@@ -971,7 +973,7 @@ func (v dockerVersionInfo) runcVersion() string { return orUnknown(v.component("
 // dockerVersion reads the engine's version through c (a prepared `docker -H …
 // version --format {{json .}}` command).
 func dockerVersion(c *exec.Cmd) (dockerVersionInfo, error) {
-	out, err := c.Output()
+	out, err := procprotect.Output(c)
 	if err != nil {
 		return dockerVersionInfo{}, err
 	}
@@ -986,7 +988,7 @@ func dockerVersion(c *exec.Cmd) (dockerVersionInfo, error) {
 }
 
 // imagePresent runs a prepared `docker -H … image inspect <image>`.
-func imagePresent(c *exec.Cmd) error { return c.Run() }
+func imagePresent(c *exec.Cmd) error { return procprotect.Run(c) }
 
 // attributeContainer makes a conservative Violation from a failed run (W1-6):
 //

@@ -1,4 +1,14 @@
 // Package fsperm owns Tenant's local private-data permission policy.
+//
+// On Windows it also keeps what Tenant makes its owner's to open. A protected
+// Tenant (internal/procprotect) gives the objects it creates an access list
+// made for its threads, and a file or folder made where nothing is inherited
+// from the folder above gets that list too: the owner could then neither read
+// the file nor make anything in the folder (TEN-535 hardening). So every file
+// and folder made here is made inside procprotect.Ordinary, and a directory
+// MkdirAll makes is made to pass its permissions on to what is made in it
+// (passOn): from then on it does not matter which part of Tenant makes a file
+// there, or how. A directory that was there before is not changed.
 package fsperm
 
 import (
@@ -7,6 +17,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"tenant/internal/procprotect"
 )
 
 const (
@@ -63,14 +75,65 @@ func Repair(path string) (bool, error) {
 
 // MkdirAll creates a private directory tree and tightens the final directory
 // when it already exists. Existing parent directories are left unchanged.
+//
+// On Windows a directory this call makes itself, and only such a one, is
+// made to pass its permissions on (passOn). One that was there already is
+// never changed: its entries are its owner's choice, and making them pass on
+// would hand them to every file and folder already in it (TEN-535 round
+// three: a folder readable by Everyone, "this folder only", made a file in
+// it that Everyone could not read readable).
 func MkdirAll(path string) error {
-	if err := os.MkdirAll(path, PrivateDirMode); err != nil {
+	made, err := mkdirAll(path)
+	if err != nil {
 		return err
 	}
 	if isVolumeRoot(path) {
 		return nil
 	}
+	for i := len(made) - 1; i >= 0; i-- { // the innermost first: each keeps its own entries
+		if err := passOn(made[i]); err != nil {
+			return err
+		}
+	}
 	return restrict(path, PrivateDirMode)
+}
+
+// mkdirAll is os.MkdirAll that says which directories it made: those whose
+// Mkdir succeeded, outermost first. A directory that appears between the
+// look and the Mkdir is someone else's, and is not in the list.
+func mkdirAll(path string) (made []string, err error) {
+	var missing []string // innermost first
+	for p := filepath.Clean(path); ; {
+		if _, err := os.Stat(p); err == nil {
+			break
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
+		missing = append(missing, p)
+		up := filepath.Dir(p)
+		if up == p {
+			break
+		}
+		p = up
+	}
+	procprotect.Ordinary(func() {
+		for i := len(missing) - 1; i >= 0 && err == nil; i-- {
+			switch e := os.Mkdir(missing[i], PrivateDirMode); {
+			case e == nil:
+				made = append(made, missing[i])
+			case !errors.Is(e, fs.ErrExist):
+				err = e
+			}
+		}
+	})
+	if err != nil {
+		return made, err
+	}
+	info, err := os.Stat(path)
+	if err == nil && !info.IsDir() {
+		err = &fs.PathError{Op: "mkdir", Path: path, Err: errors.New("not a directory")}
+	}
+	return made, err
 }
 
 // WriteFile writes private data and tightens an existing destination as well.
@@ -88,7 +151,9 @@ func WriteFile(path string, data []byte) error {
 
 // OpenFile opens a private file and tightens it when it already exists.
 func OpenFile(path string, flag int) (*os.File, error) {
-	f, err := os.OpenFile(path, flag, PrivateFileMode)
+	var f *os.File
+	var err error
+	procprotect.Ordinary(func() { f, err = os.OpenFile(path, flag, PrivateFileMode) })
 	if err != nil {
 		return nil, err
 	}

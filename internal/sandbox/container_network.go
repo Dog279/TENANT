@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"tenant/internal/procprotect"
 )
 
 // container_network.go: the network a `full` command runs on (W2-4, H18).
@@ -61,7 +63,7 @@ func (b *containerBackend) ensureNetwork(ctx context.Context) error {
 		if err != nil {
 			return unavailable(err, fixEndpoint)
 		}
-		out, runErr := c.CombinedOutput()
+		out, runErr := procprotect.CombinedOutput(c)
 		createErr := done(runErr)
 		// Created, or another process made it in the same instant: either
 		// way, what counts is what is there now.
@@ -87,7 +89,7 @@ func (b *containerBackend) networkICC(ctx context.Context) (icc string, found bo
 	if err != nil {
 		return "", false, unavailable(err, fixEndpoint)
 	}
-	out, runErr := c.Output()
+	out, runErr := procprotect.Output(c)
 	if err := done(runErr); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return "", false, unavailable(err, fixStuckEngine)

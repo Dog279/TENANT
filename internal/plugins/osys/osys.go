@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"tenant/internal/logs/capture"
+	"tenant/internal/procprotect"
 )
 
 const (
@@ -105,7 +106,7 @@ func realRunner(ctx context.Context, command string, timeout time.Duration) (str
 		c.Dir, _ = os.UserHomeDir()
 	}
 	c.WaitDelay = time.Second // a backgrounded child holding the pipe can't hang the call
-	out, err := c.CombinedOutput()
+	out, err := procprotect.CombinedOutput(c)
 	if errors.Is(err, exec.ErrWaitDelay) {
 		err = nil // done; a background child still holds the pipe
 	}

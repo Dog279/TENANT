@@ -22,6 +22,7 @@ import (
 	"tenant/internal/model"
 	"tenant/internal/peering"
 	"tenant/internal/plugins/mcpremote"
+	"tenant/internal/procprotect"
 )
 
 // plugin is a dispatcher that also advertises its tool specs — every
@@ -1215,7 +1216,13 @@ func (m *Mux) Dispatch(ctx context.Context, call model.ToolCall) (string, bool, 
 		st.record(call.Name, statDisabled)
 		return "tool " + call.Name + " is disabled (/enable " + call.Name + ")", true, nil
 	}
-	out, isErr, err := e.owner.Dispatch(ctx, call)
+	// A tool's files are the user's own: on Windows they are made with the
+	// user's ordinary access list, not the one a protected Tenant gives its
+	// threads (procprotect.Ordinary, internal/fsperm).
+	var out string
+	var isErr bool
+	var err error
+	procprotect.Ordinary(func() { out, isErr, err = e.owner.Dispatch(ctx, call) })
 	// Local-first, peer-appended: only federate a clean local result so the
 	// agent isn't handed peer data stapled to a local error. (TEN-243)
 	if err == nil && !isErr && len(peers) > 0 {

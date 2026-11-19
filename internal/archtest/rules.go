@@ -33,6 +33,7 @@ var rules = []rule{
 	{Pkg: "internal/datalock", Notes: "leaf"},
 	{Pkg: "internal/httplimits", Notes: "leaf"},
 	{Pkg: "internal/version", Notes: "leaf"},
+	{Pkg: "internal/procprotect", Notes: "leaf: asks the operating system to keep other programs out of the process"},
 	{Pkg: "internal/selfupdate", Notes: "leaf: finding, verifying and swapping in a release binary; tenant update sequences it"},
 	{Pkg: "internal/runtrace", Notes: "leaf"},
 	{Pkg: "internal/cmdreg", Notes: "leaf"},
@@ -88,7 +89,9 @@ var rules = []rule{
 // heavy logs packages. All three import only light packages: leaves, and
 // lifecycle and the catalog, which import the event model alone.
 // reference/** and scripts/** stay out of it: they must build on their own.
-var everyone = rule{Pkg: "internal/**", May: []string{"internal/logs/event", "internal/logs/catalog", "internal/logs/capture"}, Notes: "on top of its own row: the event model, the built-in providers (the Security log's records among them) and child capture, so an event is written, and a child filed, where the action happens"}
+// procprotect, a leaf, is the fourth: every command is started through it,
+// wherever it is started (spawn_test.go).
+var everyone = rule{Pkg: "internal/**", May: []string{"internal/logs/event", "internal/logs/catalog", "internal/logs/capture", "internal/procprotect"}, Notes: "on top of its own row: the event model, the built-in providers (the Security log's records among them) and child capture, so an event is written, and a child filed, where the action happens; and procprotect, through which every command is started"}
 
 // match reports whether module-relative package path pkg matches pattern.
 func match(pattern, pkg string) bool {

@@ -53,6 +53,39 @@ on every drive it shares. The execution sandbox protects the host from a
 command the agent runs. It does not protect Tenant, or the engine, from the
 user's other processes.
 
+### Process protection
+
+Tenant's files are the account's to read, but its running process no longer
+is. At every start Tenant asks the operating system to refuse other programs
+of the same user access to its memory (TEN-535): on Linux the dumpable flag is
+turned off, which refuses `ptrace`, `/proc/<pid>/mem`, `/proc/<pid>/environ`,
+`process_vm_readv`, `pidfd_getfd` and `perf_event_open` and stops crash dumps;
+on Windows the access lists of the process and of every thread give the owner
+only the rights to end it, wait for it and read its basic details (for a
+thread: end it, wait for it, resume it), the process's token can be read and
+copied by its owner but not changed, the console host is made to open the
+process again so that the handle it keeps carries those rights and no more,
+the window `tenant serve` needs is owned by a helper process that holds none
+of serve's secrets, and the program is excluded from Windows Error Reporting;
+on macOS a later debugger attach is denied and core files are off.
+
+This is one layer, and it is narrow. The command line stays readable on every
+system, and on macOS so does the environment the process started with. It does
+not stop an administrator or root, a kernel exploit, or a program that started
+Tenant itself and so held access to it from the first instant. On Windows two
+routes of that kind are open and known: the starter's handle can be copied out
+of the starter by another program of the same user for as long as the starter
+keeps it, and a program that is already running can open Tenant in the instant
+between its start and the controls. A program of the same user can also end
+single threads of Tenant, which stops work and reads nothing. It does not
+protect the data: the dashboard token, the credentials file, memory, logs and
+run traces are plain files that a program of the same user can read, and such
+a program can also stop Tenant and run its own copy against them. The Linux
+and Windows controls were shown to refuse each access on a real machine; the
+macOS ones have not been run on a Mac. There is no run-time switch; a build
+made with `-tags debugattach` has no protection and says so in
+`tenant version`, `tenant doctor` and `tenant security audit`.
+
 ### Secrets and credentials
 
 - **API keys and tokens** are stored in
@@ -277,6 +310,13 @@ as a workaround for Chrome installation or permission problems. Run
 
 ## Security Document Changelog
 
+- 2026-11-18 (TEN-535): Process protection on Windows now covers the console
+  host's handle and code loaded through a window, and states what is still
+  open: the starter's handle, the instant before the controls, and ending
+  single threads.
+- 2026-11-18 (TEN-535): added Process protection. The running process is no
+  longer readable by the account's other programs on Linux and Windows; the
+  files on disk still are, and the trust statement above stands for them.
 - 2026-11-10: stated who is trusted (the local user account and its processes;
   the container sandbox protects the host from a command, not from them). The
   container sandbox's HOME is a tmpfs of the container's own, its image is

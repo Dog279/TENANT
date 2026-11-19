@@ -22,11 +22,25 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+
+	"tenant/internal/procprotect"
 )
 
+// protection is what the operating system was asked to refuse other programs
+// (TEN-535), control by control: doctor and the security audit report it.
+var protection procprotect.Report
+
 func main() {
+	// Before anything else, for every command and for the service.
+	protection = procprotect.Protect()
+	if afterProtect != nil { // a test build's (protecttest.go)
+		afterProtect(protection)
+	}
 	if runWindowsService() { // started by the service control manager (svc_windows.go, TEN-498)
 		return
+	}
+	if was, code := runSessionWatcher(); was { // the helper that owns serve's window (sessionend_windows.go)
+		os.Exit(code)
 	}
 	if len(os.Args) < 2 {
 		writeBeginnerHelp(os.Stderr)
@@ -47,7 +61,11 @@ func main() {
 	if n := c.Names[0]; n != "serve" && n != "tui" { // those open the full log book themselves
 		openCommandLog = openOneShotLog
 	}
-	err := c.Run(ctx, os.Args[2:])
+	// The command runs on a thread whose new files get the user's ordinary
+	// access list (Windows; see procprotect.Ordinary and internal/fsperm): a
+	// file a command writes where nothing is inherited is its owner's to read.
+	var err error
+	procprotect.Ordinary(func() { err = c.Run(ctx, os.Args[2:]) })
 	sessionEndFinished() // Windows: answers a logoff or shutdown that serve was stopped by
 	closeCommandLog()
 	if err != nil {

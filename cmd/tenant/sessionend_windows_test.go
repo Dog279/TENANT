@@ -3,6 +3,8 @@
 package main
 
 import (
+	"bufio"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -145,6 +147,23 @@ func TestServeWindowTakesAStopRequest(t *testing.T) {
 			t.Fatal("the window is still there after serve returned")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// serve reads the helper's lines up to a bound (TEN-535 round three): code a
+// hook runs in the helper must not grow serve's memory with a line that never
+// ends. A line past the bound ends the reading; one within it is read.
+func TestHelperLinesAreBounded(t *testing.T) {
+	endings := 0
+	ending := func() { endings++ }
+	long := strings.Repeat("x", maxHelperLine+1)
+	if err := followHelper(helperLines(strings.NewReader("ending\n"+long+"\nending\n")), ending); !errors.Is(err, bufio.ErrTooLong) || endings != 1 {
+		t.Errorf("a line past the bound: err %v, %d endings; want bufio.ErrTooLong after the first ending", err, endings)
+	}
+	endings = 0
+	within := strings.Repeat("y", maxHelperLine-1)
+	if err := followHelper(helperLines(strings.NewReader(within+"\nending\n")), ending); err != nil || endings != 1 {
+		t.Errorf("a line within the bound: err %v, %d endings; want it read, and the ending after it", err, endings)
 	}
 }
 

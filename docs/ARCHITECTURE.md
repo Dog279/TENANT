@@ -126,7 +126,7 @@ generated from `internal/archtest/rules.go`, and
 <!-- archtest:rules -->
 | Package | May import | Note |
 |---|---|---|
-| every `internal/**` package | `internal/logs/event`, `internal/logs/catalog`, `internal/logs/capture` | on top of its own row: the event model, the built-in providers (the Security log's records among them) and child capture, so an event is written, and a child filed, where the action happens |
+| every `internal/**` package | `internal/logs/event`, `internal/logs/catalog`, `internal/logs/capture`, `internal/procprotect` | on top of its own row: the event model, the built-in providers (the Security log's records among them) and child capture, so an event is written, and a child filed, where the action happens; and procprotect, through which every command is started |
 | `cmd/**` | anything | the composition root and command adapters |
 | `scripts/**` | nothing in the module | build tools stand alone |
 | `reference/**` | `reference/**` | examples for tool builders; never tenant/internal |
@@ -136,6 +136,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/datalock` | nothing in the module | leaf |
 | `internal/httplimits` | nothing in the module | leaf |
 | `internal/version` | nothing in the module | leaf |
+| `internal/procprotect` | nothing in the module | leaf: asks the operating system to keep other programs out of the process |
 | `internal/selfupdate` | nothing in the module | leaf: finding, verifying and swapping in a release binary; tenant update sequences it |
 | `internal/runtrace` | nothing in the module | leaf |
 | `internal/cmdreg` | nothing in the module | leaf |

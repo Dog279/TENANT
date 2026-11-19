@@ -247,5 +247,10 @@ settings.json: exec_profiles.*.read_roots
 settings.json: exec_profiles.*.write_roots
 settings.json: known_categories
 settings.json: permissions
+settings.json: protection_acknowledged
+settings.json: protection_acknowledged[].at
+settings.json: protection_acknowledged[].control
+settings.json: protection_acknowledged[].reason
+settings.json: protection_acknowledged[].version
 settings.json: tool_rules
 settings.json: tools

@@ -26,13 +26,14 @@ import (
 
 	"tenant/internal/attach"
 	modelpkg "tenant/internal/model"
+	"tenant/internal/procprotect"
 )
 
 // Seams for tests.
 var (
 	clipGOOS        = runtime.GOOS
 	runClipboardCmd = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return exec.CommandContext(ctx, name, args...).Output()
+		return procprotect.Output(exec.CommandContext(ctx, name, args...))
 	}
 )
 

@@ -42,6 +42,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tenant/internal/procprotect"
 )
 
 const (
@@ -197,7 +199,7 @@ func (b *containerBackend) contextHost(ctx context.Context) string {
 	defer cancel()
 	c := exec.CommandContext(ctx, bin, "context", "inspect", "--format", "{{.Endpoints.docker.Host}}")
 	c.Env = cliEnv(os.Environ())
-	out, err := c.Output()
+	out, err := procprotect.Output(c)
 	if err != nil {
 		return ""
 	}
@@ -503,7 +505,7 @@ func checkFacts(f engineFacts) gateReport {
 // dockerInfo reads the engine facts through c (a prepared `docker -H … info
 // --format {{json .}}` command).
 func dockerInfo(c *exec.Cmd) (engineFacts, error) {
-	out, err := c.Output()
+	out, err := procprotect.Output(c)
 	if err != nil {
 		return engineFacts{}, err
 	}
