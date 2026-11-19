@@ -501,6 +501,7 @@ func (s *Service) Processes(ctx context.Context) (string, error) {
 	} else {
 		cmd = exec.CommandContext(cctx, "ps", "aux")
 	}
+	noWindow(cmd)
 	var out strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := capture.New(cctx, "plugin.os", "child", cmd.Args[0]).Run(cmd); err != nil {
