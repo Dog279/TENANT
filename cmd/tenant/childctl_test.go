@@ -990,7 +990,7 @@ func TestChildEndToEnd(t *testing.T) {
 	}
 	// Everything the child wrote is in its two directories, under these names.
 	for where, known := range map[string][]string{
-		dir:                 {"child.json", "child.json.lock", "child-identity.pem", "child-link.json", "child-paused", "audit"},
+		dir:                 {"child.json", "child.json.lock", "child-identity.pem", "child-link.json", "child-paused", "audit", "memory"},
 		fleet.AuditDir(dir): {"audit.jsonl", "audit.lock"},
 		childDataDir(dir):   {"proc", "screenshots", "wiki", "mcp", "logs"},
 	} {
