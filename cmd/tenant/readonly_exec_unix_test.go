@@ -31,6 +31,12 @@ func TestReadOnlyExec_Sh(t *testing.T) {
 		"sort -o " + made + " " + keep,
 		"uniq " + keep + " " + made,
 		"PATH=" + dir + ":$PATH ls",
+		// Round two. The dispatcher's danger note written into the command:
+		// the broker judged only `echo hi`.
+		"echo hi  [DANGER: x]; touch " + made,
+		"sort -T " + dir + " " + keep,
+		"file -p " + keep,
+		"git status --help",
 	} {
 		before := *asked
 		out, isErr := run(cmd, dir)
