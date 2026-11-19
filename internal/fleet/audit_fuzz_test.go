@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// auditSeed is a log of five records that verifies.
+// auditSeed is a log of six records that verifies.
 func auditSeed(tb testing.TB) []byte {
 	var out []byte
 	prev := auditStart
@@ -23,6 +23,7 @@ func auditSeed(tb testing.TB) []byte {
 			Asked: []AuditAsk{{Action: "os_write", Answer: AskRefused, Why: "ceiling read-only"}}, AskedMore: 2},
 		{Event: AuditRehome, By: "root", From: fingerprintOf([]byte("a")), To: fingerprintOf([]byte("b"))},
 		{Event: AuditUpdates, By: "root", From: "release", To: "master"},
+		{Event: AuditUnprotected, Control: "windows.process-dacl", Note: "Access is denied."},
 	} {
 		rec.Seq, rec.Time, rec.Prev = uint64(i+1), time.Date(2026, 11, 18, 12, 0, i, 0, time.UTC), prev
 		line := must(encode(rec))(tb)
@@ -61,7 +62,7 @@ func FuzzAuditRecord(f *testing.F) {
 			return
 		}
 		if _, perr := parseFingerprint(rec.Prev); perr != nil || rec.Seq == 0 || rec.Time.IsZero() ||
-			(rec.Event != AuditCall && rec.Event != AuditDone && rec.Event != AuditRehome && rec.Event != AuditUpdates) || len(line) > maxAuditLine {
+			(rec.Event != AuditCall && rec.Event != AuditDone && rec.Event != AuditRehome && rec.Event != AuditUpdates && rec.Event != AuditUnprotected) || len(line) > maxAuditLine {
 			t.Fatalf("parsed as a record: %+v", rec)
 		}
 		back, err := encode(rec)

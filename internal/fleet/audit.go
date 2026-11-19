@@ -64,6 +64,11 @@ const (
 	// AuditUpdates: someone on this machine changed whose word an update is
 	// taken on (tenant child updates): From and To are the rules.
 	AuditUpdates = "updates"
+	// AuditUnprotected: the child process runs without one of its process
+	// protections (TEN-535): Control is the control's id, Note the system's
+	// reason. Written once per control at the start of a child process, before
+	// it holds a link, so every call after it in the log ran without it.
+	AuditUnprotected = "unprotected"
 )
 
 // How a call ended, in its AuditDone record.
@@ -109,6 +114,8 @@ type AuditRecord struct {
 	By   string `json:"by,omitempty"`
 	From string `json:"from,omitempty"`
 	To   string `json:"to,omitempty"`
+	// AuditUnprotected: the id of the control that is not in force.
+	Control string `json:"control,omitempty"`
 	// Prev is the hash of the line before this one.
 	Prev string `json:"prev"`
 }
@@ -124,7 +131,7 @@ func parseAuditRecord(line []byte) (AuditRecord, error) {
 		return AuditRecord{}, err
 	}
 	if _, err := parseFingerprint(r.Prev); err != nil || r.Seq == 0 || r.Time.IsZero() ||
-		(r.Event != AuditCall && r.Event != AuditDone && r.Event != AuditRehome && r.Event != AuditUpdates) {
+		(r.Event != AuditCall && r.Event != AuditDone && r.Event != AuditRehome && r.Event != AuditUpdates && r.Event != AuditUnprotected) {
 		return AuditRecord{}, errors.New("not an audit record")
 	}
 	return r, nil
@@ -135,7 +142,12 @@ func parseAuditRecord(line []byte) (AuditRecord, error) {
 // Those logs are read by more accounts than the audit log is.
 func auditOSLine(r AuditRecord, hash string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "fleet audit seq=%d event=%s call=%s tool=%s", r.Seq, r.Event, osLogWord(r.Call), osLogWord(r.Tool))
+	fmt.Fprintf(&b, "fleet audit seq=%d event=%s", r.Seq, r.Event)
+	if r.Event == AuditUnprotected {
+		fmt.Fprintf(&b, " control=%s sha256=%s", osLogWord(r.Control), hash)
+		return b.String()
+	}
+	fmt.Fprintf(&b, " call=%s tool=%s", osLogWord(r.Call), osLogWord(r.Tool))
 	if r.Outcome != "" {
 		fmt.Fprintf(&b, " outcome=%s", osLogWord(r.Outcome))
 	}
@@ -457,6 +469,13 @@ func (l *AuditLog) Rehome(by, from, to string) error {
 // account that made it.
 func (l *AuditLog) UpdatesChanged(by, from, to string) error {
 	_, err := l.append(AuditRecord{Event: AuditUpdates, By: by, From: from, To: to})
+	return err
+}
+
+// Unprotected writes the record of this process running without the process
+// protection control, for the system's reason.
+func (l *AuditLog) Unprotected(control, reason string) error {
+	_, err := l.append(AuditRecord{Event: AuditUnprotected, Control: control, Note: reason})
 	return err
 }
 

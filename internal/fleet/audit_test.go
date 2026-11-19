@@ -346,6 +346,11 @@ func TestAuditOSLine(t *testing.T) {
 		!strings.Contains(got, " call=- ") {
 		t.Errorf("a hostile tool name made the line %q", got)
 	}
+	// A missing process protection: the control's id, not the system's reason.
+	got = auditOSLine(AuditRecord{Seq: 9, Event: AuditUnprotected, Control: "linux.dumpable", Note: "operation not permitted"}, hash)
+	if want := "fleet audit seq=9 event=unprotected control=linux.dumpable sha256=" + hash; got != want {
+		t.Errorf("line:\n%s\nwant:\n%s", got, want)
+	}
 }
 
 func TestParseAuditRecordIsStrict(t *testing.T) {
