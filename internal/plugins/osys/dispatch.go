@@ -380,6 +380,12 @@ func (d *Dispatcher) exec(ctx context.Context, args json.RawMessage) (string, bo
 			home, _ := os.UserHomeDir()
 			dir = home + dir[1:]
 		}
+		// The working directory is not in the command the approval judges
+		// (TEN-534), and on a network share even a command that only looks
+		// opens a session with that host and offers it the user's credentials.
+		if len(dir) > 1 && strings.ContainsRune(`\/`, rune(dir[0])) && strings.ContainsRune(`\/`, rune(dir[1])) {
+			return `workdir must not be a network path (\\host\share): cd there inside the command instead, so that it is approved with the command`, true, nil
+		}
 		if !filepath.IsAbs(dir) {
 			return "workdir must be an absolute path (or start with ~)", true, nil
 		}
