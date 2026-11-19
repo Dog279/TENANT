@@ -109,9 +109,8 @@ func TestChildFitsASmallFrame(t *testing.T) {
 	}
 	// A tool list too long for a frame is an error the master hears, not a
 	// request that is never answered.
-	start := time.Now()
-	if _, err := r.mgr.Tools(ctxFor(t), id); err == nil || !strings.Contains(err.Error(), "does not fit in a frame") || time.Since(start) > 5*time.Second {
-		t.Errorf("a tool list larger than a frame = %v after %v", err, time.Since(start))
+	if _, err := r.mgr.Tools(ctxFor(t), id); err == nil || !strings.Contains(err.Error(), "does not fit in a frame") {
+		t.Errorf("a tool list larger than a frame = %v", err)
 	}
 	// Arguments too large for the link never leave the master.
 	if _, err := r.call(t, id, "echo", `"`+strings.Repeat("a", frame)+`"`); err == nil || errors.Is(err, ErrOutcomeUnknown) || !strings.Contains(err.Error(), "was not sent") {

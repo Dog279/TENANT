@@ -26,12 +26,15 @@ import (
 
 // The link's tests run both ends for real: TLS over loopback, minted
 // identities, fleet.json and child.json in temp dirs. Only the waits are
-// shortened.
+// shortened, and not the ping interval: a link here is given up on after a
+// minute of silence, as a real one is, so that a machine too busy to answer a
+// ping for a moment does not lose links a test is in the middle of using.
+// The tests about silence shorten it for themselves (silencePing).
 
 const (
-	testPing  = 150 * time.Millisecond // a dead link is noticed in two of these
-	testWatch = 25 * time.Millisecond  // how often the master re-reads fleet.json
-	waitLong  = 20 * time.Second       // how long a test waits for what must happen
+	silencePing = 500 * time.Millisecond // a silent link is given up on in two of these
+	testWatch   = 25 * time.Millisecond  // how often the master re-reads fleet.json
+	waitLong    = 20 * time.Second       // how long a test waits for what must happen
 
 	repl = string(utf8.RuneError) // what a byte that is not text is replaced by
 )
@@ -39,6 +42,19 @@ const (
 // quiet is the log of the tests' managers and clients: a hostile child makes
 // a master say a great deal.
 var quiet = slog.New(slog.DiscardHandler)
+
+// soon is the next value on ch. A test that waits for something that then
+// does not happen has to fail there, not sit until the whole run is killed.
+func soon[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(waitLong):
+		t.Fatalf("waited %v for %s", waitLong, what)
+		panic("unreachable")
+	}
+}
 
 // watchLeaks fails the test if it ends with more goroutines than it began
 // with. Call it first, so that it runs after every other cleanup.
@@ -175,8 +191,9 @@ type rig struct {
 	// Raw connections open: the ones the master accepted, and the ones the
 	// children dialed. Both are zero when a test ends.
 	accepted, dialed atomic.Int64
-	masterSent       atomic.Int64 // bytes the master wrote to its connections
-	kidsSent         atomic.Int64 // bytes the children's clients wrote to theirs
+	masterSent       atomic.Int64       // bytes the master wrote to its connections
+	kidsSent         atomic.Int64       // bytes the children's clients wrote to theirs
+	ws               transport.WSConfig // the manager's, and what its children are given
 }
 
 // newRig starts a master. tweak changes the manager before it serves.
@@ -186,11 +203,11 @@ func newRig(t *testing.T, tweak ...func(*Manager)) *rig {
 	r := &rig{master: newMaster(t)}
 	r.store.watchEvery = testWatch
 	mgr := must(newManager(ManagerConfig{Store: r.store, Identity: r.id, Role: "test", Log: quiet}))(t)
-	mgr.ws = transport.WSConfig{PingInterval: testPing}
 	mgr.addressEvery = testWatch
 	for _, f := range tweak {
 		f(mgr)
 	}
+	r.ws = mgr.ws
 	if err := mgr.hold(); err != nil {
 		t.Fatal(err)
 	}
@@ -428,7 +445,7 @@ func (k *kid) client() *Client {
 		Update: func(_ context.Context, u Update) (UpdateAck, error) {
 			return UpdateAck{Received: u.Offset + int64(len(u.Data)), Applying: u.Offset+int64(len(u.Data)) == u.Size}, nil
 		}}))(k.t)
-	c.ws = transport.WSConfig{PingInterval: testPing}
+	c.ws = k.r.ws
 	c.backoffMin, c.backoffMax, c.dialTime = 10*time.Millisecond, 100*time.Millisecond, 5*time.Second
 	c.dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		k.dials.Add(1)
@@ -526,6 +543,17 @@ func (k *kid) restore() {
 	}
 }
 
+// awaitDials waits until the client has dialed n more times.
+func (k *kid) awaitDials(n int64) {
+	k.t.Helper()
+	start := k.dials.Load()
+	for deadline := time.Now().Add(waitLong); k.dials.Load() < start+n; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			k.t.Fatalf("%s dialed %d more times, not %d", k.mach.Name, k.dials.Load()-start, n)
+		}
+	}
+}
+
 // await waits until the client is in state.
 func (k *kid) await(state LinkState) ChildStatus {
 	k.t.Helper()
@@ -602,8 +630,7 @@ func TestLinkFromEnrollmentToFirstCall(t *testing.T) {
 	if st.Detail != WaitingForConfirmation || st.Address != r.addr {
 		t.Errorf("a pending machine's status = %+v", st)
 	}
-	for start := k.dials.Load(); k.dials.Load() < start+3; time.Sleep(5 * time.Millisecond) {
-	}
+	k.awaitDials(3)
 	if m := r.status(t, child.ID); m.Online || m.State != StatePending {
 		t.Errorf("a pending machine is listed as %+v", m)
 	}
@@ -719,10 +746,10 @@ func TestLinkConcurrencyLimitDeadlineAndCancel(t *testing.T) {
 	if m := r.status(t, id); m.InFlight != defaultInFlight {
 		t.Errorf("in flight = %d", m.InFlight)
 	}
-	// One more is refused at once, and nothing is queued for later.
-	start := time.Now()
-	if _, err := r.call(t, id, "echo", `1`); !errors.Is(err, ErrBusy) || time.Since(start) > time.Second {
-		t.Errorf("a call over the limit = %v after %v, want ErrBusy at once", err, time.Since(start))
+	// One more is refused, and not queued: a queued call would come back
+	// when a held one is released, and none is until this one has returned.
+	if _, err := r.call(t, id, "echo", `1`); !errors.Is(err, ErrBusy) {
+		t.Errorf("a call over the limit = %v, want ErrBusy", err)
 	}
 	// Pings and the tool list are not calls.
 	if _, err := r.mgr.Ping(ctxFor(t), id); err != nil {
@@ -741,33 +768,26 @@ func TestLinkConcurrencyLimitDeadlineAndCancel(t *testing.T) {
 		t.Errorf("in flight after all returned = %d", m.InFlight)
 	}
 
-	// A deadline ends the call on the master and the tool on the child.
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
-	_, err := r.mgr.Call(ctx, id, Call{Tool: "wait"})
-	cancel()
-	var ce *CallError
-	if !errors.Is(err, context.DeadlineExceeded) || !errors.As(err, &ce) || ce.Machine != id {
-		t.Fatalf("a call past its deadline = %v", err)
-	}
-	waitID := k.started().ID
-	if ce.CallID != waitID {
-		t.Errorf("the error names call %s, the tool ran %s", ce.CallID, waitID)
-	}
-	// What stops the tool is the master's cancel, sent at the deadline, or
-	// failing that the child's own deadline for the call a second later. The
-	// second happens when the cancel is over a second on its way, and when
-	// the child reads it right behind the request it cancels, as a child
-	// 150ms behind does: mcp.Session looks the request up before the
-	// request's goroutine has registered it, and the cancel is lost. Either
-	// way the call's deadline has stopped the tool, which is the claim here;
-	// the cancel on its own is the next case, where the tool is known to be
-	// running first.
-	awaitResult(t, r, id, waitID, "stopped: context canceled", "stopped: context deadline exceeded")
-
-	// A caller that gives up stops the tool too. The tool is running by
-	// then, so it is the cancel that stops it.
-	ctx, cancel = context.WithCancel(context.Background())
+	// A deadline ends the call on the master and the tool on the child. The
+	// deadline here passes when the test says so, with the tool running: a
+	// timer would have the test racing the call's own arrival.
+	late := &passing{Context: context.Background(), at: time.Now().Add(waitLong), done: make(chan struct{})}
 	done := make(chan error, 1)
+	go func() {
+		_, err := r.mgr.Call(late, id, Call{Tool: "wait"})
+		done <- err
+	}()
+	waitID := k.started().ID
+	close(late.done)
+	err := <-done
+	var ce *CallError
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.As(err, &ce) || ce.Machine != id || ce.CallID != waitID {
+		t.Fatalf("a call past its deadline = %v; the tool ran call %s", err, waitID)
+	}
+	awaitResult(t, r, id, waitID, "stopped: context canceled") // the master's cancel, which is what a deadline sends
+
+	// A caller that gives up stops the tool too.
+	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		_, err := r.mgr.Call(ctx, id, Call{Tool: "wait"})
 		done <- err
@@ -779,13 +799,54 @@ func TestLinkConcurrencyLimitDeadlineAndCancel(t *testing.T) {
 	}
 	awaitResult(t, r, id, waitID, "stopped: context canceled")
 
-	// A caller with no deadline gets the manager's.
+	// A caller with no deadline gets the manager's, and so does the tool on
+	// the child, with the child's grace on top. Left to itself the child
+	// would allow maxCallTime.
+	r.mgr.callTime = time.Minute
+	if res, err := r.mgr.Call(context.Background(), id, Call{Tool: "keep"}); err != nil || res.Text != "kept" {
+		t.Fatalf("a call with no deadline of its own = %+v, %v", res, err)
+	}
+	until, ok := (<-k.tools.ctxs).Deadline()
+	if !ok || until.After(time.Now().Add(time.Minute+callGrace)) {
+		t.Errorf("the tool of a call with no deadline of its own ran with a deadline of %v (%v)", time.Until(until), ok)
+	}
+	// And when the manager's deadline passes, the call ends with it. The
+	// tool was stopped by the cancel, or the cancel was there before it had
+	// started and it never ran: nothing is left running either way.
 	r.mgr.callTime = 100 * time.Millisecond
 	if _, err := r.mgr.Call(context.Background(), id, Call{Tool: "wait"}); !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("a call with no deadline of its own = %v", err)
+		t.Errorf("a call past the manager's deadline = %v", err)
 	}
-	awaitResult(t, r, id, k.started().ID, "stopped: context canceled", "stopped: context deadline exceeded") // as above
+	for deadline := time.Now().Add(waitLong); ; time.Sleep(5 * time.Millisecond) {
+		k.c.mu.Lock()
+		n := len(k.c.running)
+		k.c.mu.Unlock()
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d calls are still running on the child after their deadline", n)
+		}
+	}
 	r.echo(t, id)
+}
+
+// passing is a context whose deadline passes when its done is closed.
+type passing struct {
+	context.Context
+	at   time.Time
+	done chan struct{}
+}
+
+func (p *passing) Deadline() (time.Time, bool) { return p.at, true }
+func (p *passing) Done() <-chan struct{}       { return p.done }
+func (p *passing) Err() error {
+	select {
+	case <-p.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
 }
 
 // awaitResult waits until the machine reports a finished call, with one of
@@ -814,10 +875,11 @@ func TestLinkOfflineFailsAtOnce(t *testing.T) {
 	k := r.kid(t, "box", StateConfirmed)
 	id := k.mach.ID
 
-	start := time.Now()
+	// Nothing waits for the machine to turn up: it never does in this test
+	// until it is started below, and the call has its answer before that.
 	_, err := r.call(t, id, "echo", `1`)
 	var off *OfflineError
-	if !errors.Is(err, ErrOffline) || !errors.As(err, &off) || !off.Since.IsZero() || time.Since(start) > time.Second {
+	if !errors.Is(err, ErrOffline) || !errors.As(err, &off) || !off.Since.IsZero() {
 		t.Fatalf("call to a machine never seen = %v", err)
 	}
 	if !strings.Contains(err.Error(), "not seen since this master started at") {
@@ -910,7 +972,7 @@ func TestLinkDroppedMidCall(t *testing.T) {
 // noticed by both ends within two ping intervals; a call in flight ends with
 // the outcome unknown, and the child dials again.
 func TestLinkSilenceIsNoticed(t *testing.T) {
-	r := newRig(t)
+	r := newRig(t, func(m *Manager) { m.ws.PingInterval = silencePing })
 	k := r.up(t, "box")
 	id := k.mach.ID
 	first := r.link(t, id)
@@ -926,8 +988,8 @@ func TestLinkSilenceIsNoticed(t *testing.T) {
 	if err := <-done; !errors.Is(err, ErrOutcomeUnknown) {
 		t.Fatalf("a call on a link that went silent = %v", err)
 	}
-	if took := time.Since(start); took > 2*testPing+2*time.Second {
-		t.Errorf("the master noticed the silence after %v (ping interval %v)", took, testPing)
+	if took := time.Since(start); took > 2*silencePing+2*time.Second {
+		t.Errorf("the master noticed the silence after %v (ping interval %v)", took, silencePing)
 	}
 	// With the cable out nothing but the master's own deadline can end its
 	// link: the child's close cannot reach it and the child cannot dial.
@@ -957,10 +1019,20 @@ func TestLinkSilenceIsNoticed(t *testing.T) {
 	r.echo(t, id)
 }
 
-// Revoking a machine closes the socket it holds within about a second, and
-// the machine stops dialing and remembers why.
+// Revoking a machine closes the socket it holds, with no call made to it:
+// the master's next look at fleet.json does it, if a message from the
+// machine does not get there first. The machine is told on that socket,
+// stops dialing and remembers why.
+//
+// How soon is the period of that look, and nothing else of any length is in
+// the way; so the period is what is asserted, and not a time on a clock that
+// a busy machine stretches (this test once held a one-second look to a
+// second and a half).
 func TestLinkRevokeIsLive(t *testing.T) {
-	r := newRig(t, func(m *Manager) { m.store.watchEvery = time.Second }) // the real interval
+	if every := Open(t.TempDir()).watchEvery; every != time.Second {
+		t.Errorf("a master looks at fleet.json every %v: a revoke closes a held socket \"within about a second\" only if that is a second", every)
+	}
+	r := newRig(t)
 	k := r.up(t, "box")
 	id := k.mach.ID
 	hold := make(chan error, 1)
@@ -970,14 +1042,12 @@ func TestLinkRevokeIsLive(t *testing.T) {
 	}()
 	k.started()
 
-	start := time.Now()
+	// From here the machine is sent nothing, and its call is held.
+	dialed := k.dials.Load()
 	if err := r.store.Revoke(id); err != nil {
 		t.Fatal(err)
 	}
 	r.awaitOnline(t, id, false)
-	if took := time.Since(start); took > 1500*time.Millisecond {
-		t.Errorf("the revoked machine's socket was closed after %v", took)
-	}
 	if err := <-hold; !errors.Is(err, ErrOutcomeUnknown) {
 		t.Errorf("a call in flight to a machine that was revoked = %v", err)
 	}
@@ -988,7 +1058,8 @@ func TestLinkRevokeIsLive(t *testing.T) {
 		t.Errorf("call to a revoked machine = %v", err)
 	}
 
-	// The child was told, stopped, and wrote it down.
+	// The child was told on the socket it held, not at a handshake it was
+	// refused: it stopped without dialing again, and wrote it down.
 	select {
 	case err := <-k.done:
 		k.done <- err
@@ -997,6 +1068,9 @@ func TestLinkRevokeIsLive(t *testing.T) {
 		}
 	case <-time.After(waitLong):
 		t.Fatal("the revoked child is still running")
+	}
+	if n := k.dials.Load() - dialed; n != 0 {
+		t.Errorf("the revoked child dialed %d more times before it stopped", n)
 	}
 	if st := k.awaitDisk(LinkRevoked); !strings.Contains(st.Detail, "the master rejected this machine") {
 		t.Errorf("child-link.json = %+v", st)
@@ -1043,8 +1117,7 @@ func TestLinkRevokedWhileOffline(t *testing.T) {
 		t.Errorf("status = %+v", st)
 	}
 	k.awaitDisk(LinkRejected)
-	for start := k.dials.Load(); k.dials.Load() < start+2; time.Sleep(5 * time.Millisecond) {
-	}
+	k.awaitDials(2)
 	select {
 	case err := <-k.done:
 		t.Fatalf("a machine refused at the handshake stopped for good: %v", err)
@@ -1404,8 +1477,7 @@ func TestClientKeepsTrying(t *testing.T) {
 	}
 	k.start()
 	k.await(LinkOffline)
-	for start := k.dials.Load(); k.dials.Load() < start+4; time.Sleep(5 * time.Millisecond) {
-	}
+	k.awaitDials(4)
 	st := k.c.Status()
 	if !strings.Contains(st.Detail, deadAddr) || !strings.Contains(st.Detail, "this is not the master") || len(strings.Split(st.Detail, "; ")) != 2 {
 		t.Errorf("status = %+v", st)

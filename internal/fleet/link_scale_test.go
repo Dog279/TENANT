@@ -83,12 +83,15 @@ func heapNow() int {
 // each. An idle link is three goroutines, one on the master and two on the
 // child, and they are the ones the design names.
 func TestLinkScaleSmoke(t *testing.T) {
-	const interval = 400 * time.Millisecond
-	r := newRig(t, func(m *Manager) { m.ws = transport.WSConfig{PingInterval: interval} })
+	// A second, so that a link is given up on only after two: the idle
+	// traffic of a hundred links is measured over a few intervals, and a
+	// link that a busy machine dropped and made again in that time would be
+	// counted as traffic.
+	const interval = time.Second
+	r := newRig(t, func(m *Manager) { m.ws.PingInterval = interval })
 	kids := make([]*kid, scaleChildren)
 	for i := range kids {
 		kids[i] = r.kid(t, fmt.Sprintf("box-%03d", i), StateConfirmed)
-		kids[i].c.ws = transport.WSConfig{PingInterval: interval}
 	}
 	before, heapBefore := settled(), heapNow()
 	for _, k := range kids {
@@ -121,7 +124,7 @@ func TestLinkScaleSmoke(t *testing.T) {
 	// unless its ping is a quarter of an interval late, and then the master
 	// too. On a quiet machine that is one ping and one pong per interval,
 	// 104 bytes a minute at the default interval; what it was here is logged.
-	const intervals = 6
+	const intervals = 3
 	sentMaster, sentKids := r.masterSent.Load(), r.kidsSent.Load()
 	time.Sleep(intervals * interval)
 	byMaster, byKids := r.masterSent.Load()-sentMaster, r.kidsSent.Load()-sentKids

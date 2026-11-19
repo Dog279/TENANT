@@ -117,7 +117,7 @@ func TestConfirmLinkDroppedWhileWaiting(t *testing.T) {
 		done <- err
 	}()
 	callID := k.started().ID
-	dctx := <-deciding
+	dctx := soon(t, deciding, "the master to be asked")
 	k.kill()
 	select {
 	case <-dctx.Done():
@@ -142,9 +142,9 @@ func TestConfirmLinkDroppedWhileWaiting(t *testing.T) {
 		done <- err
 	}()
 	callID = k.started().ID
-	dctx = <-deciding
+	dctx = soon(t, deciding, "the master to be asked")
 	cancel()
-	<-dctx.Done()
+	soon(t, dctx.Done(), "the decision's context to end with the call")
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Errorf("the call = %v", err)
 	}
@@ -238,7 +238,7 @@ func TestHostileConfirm(t *testing.T) {
 	// any size cut down and made text.
 	answers := make(chan mcp.Message, 4)
 	go func() { answers <- confirm(30, mine, "os_exec_dangerous", strings.Repeat("x", 100<<10)+"\xff") }()
-	q := <-questions
+	q := soon(t, questions, "the caller to be asked")
 	if q.action != "os_exec_dangerous" || len(q.detail) != maxDetailLen || !utf8.ValidString(q.detail) {
 		t.Errorf("the caller was asked about %q with %d bytes of detail", q.action, len(q.detail))
 	}
@@ -252,7 +252,7 @@ func TestHostileConfirm(t *testing.T) {
 	}
 	// Yes is yes, for this call.
 	go func() { answers <- confirm(32, mine, "os_exec", "ls") }()
-	q = <-questions
+	q = soon(t, questions, "the caller to be asked")
 	q.answer <- true
 	if got := <-answers; got.Error != nil || string(got.Result) != `{"allow":true}` {
 		t.Errorf("an allowed confirm: %+v", got)
@@ -260,7 +260,7 @@ func TestHostileConfirm(t *testing.T) {
 	// One call asks only so often.
 	for n := 2; n < maxConfirms; n++ {
 		go func() { answers <- confirm(40+n, mine, "os_exec", "again") }()
-		q = <-questions
+		q = soon(t, questions, "the caller to be asked")
 		q.answer <- false
 		<-answers
 	}
@@ -314,7 +314,7 @@ func TestHostileConfirmThenHangsUp(t *testing.T) {
 	if err := c.send(`{"jsonrpc":"2.0","id":1,"method":"fleet/confirm","params":` + string(params) + `}`); err != nil {
 		t.Fatal(err)
 	}
-	dctx := <-deciding
+	dctx := soon(t, deciding, "the master to be asked")
 	_ = c.conn.Close()
 	select {
 	case <-dctx.Done():

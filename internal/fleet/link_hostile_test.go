@@ -43,6 +43,9 @@ type rawChild struct {
 	err  error            // why, once done is closed
 	stop context.CancelFunc
 	asks sync.Map // request id -> chan mcp.Message: where ask waits for its answer
+
+	addressed chan struct{} // closed when it has answered the master's address list
+	once      sync.Once
 }
 
 // dialRaw connects to the master as id and asks for the link. answer, when
@@ -61,11 +64,11 @@ func (r *rig) dialRaw(t *testing.T, id Identity, answer func(c *rawChild, msg mc
 		_ = conn.Close()
 		return nil, err
 	}
-	link, err := transport.UpgradeWSClient(ctx, conn, "wss://"+r.addr+LinkPath, transport.WSConfig{PingInterval: testPing})
+	link, err := transport.UpgradeWSClient(ctx, conn, "wss://"+r.addr+LinkPath, r.ws)
 	if err != nil {
 		return nil, err
 	}
-	c := &rawChild{t: t, conn: conn, ws: link, in: make(chan mcp.Message, 4096), done: make(chan struct{})}
+	c := &rawChild{t: t, conn: conn, ws: link, in: make(chan mcp.Message, 4096), done: make(chan struct{}), addressed: make(chan struct{})}
 	rctx, stop := context.WithCancel(context.Background())
 	c.stop = stop
 	go func() {
@@ -86,6 +89,7 @@ func (r *rig) dialRaw(t *testing.T, id Identity, answer func(c *rawChild, msg mc
 				c.reply(msg, `{"link":1,"os":"linux","ceiling":"full"}`)
 			case msg.Method == methodAddresses:
 				c.reply(msg, `{}`)
+				c.once.Do(func() { close(c.addressed) })
 			case msg.IsResponse():
 				if ch, ok := c.asks.LoadAndDelete(string(msg.ID.Raw())); ok {
 					ch.(chan mcp.Message) <- msg
@@ -106,7 +110,13 @@ func (r *rig) dialRaw(t *testing.T, id Identity, answer func(c *rawChild, msg mc
 	return c, nil
 }
 
-// raw is dialRaw for a machine that must get its link.
+// raw is dialRaw for a machine that must get its link. It returns when the
+// link is made and quiet: the master sends its address list as soon as a
+// machine is linked, and the machine's answer to that is a message like any
+// other. A test that then pauses or revokes the machine, and means to see
+// what happens to one that says nothing, must not have that answer still on
+// its way: it would be the machine saying something, and the master checks a
+// machine's state on every message.
 func (r *rig) raw(t *testing.T, name string) (*rawChild, string) {
 	t.Helper()
 	mach, id := r.add(t, name, StateConfirmed)
@@ -115,6 +125,20 @@ func (r *rig) raw(t *testing.T, name string) (*rawChild, string) {
 		t.Fatal(err)
 	}
 	r.awaitOnline(t, mach.ID, true)
+	select {
+	case <-c.addressed:
+	case <-c.done:
+		t.Fatalf("the master ended the link: %v", c.err)
+	case <-time.After(waitLong):
+		t.Fatal("the master never sent its address list")
+	}
+	// And the master has taken the answer: nothing it asked is unanswered.
+	l := r.link(t, mach.ID)
+	for deadline := time.Now().Add(waitLong); l.credit.Load() != 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the master is still waiting for %d answers", l.credit.Load())
+		}
+	}
 	return c, mach.ID
 }
 
@@ -324,7 +348,7 @@ func TestLinkEndpointRefusals(t *testing.T) {
 // nothing at all, and one that proves a pinned certificate and then stops in
 // the middle of its request.
 func TestHostileSlowBeforeTheUpgrade(t *testing.T) {
-	h := newHostile(t, func(m *Manager) { m.headerTime = 300 * time.Millisecond })
+	h := newHostile(t, func(m *Manager) { m.headerTime = time.Second })
 	_, id := h.add(t, "slow", StateConfirmed)
 
 	cut := func(name string, conn net.Conn) {
@@ -339,7 +363,7 @@ func TestHostileSlowBeforeTheUpgrade(t *testing.T) {
 	silent := must(net.Dial("tcp", h.addr))(t)
 	cut("no handshake", silent)
 
-	// The master's patience here is 300ms, and it applies to this test's own
+	// The master's patience here is a second, and it applies to this test's own
 	// handshake too. On a machine too busy for that the master has cut the
 	// connection early, which is the thing under test: dial again, and do
 	// not mind a write that finds the connection already gone.
@@ -399,7 +423,7 @@ func TestHostileHello(t *testing.T) {
 				// The one case that waits for the hello's time to run out has
 				// a master of its own, which does not wait long. The others
 				// answer at once and are not held to that.
-				h = newHostile(t, func(m *Manager) { m.helloTime = 400 * time.Millisecond })
+				h = &hostile{rig: newRig(t, func(m *Manager) { m.helloTime = 400 * time.Millisecond })}
 			}
 			mach, id := h.add(t, "liar"+strconv.Itoa(len(must(h.store.Machines())(t))), StateConfirmed)
 			c, err := h.dialRaw(t, id, func(c *rawChild, msg mcp.Message) bool {
@@ -618,7 +642,7 @@ func TestHostileGiantFrame(t *testing.T) {
 // A child that starts a frame and never finishes it, saying nothing more,
 // is gone within two ping intervals like any silent one.
 func TestHostileStallsInsideAFrame(t *testing.T) {
-	h := newHostile(t)
+	h := newHostile(t, func(m *Manager) { m.ws.PingInterval = silencePing })
 	c, id := h.raw(t, "bad")
 	c.stop() // it no longer reads, so it no longer answers pings
 	<-c.done
@@ -631,7 +655,7 @@ func TestHostileStallsInsideAFrame(t *testing.T) {
 	}
 	h.intact(t) // while it stalls
 	m := h.awaitOnline(t, id, false)
-	if took := time.Since(start); took > 2*testPing+2*time.Second || !strings.Contains(m.LastError, "no data from the peer") {
+	if took := time.Since(start); took > 2*silencePing+2*time.Second || !strings.Contains(m.LastError, "no data from the peer") {
 		t.Errorf("ended after %v because: %s", took, m.LastError)
 	}
 	h.intact(t)
@@ -797,9 +821,10 @@ func TestHostileToolList(t *testing.T) {
 // A machine that dials again and again without ever finishing its hello
 // holds one connection that is not a link yet, not one per dial.
 func TestHostileManyConnectionsStuckInTheHello(t *testing.T) {
-	// The hello has its ordinary ten seconds, so that none runs out while the
-	// refusals are counted; TestHostileHello has the hello that times out.
-	h := newHostile(t)
+	// The hello has all the time there is, so that the one owed here ends
+	// when the test ends it and not while refusals are being counted;
+	// TestHostileHello has the hello that times out.
+	h := newHostile(t, func(m *Manager) { m.helloTime = time.Hour })
 	mach, id := h.add(t, "bad", StateConfirmed)
 	mute := func(*rawChild, mcp.Message) bool { return true } // it answers nothing
 	stuck, err := h.dialRaw(t, id, mute)
