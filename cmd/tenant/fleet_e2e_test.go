@@ -163,6 +163,9 @@ func e2eHold() {
 			cpu, rss := selfUsage()
 			fmt.Printf("E2E-STATS %d %d %d\n", runtime.NumGoroutine(), cpu.Nanoseconds(), rss)
 		}
+		if cmd, ok := strings.CutPrefix(sc.Text(), "memory "); ok {
+			fmt.Println("E2E-MEMORY " + e2eMemory(cmd)) // fleet_e2e_memory_test.go
+		}
 	}
 	os.Exit(3)
 }
