@@ -35,34 +35,93 @@ tenant fleet init --listen 0.0.0.0:9777 --address master.example.net:9777
   is not loopback; allow it for the networks your machines are on. (Not yet tried on a real
   master: the tests listen on loopback only.)
 - `--address` (repeatable) is what the machines dial. Without it `init` offers this
-  computer's name and its IPv4 addresses. The list can be changed later with `init --address`
-  again; a connected machine is told the new list over its link.
+  computer's name and its IPv4 addresses. Change the list one address at a time with
+  `tenant fleet address list | add HOST:PORT | remove HOST:PORT` (or replace it whole with
+  `init --address` again); a connected machine is told the new list over its link. When every
+  IP address on the list is private, link-local or loopback, `init`, `enroll`, `address` and the
+  dashboard's Add machine say so: a machine at another site cannot dial them. A host name is
+  not judged.
 - Nothing restarts: a running `serve` (or terminal app) sees the new identity within a few
   seconds, takes the fleet, and says `fleet: listening on …`. One process holds the links;
   another on the same dirs says which (`/fleet`, `tenant fleet list`).
 
 Nothing answers on the fleet port but the pinned link and the enroll endpoint, both TLS 1.3.
 
+## 1a. Where the machines reach the master: three routes (TEN-541)
+
+A machine always dials the master; the master never dials a machine. So only the master needs
+to be reachable, on its one fleet port, at an address on the list a code carries.
+
+- **On one LAN.** The master's LAN address (`192.168.1.5:9777`) is enough. This is what `init`
+  guesses. The warning about private addresses is expected here and can be ignored.
+- **Across sites, over an overlay network (recommended).** Put the master and the machines on
+  WireGuard or Tailscale, make the master listen only on its overlay address, and give that
+  address to the machines:
+
+  ```
+  tenant fleet init --listen 100.101.102.103:9777
+  tenant fleet address add 100.101.102.103:9777
+  tenant fleet address remove 192.168.1.5:9777
+  ```
+
+  Nothing is exposed to the internet, and nothing new is trusted: the overlay is only a route.
+- **Across sites, with a public address or a forwarded port.** This is fine too: both ends are
+  pinned by certificate (the code carries the master's fingerprint, and the master accepts only
+  certificates it pinned at enrollment), so the address is only a route and whoever else holds
+  it learns nothing and can do nothing with it. Say plainly what then faces the internet: the
+  TLS 1.3 handshake on the fleet port, and the enroll endpoint's check of a code (five attempts a
+  minute per address, a body cap, refusals in the Security log). Keep in mind that the fleet port's
+  default listen address is every interface (`0.0.0.0:9777`): on a master with a public
+  address, set `--listen` to the one interface you mean.
+
+There is no discovery and no request to join: a machine joins by its one-time code and nothing
+else. A machine that found a master on the network would know nothing about it, so whatever
+answered first could capture it, and the six digits cannot fix that alone, because they only
+prove both ends once the code has already pinned the master. A sound request to join needs a
+password-authenticated key exchange or digits committed before they are revealed: new protocol,
+not this version.
+
 ## 2. Enroll a machine
 
-On the master:
+On the master, at the command line, in the terminal app (`/fleet enroll web1`), or on the
+dashboard's Fleet page (**Add machine**: a name, and whether it runs as you or from boot):
 
 ```
-tenant fleet enroll web1            # prints a one-time code (15 minutes; --ttl), and the line to paste
+tenant fleet enroll web1            # prints a one-time code (15 minutes; --ttl), and the lines to paste
 ```
 
-On the new machine, with Tenant installed (the install scripts take `TENANT_CHILD=user|system`
-and go straight on to this step):
+It prints the code alone on standard output, then (on standard error) when it expires, the
+addresses it carries, and one line for each kind of machine. For a machine with nothing on it,
+the line fetches the install script from the latest release, checks the download against the
+release's checksums, and goes straight on to `tenant child install`:
+
+```
+# Linux, macOS: the child runs as you, from logon
+curl -fsSL https://github.com/OWNER/REPO/releases/latest/download/install.sh | TENANT_CHILD=user TENANT_ENROLL_CODE='<code>' sh
+# Linux, macOS: a service that runs as root from boot (sudo asks for your password)
+curl -fsSL .../install.sh | TENANT_CHILD=system TENANT_ENROLL_CODE='<code>' sudo --preserve-env=TENANT_CHILD,TENANT_ENROLL_CODE sh
+# Windows PowerShell: as you; for SYSTEM from boot, 'system' in a PowerShell run as administrator
+$env:TENANT_CHILD='user'; $env:TENANT_ENROLL_CODE='<code>'; irm https://github.com/OWNER/REPO/releases/latest/download/install.ps1 | iex
+```
+
+For a machine that has Tenant already:
 
 ```
 printf '%s\n' '<code>' | tenant child install            # Linux, macOS
 '<code>' | tenant child install                          # PowerShell
 ```
 
-Add `--system` from an elevated shell for a service that runs as root or SYSTEM from boot;
-without it the child runs as your account from logon. `--ceiling full|no-exec|read-only` sets
-what the machine lets its master do (below). The code is read from standard input or
-`$TENANT_ENROLL_CODE`, never from an argument.
+Add `--system` (in a root shell, or a PowerShell run as administrator) for a service that runs
+as root or SYSTEM from boot; without it the child runs as your account from logon.
+`--ceiling full|no-exec|read-only` sets what the machine lets its master do (below). The code is
+read from standard input or `$TENANT_ENROLL_CODE`, never from an argument: no line puts it on a
+command line the process list shows. A build of Tenant that names no release repository cannot
+print the install-script lines; it says so and prints the others.
+
+The dashboard's Add machine shows the code in the answer to that one request, with a Copy
+button per line, and nowhere else: not in the address bar, not after a reload, not in any log.
+The Security log records that a code was made, for which name and by which dashboard session.
+The API key cannot make a code.
 
 The machine prints **six digits** and shows as `pending` on the master. Until you confirm it,
 the master sends it nothing.
@@ -193,6 +252,57 @@ or `web1: rolled back to "1.3.2": "<why, in the machine's words>"`, `web1: refus
 not confirmed, an older version without `--allow-older`), or `web1: failed` with the reason.
 The exit is 0 only when every machine runs the version asked for.
 
+**Whose word the machine takes (decision A71).** By default a machine installs only a release
+it verified itself: with the archive the master sends the release's `checksums.txt` and its
+signature bundle, on the first message of the transfer, before any of the archive. The machine,
+with no network, checks the archive's name against its own system, processor and the version
+named; verifies the signature over the checksums with `cosign verify-blob --offline` against
+the release workflow of the repository its own binary was built from (never a name the master
+or the environment gives it); and checks that the verified checksums list the archive with the
+SHA-256 the master named. The whole archive is then checked against that hash. Anything that
+does not hold is refused before the archive is sent, nothing is kept, and the master shows the
+machine's reason. So a master, or a master's disk, that changed an archive cannot install it.
+This needs `cosign` on the machine's PATH, a release that carries a signature bundle, and a
+release build of Tenant on the machine; a development build names no release, and refuses every
+update on the default rule (its `tenant child status` says so).
+
+**The project key (TEN-542).** A release binary of the main repository also carries the
+project's Ed25519 public key, and the main releases carry `checksums.txt.sig`, a signature over
+the checksums with that key (SECURITY.md, "Release signatures"). The master sends it with the
+checksums and the bundle. A machine whose own Tenant carries the key verifies that signature
+with nothing installed, and then it alone decides: if it verifies the release is taken (cosign
+is not needed); if it is malformed or does not verify the update is refused at once, without
+trying cosign. When the master sent no project signature (its Tenant is older, or the release
+carries none) the machine falls back to cosign as above, and says so in its reason when cosign
+is not there either. A machine whose Tenant carries no key (a fork's release) ignores the
+project signature and needs cosign. `tenant fleet update` says which check the machine passed:
+
+```
+web1: the machine verified the release's signature itself, with the project key its own Tenant carries, and takes the archive only if it hashes to what that release lists
+web1: the machine verified the release's signature itself, the release workflow's signature, against the release its own Tenant was built from, and takes the archive only if it hashes to what that release lists
+```
+
+The other checks keep their order: the archive's name is the machine's for the version named,
+and the verified checksums list it with the SHA-256 the master named. A master whose own binary
+carries the key checks the project signature itself when it fetches the release, as `tenant
+update` does, and sends nothing when it does not verify. Nothing changes for a machine set to `updates master`.
+
+To run a build of your own on a machine, set it to take its master's hash instead:
+
+```
+tenant child install --updates master        # at enrollment
+tenant child updates master                  # later, on the machine, with its child stopped
+tenant child updates release                 # back to the default
+tenant child updates                         # which one is in force (also in `tenant child status`)
+```
+
+The rule is in `child.json` (`"updates": "master"`; the default is written as nothing). It is
+set only on the machine, never over the link; `tenant child rehome` keeps it; a change is a
+record in the machine's audit log. `tenant fleet update` says for each machine which rule it
+applied. A machine from before this setting takes its master's hash. Downgrades are refused on
+the master unless `--allow-older`, as before; a signed older release is still a genuine release,
+and a machine on the default rule takes it.
+
 On the machine: the archive goes to `<dir>-data/update/<sha256>.part` (a dropped link resumes
 there), and nothing else is touched until it is whole and hashes right. The binary is unpacked
 beside the installed one (`.tenant-child-update/`) and run once with `version`. Then the child
@@ -258,6 +368,37 @@ from a loopback peer or over TLS. On another computer, run the command on the ma
 new master gave the machine a new id and the copies name the old one; without the right id, or
 with another fleet's identity, nothing is read. The same command reads a machine's memory after
 the master's fleet key file was replaced (then without `--was`).
+
+What the recovery reads cannot be checked the way a copy of this master's is. Every snapshot a
+master makes ends with an authenticator only its fleet key's secret makes, and a copy under the
+master's own key without it is refused unread. The old fleet's secret is gone, so a copy under
+the old key vouches for nothing but the recovery key's public half, which the old master kept in
+`fleet.json`: anyone who had that file could have made it. So whatever the recovered copy says
+the master recorded (its inventory, notes made with `fleet_note`) is recalled from then on as
+the machine's own words, inside its frame, under "Records from a copy of its memory that this
+master did not make", and the new master takes the machine's inventory again. Look at those
+records before relying on any of them.
+
+### Forget on the machines
+
+`tenant privacy forget` leaves a request beside the machines' memory, sealed to the fleet key
+and the recovery key, since it names what is to be forgotten. The Tenant that holds the fleet
+deletes it from each machine's memory and from what was kept aside, sends the machine a new
+copy, and tells it to delete its older ones; a machine that is offline is told when it is back.
+A memory rebuilt from a copy older than the forget has it applied again, for as long as the
+request is kept. The request is kept until every machine still in the fleet has had it, has
+dropped its older copies and keeps no copy under another fleet key; then it is deleted, and
+`<data>/fleet/forgets.age` with it when it was the last. A machine enrolled after the forget
+does not hold it back, and one revoked since no longer does.
+
+That has a price. Once the request is gone, a copy older than the forget that comes back (the
+machine restored from a backup of its own disk) is neither purged nor looked into: newer copies
+push it out in time, but if this master loses its own memory of the machine while that copy is
+the machine's newest, the memory is rebuilt from it and holds what was forgotten. Forget again
+then. Copies a machine keeps under another fleet key are never deleted by a forget: delete them
+on the machine (the `memory` folder in its child directory); until they are gone the request is
+kept, and a copy under another key that turns up after the request was deleted brings nothing
+back unless `tenant fleet recover` reads it.
 
 ## 6. When a link drops
 

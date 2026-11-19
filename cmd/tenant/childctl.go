@@ -7,6 +7,7 @@ package main
 //
 //	tenant child install [--system] [--ceiling C] [--sandbox B]
 //	tenant child rehome         trust another master (one rebuilt from nothing)
+//	tenant child updates [release|master]  whose word an update is taken on
 //	tenant child status | pause | resume | audit | uninstall
 //	tenant child run            what the installed service runs
 //
@@ -49,7 +50,7 @@ import (
 	"tenant/internal/version"
 )
 
-const childUsage = "usage: tenant child install [--system] [--ceiling full|no-exec|read-only] | rehome | status | pause | resume | audit | uninstall"
+const childUsage = "usage: tenant child install [--system] [--ceiling full|no-exec|read-only] [--updates release|master] | rehome | updates [release|master] | status | pause | resume | audit | uninstall"
 
 // childCodeEnv is the environment variable `tenant child install` reads the
 // enrollment code from when it is set, before standard input.
@@ -77,6 +78,7 @@ func cmdChild(ctx context.Context, args []string) error {
 	system := fs.Bool("system", false, "install: run as root or SYSTEM from boot, with the child's files in the machine's own location (needs an elevated terminal)")
 	ceiling := fs.String("ceiling", string(fleet.CeilingFull), "install: what this machine lets its master do: full, no-exec or read-only")
 	sandboxName := fs.String("sandbox", "host", "install: the sandbox backend this machine runs commands through")
+	updates := fs.String("updates", string(fleet.UpdatesRelease), "install: whose word an update from the master is taken on: release (its signature, verified here) or master (the hash the master names)")
 	hidden := fs.Bool("hidden", false, "run: Windows: hide the console window (the logon task passes it)")
 	// An update's own (childupdate.go): the new version's trial run, and on
 	// Windows the child an older process keeps. Both end when their standard
@@ -86,7 +88,7 @@ func cmdChild(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() > 0 {
+	if fs.NArg() > 0 && !(verb == "updates" && fs.NArg() == 1) {
 		if verb == "install" || verb == "rehome" {
 			return exitError{2, "the enrollment code is read from standard input or from $" + childCodeEnv +
 				", never from an argument: an argument shows in the process list and stays in the shell's history"}
@@ -102,7 +104,7 @@ func cmdChild(ctx context.Context, args []string) error {
 	}
 	switch verb {
 	case "install":
-		return childInstall(ctx, os.Stdin, os.Stdout, dir, childInstallOpts{system: *system, ceiling: *ceiling, sandbox: *sandboxName})
+		return childInstall(ctx, os.Stdin, os.Stdout, dir, childInstallOpts{system: *system, ceiling: *ceiling, sandbox: *sandboxName, updates: *updates})
 	case "run":
 		log := newLogger()
 		if !*trial && !*kept { // an update's own runs end when the child that started them closes their input
@@ -127,6 +129,8 @@ func cmdChild(ctx context.Context, args []string) error {
 		return childRun(ctx, dir, log, childRunOpts{trial: *trial, kept: *kept})
 	case "rehome":
 		return childRehome(ctx, os.Stdin, os.Stdout, dir)
+	case "updates":
+		return childUpdates(os.Stdout, dir, fs.Arg(0))
 	case "status":
 		return childStatus(ctx, os.Stdout, dir)
 	case "pause", "resume":
@@ -180,8 +184,8 @@ func isSystemChild(dir string) bool {
 // --- install ---
 
 type childInstallOpts struct {
-	system           bool
-	ceiling, sandbox string
+	system                    bool
+	ceiling, sandbox, updates string
 }
 
 // childInstall enrolls this machine and installs the service that holds its
@@ -193,6 +197,10 @@ func childInstall(ctx context.Context, in io.Reader, out io.Writer, dir string, 
 	case fleet.CeilingFull, fleet.CeilingNoExec, fleet.CeilingReadOnly:
 	default:
 		return exitError{2, fmt.Sprintf("--ceiling %q: it is full, no-exec or read-only", o.ceiling)}
+	}
+	rule, err := parseUpdateRule(o.updates)
+	if err != nil {
+		return exitError{2, err.Error()}
 	}
 	if _, err := sandbox.For(o.sandbox); err != nil {
 		// Found out now, and not by the first command the master sends.
@@ -234,6 +242,7 @@ func childInstall(ctx context.Context, in io.Reader, out io.Writer, dir string, 
 	child, digits, err := fleet.Enroll(ctx, code, id, fleet.Reported{OS: runtime.GOOS, User: childAccount(o.system),
 		Version: version.Version, Sandbox: o.sandbox, Ceiling: o.ceiling})
 	if err == nil {
+		child.Updates = rule
 		err = fleet.SaveChild(fleet.ChildPath(dir), child)
 	}
 	if err == nil {
@@ -271,6 +280,7 @@ func childInstall(ctx context.Context, in io.Reader, out io.Writer, dir string, 
 		return fmt.Errorf("this machine is enrolled, but its service was not installed: %w\n"+
 			"`tenant child run --dir %q` holds the link from this terminal; `tenant child uninstall` undoes the enrollment", err, dir)
 	}
+	fmt.Fprintln(out, updatesLine(child))
 	_, where := spec.installed(ctx)
 	when := "every time this account logs on"
 	if o.system {
@@ -427,6 +437,102 @@ func childRehome(ctx context.Context, in io.Reader, out io.Writer, dir string) e
 	fmt.Fprintln(out, "Start the child again (its service, or `tenant child run`).")
 	if recorded != nil {
 		return fmt.Errorf("the machine was given its new master, but the audit log did not take the record of it: %w", recorded)
+	}
+	return nil
+}
+
+// parseUpdateRule is --updates or the argument of `child updates`, as
+// child.json keeps it: the default, release, is written as nothing.
+func parseUpdateRule(s string) (fleet.UpdateRule, error) {
+	switch fleet.UpdateRule(strings.TrimSpace(s)) {
+	case "", fleet.UpdatesRelease:
+		return "", nil
+	case fleet.UpdatesMaster:
+		return fleet.UpdatesMaster, nil
+	}
+	return "", fmt.Errorf("--updates %q: it is release (the release's signature, verified on this machine) or master (the hash the master names)", s)
+}
+
+// updatesLine is the update rule in force, for status and install.
+func updatesLine(c fleet.Child) string {
+	if c.Rule() == fleet.UpdatesMaster {
+		return "updates:  master: an update is taken on the SHA-256 the master names (`tenant child updates release` verifies the release's signature here instead)"
+	}
+	keys, err := selfupdate.ParseKeys(version.ReleaseKeys)
+	repo := childReleaseRepo()
+	switch {
+	case err != nil:
+		return "updates:  release, refused: this build's project key does not read (" + err.Error() + ")"
+	case repo != "" && len(keys) > 0:
+		return "updates:  release: an update is taken only if its signature verifies here, with the project key this Tenant carries or as " + repo + "'s release"
+	case repo != "":
+		return "updates:  release: an update is taken only if its signature verifies here as " + repo + "'s release"
+	case len(keys) > 0:
+		return "updates:  release: an update is taken only if its signature verifies here with the project key this Tenant carries"
+	}
+	return "updates:  release, refused: " + errNoReleaseIdentity
+}
+
+// childUpdates is `tenant child updates [release|master]`: with no rule it
+// says the one in force; with one, it sets it in child.json, on this
+// machine only, and the audit log records the change. Like rehome it runs
+// with the child stopped: it holds the audit log while it writes.
+func childUpdates(out io.Writer, dir, arg string) error {
+	path := fleet.ChildPath(dir)
+	old, err := fleet.LoadChild(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("no child is enrolled here (%s)", dir)
+	case err != nil:
+		return err
+	}
+	if arg == "" {
+		fmt.Fprintln(out, updatesLine(old))
+		return nil
+	}
+	rule, err := parseUpdateRule(arg)
+	if err != nil {
+		return exitError{2, err.Error()}
+	}
+	if isSystemChild(dir) && !childElevated() {
+		return exitError{2, "this is the machine's own child: `tenant child updates` needs an elevated terminal"}
+	}
+	if old.Rule() == (fleet.Child{Updates: rule}).Rule() {
+		fmt.Fprintln(out, updatesLine(old))
+		return nil
+	}
+	var oslog func(string)
+	if write, done, err := openChildOSLog(); err == nil {
+		defer done()
+		oslog = func(line string) { _ = write(line) }
+	}
+	audit, err := fleet.OpenAudit(dir, oslog)
+	if errors.Is(err, fleet.ErrAuditHeld) {
+		return exitError{2, "a child process is running on this directory: stop it first (its service, or the `tenant child run` holding it), change the rule, then start it again"}
+	}
+	if err != nil {
+		return err
+	}
+	defer audit.Close()
+	if err := audit.Ready(); err != nil {
+		return exitError{2, "this account may not write the child's audit log, so nothing was changed: " + err.Error()}
+	}
+	var now fleet.Child
+	if err := fleet.UpdateChild(path, func(c *fleet.Child) error {
+		c.Updates = rule
+		now = *c
+		return nil
+	}); err != nil {
+		return err
+	}
+	if isSystemChild(dir) && runtime.GOOS == "windows" {
+		if err := sealSystemChild(dir); err != nil {
+			fmt.Fprintf(out, "note: the child's files could not be closed to this account again: %v\n", err)
+		}
+	}
+	fmt.Fprintln(out, updatesLine(now))
+	if err := audit.UpdatesChanged(childAccount(false), string(old.Rule()), string(now.Rule())); err != nil {
+		return fmt.Errorf("the rule was changed, but the audit log did not take the record of it: %w", err)
 	}
 	return nil
 }
@@ -692,6 +798,7 @@ func childStatus(ctx context.Context, out io.Writer, dir string) error {
 	}
 	fmt.Fprintf(out, "machine:  %s (%s)\nmaster:   %s\nceiling:  %s%s\nsandbox:  %s\n", child.Name, child.ID,
 		strings.Join(child.MasterAddresses, ", "), child.Ceiling, only, child.Sandbox)
+	fmt.Fprintln(out, updatesLine(child))
 	if spec, err := childSpecFor(runtime.GOOS, "", dir, isSystemChild(dir)); err == nil {
 		if ok, where := spec.installed(ctx); ok {
 			fmt.Fprintf(out, "service:  %s\n", where)

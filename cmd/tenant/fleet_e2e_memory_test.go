@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"tenant/internal/fleet"
+	"tenant/internal/fleet/shadow"
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
 )
@@ -63,7 +64,7 @@ func e2eMemory(cmd string) string {
 				var facts []string
 				bare := 0
 				for _, f := range all {
-					if o, _, _ := p.Semantic.Origin(ctx, f.ID); o.Job == originInventory {
+					if o, _, _ := p.Semantic.Origin(ctx, f.ID); strings.TrimPrefix(o.Job, shadow.RecoveredOrigin) == originInventory {
 						continue // taken at confirmation, when there is an embedder (TEN-532)
 					}
 					facts = append(facts, f.Fact)

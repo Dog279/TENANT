@@ -519,8 +519,8 @@ func fleetRecallOf(ctx context.Context, m fleet.Machine, query string, vec []flo
 // is (fleetShown). A fact of any other origin, or none, is the machine's.
 // "" when there is nothing.
 func fleetRecallText(m fleet.Machine, facts []recalledFact, eps []*episodic.Episode) string {
-	var own, theirs strings.Builder
-	nOwn, nTheirs := 0, 0
+	var own, theirs, recovered strings.Builder
+	nOwn, nTheirs, nRecovered := 0, 0, 0
 	for _, f := range facts {
 		day := f.at.UTC().Format(time.DateOnly)
 		switch f.origin {
@@ -534,6 +534,14 @@ func fleetRecallText(m fleet.Machine, facts []recalledFact, eps []*episodic.Epis
 			}
 			fmt.Fprintf(&own, "master: %s %s: %s\n", day, kind, strconv.QuoteToASCII(fleetShown(f.text, fleetNoteMax+200)))
 		default:
+			if strings.HasPrefix(f.origin, shadow.RecoveredOrigin) {
+				// From a copy read with the recovery identity: whatever it says
+				// it was, no key of this master's made it (shadow.markRecovered).
+				if nRecovered++; nRecovered <= fleetRecallFacts {
+					fmt.Fprintf(&recovered, "- (%s) %s\n", day, fleetShown(f.text, 1000))
+				}
+				continue
+			}
 			if nTheirs++; nTheirs > fleetRecallFacts {
 				continue
 			}
@@ -545,12 +553,15 @@ func fleetRecallText(m fleet.Machine, facts []recalledFact, eps []*episodic.Epis
 		fmt.Fprintf(&work, "- %s, the operator's request: %s\n%s\n", e.Timestamp.UTC().Format(time.DateOnly),
 			fleetShown(fleetCut(e.Prompt, 400), 600), fleetShown(fleetCut(e.Response, fleetRecallEpisodeMax), fleetRecallEpisodeMax+400))
 	}
-	if own.Len() == 0 && theirs.Len() == 0 && work.Len() == 0 {
+	if own.Len() == 0 && theirs.Len() == 0 && recovered.Len() == 0 && work.Len() == 0 {
 		return ""
 	}
 	var body strings.Builder
 	if theirs.Len() > 0 {
 		body.WriteString("Facts drawn from its output:\n" + theirs.String())
+	}
+	if recovered.Len() > 0 {
+		body.WriteString("Records from a copy of its memory that this master did not make (read with the recovery identity): whatever they say they were, they are not this master's words:\n" + recovered.String())
 	}
 	if work.Len() > 0 {
 		body.WriteString("Earlier work on it (the operator's request, then each call to it and what it returned):\n" + work.String())

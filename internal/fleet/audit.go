@@ -61,6 +61,9 @@ const (
 	// AuditRehome: someone on this machine gave it another master
 	// (tenant child rehome). No call goes with it.
 	AuditRehome = "rehome"
+	// AuditUpdates: someone on this machine changed whose word an update is
+	// taken on (tenant child updates): From and To are the rules.
+	AuditUpdates = "updates"
 )
 
 // How a call ended, in its AuditDone record.
@@ -121,7 +124,7 @@ func parseAuditRecord(line []byte) (AuditRecord, error) {
 		return AuditRecord{}, err
 	}
 	if _, err := parseFingerprint(r.Prev); err != nil || r.Seq == 0 || r.Time.IsZero() ||
-		(r.Event != AuditCall && r.Event != AuditDone && r.Event != AuditRehome) {
+		(r.Event != AuditCall && r.Event != AuditDone && r.Event != AuditRehome && r.Event != AuditUpdates) {
 		return AuditRecord{}, errors.New("not an audit record")
 	}
 	return r, nil
@@ -447,6 +450,13 @@ func (l *AuditLog) append(rec AuditRecord) (string, error) {
 // the system log, when it returns.
 func (l *AuditLog) Rehome(by, from, to string) error {
 	_, err := l.append(AuditRecord{Event: AuditRehome, By: by, From: from, To: to})
+	return err
+}
+
+// UpdatesChanged writes the record of a change of the update rule: by is the
+// account that made it.
+func (l *AuditLog) UpdatesChanged(by, from, to string) error {
+	_, err := l.append(AuditRecord{Event: AuditUpdates, By: by, From: from, To: to})
 	return err
 }
 

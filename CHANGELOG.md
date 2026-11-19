@@ -205,6 +205,34 @@ Releases page.
   the acknowledgement run a `tenant` built with `-tags procprotecttest`, in which the environment
   can say that a control cannot be applied; `tenant version` announces such a build, and no
   release is built with the tag.
+- **A machine joins a fleet in one paste** (TEN-541). `tenant fleet enroll <name>` now prints,
+  beside the lines for a machine that has Tenant, the whole line for a machine with nothing on
+  it: `install.sh` (Linux, macOS) or `install.ps1` (PowerShell) from the latest release, which
+  checks the download and goes straight on to `tenant child install`, as the user's own child or
+  as a service from boot. The code travels in `TENANT_ENROLL_CODE` or on standard input, never
+  as an argument; the boot-time line for Linux and macOS keeps it off sudo's command line
+  (`sudo --preserve-env`), and the install script's own example now does too. The same output
+  is `/fleet enroll <name>` in the terminal app, and the dashboard's Fleet page has **Add
+  machine**: a name and whether it runs as you or from boot, then the line with a Copy button,
+  shown once, in that answer only. Making a code there takes a signed-in browser (not the API
+  key); confirming the machine stays on this computer, with its six digits. `tenant fleet
+  address list | add | remove` changes the addresses a code carries one at a time, and every
+  place a code is made warns when each IP address on it is private, link-local or loopback.
+  `docs/fleet-runbook.md` has the three routes: a LAN, an overlay network, a public address.
+  Joining stays by code only: no discovery, no request to join.
+- **The main releases are signed with a project key as well** (TEN-542). Beside cosign's
+  keyless bundle, a release of the main repository carries `checksums.txt.sig`, an Ed25519
+  signature over `checksums.txt` made by the release workflow with a key held as a repository
+  secret; the public key is built into the release binary. A binary that carries the key takes,
+  with `tenant update`, only a release whose signature verifies under it, with nothing
+  installed; a missing, malformed or wrong signature refuses the update, and no flag skips it.
+  cosign is still checked when it is installed, and then both must pass. A fleet machine on the
+  default rule takes a release when cosign verifies it or, when its Tenant carries the key, when
+  the project signature its master sent verifies; one that is sent and wrong refuses at once.
+  `tenant fleet update` says which check each machine passed. A fork's binaries and development
+  builds carry no key and update exactly as before. The maintainer makes and replaces the key
+  with `go run ./scripts/releasekey keygen` (SECURITY.md, "Release signatures"); a repository
+  without the secret and the variable releases as before.
 - **A fleet: one Tenant that owns your other machines** (TEN-531, the first of three parts).
   Install Tenant on a machine you own and run `tenant child install` with a one-time code from
   the master (`tenant fleet enroll <name>`): the machine becomes a **child**. It has no model
@@ -276,7 +304,13 @@ Releases page.
     and cannot read them. Each time a machine connects the two sides compare: the newer wins,
     the machine's copy rebuilds a master that lost or damaged its own, and a copy made under
     another fleet key marks the machine **needs recovery key** and nothing is overwritten.
-    A replaced memory is kept aside on the master for thirty days.
+    A replaced memory is kept aside on the master for thirty days. Each snapshot ends with an
+    authenticator only the fleet key's secret makes: a copy that names this master's key and
+    does not carry it is refused unread, so knowing the fleet key's or the recovery key's public
+    half is not enough to put a memory on the master. A copy read with the recovery identity
+    (`tenant fleet recover`) cannot be checked that way: whatever it says the master recorded
+    (the inventory, notes) is recalled from then on as the machine's own words, inside its frame,
+    and the master takes the machine's inventory again.
   - `/fleet` and `tenant fleet show` say each machine's memory: in step, behind, needs recovery
     key, or why it is not known. `tenant doctor` checks the fleet key (and that it is held in
     memory kept out of the swap file) and that the recovery key was proven. `tenant backup` warns
@@ -300,6 +334,23 @@ Releases page.
     ones, also once a machine that was offline is back, and applies it again to a memory rebuilt
     from a copy made before it. Copies a machine keeps under an earlier fleet key are not deleted;
     you are told. Retention pruning does not reach the machines' memory.
+- **A fleet machine verifies an update's release itself** (TEN-533, decision A71). `tenant fleet
+  update` now sends the release's checksums and signature bundle with the archive, before any of
+  it; a machine checks, offline, that the signature is the release workflow's of the repository
+  its own binary was built from, that the checksums list the archive with the hash it was sent,
+  and that the archive is its own system's and processor's for the version named, and refuses
+  anything else before the archive is on the wire. A master that was taken over, or whose copy
+  of an archive was changed, can no longer install it on its machines. This needs `cosign` on
+  the machine and a signed release; a development build refuses every update on this rule and
+  says so. `tenant child install --updates master` (or later, on the machine,
+  `tenant child updates master`) makes a machine take its master's hash instead, to run a build
+  of your own; it is set only on the machine, kept by rehome, shown by `tenant child status`, and
+  recorded in the audit log. `tenant fleet update` says which rule each machine applied.
+    you are told. Retention pruning does not reach the machines' memory. The request, which
+    names what is forgotten, is kept sealed until every machine still in the fleet has had it,
+    has dropped its older copies and keeps none under another key; then it is deleted. A copy
+    older than the forget that comes back after that, from a backup of a machine's own disk, is
+    not purged, and a memory rebuilt from it holds what was forgotten again.
 - **A fleet survives losing its master** (TEN-533). `tenant child rehome`, run on a machine with
   its child stopped, gives it another master: a master restored from a plain backup or rebuilt
   from nothing. It takes a code from the new master's `tenant fleet enroll` as `child install`

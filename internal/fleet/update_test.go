@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -147,6 +148,72 @@ func FuzzHelloUpdate(f *testing.F) {
 		}
 		if len(r.Reason) > maxUpdateReason || !printable(r.Reason) {
 			t.Fatalf("kept reason %q", r.Reason)
+		}
+	})
+}
+
+// The release's material rides on a piece of an update (decision A71): an
+// archive's name, the checksums and the bundle, each bounded. A piece with
+// more, or a name that is a path, is not a piece of an update.
+func TestUpdateReleaseMaterialIsBounded(t *testing.T) {
+	ok := Update{Version: "3.0.0", SHA256: strings.Repeat("ab", 32), Size: 10, Asset: "tenant_3.0.0_linux_x86_64.tar.gz",
+		Checksums: make([]byte, MaxReleaseChecksums), Bundle: make([]byte, MaxReleaseBundle), Signature: make([]byte, MaxReleaseSignature)}
+	if err := ok.validate(); err != nil {
+		t.Fatalf("material at its bounds: %v", err)
+	}
+	for name, change := range map[string]func(*Update){
+		"checksums too large":       func(u *Update) { u.Checksums = make([]byte, MaxReleaseChecksums+1) },
+		"a bundle too large":        func(u *Update) { u.Bundle = make([]byte, MaxReleaseBundle+1) },
+		"a signature too large":     func(u *Update) { u.Signature = make([]byte, MaxReleaseSignature+1) },
+		"an asset that is a path":   func(u *Update) { u.Asset = "../tenant_3.0.0_linux_x86_64.tar.gz" },
+		"an asset with a backslash": func(u *Update) { u.Asset = `x\tenant.zip` },
+		"a hidden asset":            func(u *Update) { u.Asset = ".tenant.zip" },
+		"an asset that is long":     func(u *Update) { u.Asset = strings.Repeat("a", maxAssetLen+1) },
+		"an asset with a control":   func(u *Update) { u.Asset = "tenant\x1b[2J.zip" },
+	} {
+		u := ok
+		change(&u)
+		if u.validate() == nil {
+			t.Errorf("%s: valid", name)
+		}
+	}
+}
+
+// FuzzUpdateParams: the params of fleet/update, as a child reads them from
+// its master. What validates is bounded: a piece of at most MaxUpdateChunk
+// inside the archive, material within its bounds, an asset name that is a
+// bare file name.
+func FuzzUpdateParams(f *testing.F) {
+	sha := strings.Repeat("ab", 32)
+	for _, seed := range []string{
+		`{"version":"3.0.0","sha256":"` + sha + `","size":10,"offset":0,"data":null,"asset":"tenant_3.0.0_linux_x86_64.tar.gz","checksums":"YWJj","bundle":"eA=="}`,
+		`{"version":"3.0.0","sha256":"` + sha + `","size":10,"offset":0,"data":"AAAA"}`,
+		`{"version":"3.0.0","sha256":"` + sha + `","size":10,"asset":"../../etc/passwd"}`,
+		`{"version":"3.0.0","sha256":"` + sha + `","size":10,"asset":"C:tenant.zip"}`,
+		`{"version":"3.0.0","sha256":"` + sha + `","size":10,"asset":"tenant\u0000.zip"}`,
+		`{"version":"3.0.0","sha256":"` + sha + `","size":10,"checksums":"` + strings.Repeat("A", 90000) + `"}`,
+		`{"version":"3.0.0","sha256":"` + sha + `","size":10,"bundle":12}`,
+		`{"version":"3.0.0","sha256":"` + sha + `","size":10,"asset":"tenant_3.0.0_linux_x86_64.tar.gz","checksums":"YWJj","signature":"` + strings.Repeat("QUFB", 30) + `"}`,
+		`{"version":"3.0.0","sha256":"` + sha + `","size":10,"signature":"` + strings.Repeat("A", 200) + `"}`,
+		`{"version":"3.0.0","sha256":"` + sha + `","size":10,"signature":"not base64!"}`,
+		`{"version":"3.0.0","sha256":"` + sha + `","size":10,"signature":["x"],"later":{"field":1}}`,
+		`{"version":"3.0.0","sha256":"` + sha + `","size":-1,"offset":5}`,
+		`{"version":"3.0.0","sha256":"` + sha + `","size":10,"asset":"‮zip.exe"}`,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		var u Update
+		if json.Unmarshal(raw, &u) != nil || u.validate() != nil {
+			return
+		}
+		if len(u.Checksums) > MaxReleaseChecksums || len(u.Bundle) > MaxReleaseBundle || len(u.Signature) > MaxReleaseSignature || len(u.Data) > MaxUpdateChunk ||
+			u.Offset < 0 || u.Size < 1 || u.Offset+int64(len(u.Data)) > u.Size {
+			t.Fatalf("validated out of bounds: asset %q, %d/%d bytes of material", u.Asset, len(u.Checksums), len(u.Bundle))
+		}
+		if u.Asset != "" && (len(u.Asset) > maxAssetLen || !printable(u.Asset) || strings.ContainsAny(u.Asset, `/\: `) ||
+			strings.HasPrefix(u.Asset, ".") || filepath.Base(u.Asset) != u.Asset) {
+			t.Fatalf("validated asset %q", u.Asset)
 		}
 	})
 }

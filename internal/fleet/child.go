@@ -72,6 +72,30 @@ type Child struct {
 	// tools never read or write, whoever asks: absolute paths of files or
 	// directories, the last element of which may use "*".
 	SecretPaths []string `json:"secret_paths,omitempty"`
+	// Updates is whose word an update over the link is taken on (decision
+	// A71): "" or UpdatesRelease, the release's own signature, verified on
+	// this machine against the release identity built into its binary; or
+	// UpdatesMaster, the SHA-256 its master names, so that an owner can ship
+	// a build of their own. Chosen on the machine, never over the link. The
+	// default is written as nothing, so that an older binary put back by a
+	// rollback still reads the file.
+	Updates UpdateRule `json:"updates,omitempty"`
+}
+
+// UpdateRule is Child.Updates.
+type UpdateRule string
+
+const (
+	UpdatesRelease UpdateRule = "release"
+	UpdatesMaster  UpdateRule = "master"
+)
+
+// Rule is the rule in force: UpdatesRelease unless the file says master.
+func (c Child) Rule() UpdateRule {
+	if c.Updates == UpdatesMaster {
+		return UpdatesMaster
+	}
+	return UpdatesRelease
 }
 
 // childFile is child.json as written: Child and the file's version.
@@ -121,6 +145,11 @@ func (c Child) validate() error {
 	}
 	if !c.Ceiling.valid() {
 		return errors.New("fleet: child.json: ceiling is not full, no-exec or read-only")
+	}
+	switch c.Updates {
+	case "", UpdatesRelease, UpdatesMaster:
+	default:
+		return errors.New("fleet: child.json: updates is release or master")
 	}
 	if c.SecretPaths != nil && (len(c.SecretPaths) == 0 || len(c.SecretPaths) > maxSecretPaths) {
 		return fmt.Errorf("fleet: child.json: secret_paths lists between 1 and %d paths; leave it out to add none", maxSecretPaths)

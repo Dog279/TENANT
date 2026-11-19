@@ -143,7 +143,7 @@ func TestStore_ASoundDatabaseThatIsNotAMemory(t *testing.T) {
 	must(t, err)
 	must(t, odd.Close())
 	m := meta{Host: hostA, KeyID: f.key.ID(), Gen: 5}
-	blob := craft(t, string(appendHeader(nil, m.KeyID, m.Gen)), f.to, gzip.DefaultCompression, metaLine(t, m, image, image), image, image)
+	blob := craft(t, f.key, string(appendHeader(nil, m.KeyID, m.Gen)), f.to, gzip.DefaultCompression, metaLine(t, m, image, image), image, image)
 	c := Copy{KeyID: m.KeyID, Gen: m.Gen, Hash: Hash(blob), OK: true}
 
 	if got, err := f.Adopt(ctx, hostA, c, blob, nil); !errors.Is(err, ErrDamaged) || got != (Adopted{}) {
@@ -159,7 +159,7 @@ func TestStore_ASoundDatabaseThatIsNotAMemory(t *testing.T) {
 	must(t, f.Store.Close())
 	m.Embeddings = true
 	must(t, os.WriteFile(f.path(hostA, shadowFile),
-		craft(t, string(appendHeader(nil, m.KeyID, m.Gen)), f.to, gzip.NoCompression, metaLine(t, m, image, image), image, image), 0o600))
+		craft(t, f.key, string(appendHeader(nil, m.KeyID, m.Gen)), f.to, gzip.NoCompression, metaLine(t, m, image, image), image, image), 0o600))
 	f.open()
 	if _, err := f.Acquire(ctx, hostA); !errors.Is(err, ErrDamaged) {
 		t.Fatalf("Acquire: %v", err)

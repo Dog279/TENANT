@@ -453,7 +453,7 @@ func TestChildRehomeIsStartedOnlyOnTheMachine(t *testing.T) {
 		t.Errorf("childRehome is called from %q; only `tenant child rehome` may", callers)
 	}
 	slices.Sort(writers)
-	if want := []string{"cmd/tenant/childctl.go: childInstall", "cmd/tenant/childctl.go: childRehome", "internal/fleet/child.go: UpdateChild",
+	if want := []string{"cmd/tenant/childctl.go: childInstall", "cmd/tenant/childctl.go: childRehome", "cmd/tenant/childctl.go: childUpdates", "internal/fleet/child.go: UpdateChild",
 		"internal/fleet/client.go: addresses"}; !slices.Equal(writers, want) {
 		t.Errorf("child.json is written from %q, want %q", writers, want)
 	}

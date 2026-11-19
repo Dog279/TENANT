@@ -19,16 +19,25 @@ import (
 
 // A snapshot is one machine's memory, both stores, as one opaque value:
 //
-//	tenant-fleet-snapshot/1 <key id> <generation>\n
+//	tenant-fleet-snapshot/2 <key id> <generation>\n
 //	an age file, encrypted to the fleet key and the recovery key, holding
 //	    a gzip stream of
 //	        one line of JSON: host, key id, generation, content hash, sizes
 //	        the episodic database, as SQLite serializes it
 //	        the semantic database
+//	32 bytes: HMAC-SHA-256 of everything before them, keyed by a key
+//	    derived from the fleet key's secret (Key.mac)
 //
 // The first line is all that is readable without a key. It is repeated
 // inside, where it cannot be changed, and the two must agree. A snapshot's
 // hash is the SHA-256 of all its bytes.
+//
+// The authenticator is what says this master made a snapshot: age to a
+// public recipient vouches for nobody, so "it decrypts" proves nothing to a
+// master whose public halves someone has learned. A reader that knows only
+// version 1 refuses version 2 at its first line, and this one refuses
+// version 1 there: a snapshot without an authenticator is damaged, and there
+// is no reading of the old format to fall back to.
 
 var (
 	// ErrDamaged is a snapshot that cannot be trusted: cut short, altered,
@@ -41,7 +50,7 @@ var (
 )
 
 const (
-	snapMagic = "tenant-fleet-snapshot/1"
+	snapMagic = "tenant-fleet-snapshot/2"
 	// MaxSnapshotBytes bounds a snapshot. Each database in it is bounded by
 	// the same figure, which is also what SQLite lets an in-memory database
 	// grow to.
@@ -185,12 +194,21 @@ func (m meta) validate() error {
 	return nil
 }
 
-// seal makes a snapshot of the two serialized databases.
-func seal(m meta, episodic, semantic []byte, to []age.Recipient) ([]byte, error) {
+// seal makes a snapshot of the two serialized databases, authenticated by
+// by, the fleet key whose id m names.
+func seal(m meta, episodic, semantic []byte, to []age.Recipient, by *Key) ([]byte, error) {
 	m.Episodic, m.Semantic = int64(len(episodic)), int64(len(semantic))
 	if err := m.validate(); err != nil {
 		return nil, fmt.Errorf("shadow: snapshot: %w", err)
 	}
+	if by == nil || by.id != m.KeyID {
+		return nil, errors.New("shadow: snapshot: it is authenticated by the key it names")
+	}
+	mac, done, err := by.mac()
+	if err != nil {
+		return nil, err
+	}
+	defer done()
 	line, err := json.Marshal(m)
 	if err != nil {
 		return nil, err
@@ -223,6 +241,8 @@ func seal(m meta, episodic, semantic []byte, to []age.Recipient) ([]byte, error)
 	if err := enc.Close(); err != nil {
 		return nil, fmt.Errorf("shadow: encrypt: %w", err)
 	}
+	mac.Write(out.Bytes())
+	out.Write(mac.Sum(nil))
 	if out.Len() > MaxSnapshotBytes {
 		return nil, fmt.Errorf("shadow: the snapshot is %d bytes, over the %d limit", out.Len(), MaxSnapshotBytes)
 	}
@@ -233,6 +253,9 @@ func seal(m meta, episodic, semantic []byte, to []age.Recipient) ([]byte, error)
 type snapshot struct {
 	meta
 	episodic, semantic *memDB
+	// authentic says this master's fleet key made it (its authenticator
+	// holds). Only a copy read with a recovery identity can be without.
+	authentic bool
 }
 
 func (s *snapshot) close() {
@@ -240,23 +263,50 @@ func (s *snapshot) close() {
 	_ = s.semantic.Close()
 }
 
-// openSnapshot decrypts host's snapshot with k into two in-memory databases,
-// and returns them only when all of it holds up: the key id is k's (unless k
-// is a recovery identity, which reads any), the encryption authenticates to
-// its last byte, the inside agrees with the first line and names host, and
-// both databases pass SQLite's integrity check. The plaintext exists in RAM
-// alone.
-func openSnapshot(ctx context.Context, r io.Reader, k *Key, host string) (_ *snapshot, err error) {
-	br := bufio.NewReaderSize(r, 64<<10)
+// openSnapshot is readSnapshot for a caller whose key is also the one that
+// authenticates: the fleet key, or a recovery identity alone.
+func openSnapshot(ctx context.Context, r io.ReadSeeker, k *Key, host string) (*snapshot, error) {
+	return readSnapshot(ctx, r, k, k, host)
+}
+
+// readSnapshot decrypts host's snapshot with k into two in-memory databases,
+// and returns them only when all of it holds up. In this order:
+//
+//  1. Its authenticator, checked with own, this master's fleet key, over
+//     every byte before it, before anything of the snapshot is parsed or any
+//     memory is sized by it.
+//  2. Its first line. A snapshot that names own's key id and does not
+//     authenticate is damaged, whoever reads it. One that names another key
+//     is ErrForeignKey, unless k is a recovery identity: that is the one
+//     reading of a snapshot this master did not make (authentic false), and
+//     nothing but the recovery key's public half vouches for it.
+//  3. The encryption, to its last byte; the inside agreeing with the first
+//     line and naming host; both databases passing SQLite's integrity check.
+//
+// The plaintext exists in RAM alone.
+func readSnapshot(ctx context.Context, r io.ReadSeeker, k, own *Key, host string) (_ *snapshot, err error) {
+	size, err := r.Seek(0, io.SeekEnd)
+	if err != nil || size <= macSize || size > MaxSnapshotBytes {
+		return nil, fmt.Errorf("%w: not a fleet snapshot", ErrDamaged)
+	}
+	authentic := own.authentic(r, size)
+	if _, err := r.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrDamaged, err)
+	}
+	br := bufio.NewReaderSize(io.LimitReader(r, size-macSize), 64<<10)
 	line, err := readLine(br, maxHeaderLine)
 	if err != nil {
 		return nil, fmt.Errorf("%w: not a fleet snapshot", ErrDamaged)
 	}
 	keyID, gen, ok := parseHeader(line)
-	if !ok {
+	switch {
+	case !ok:
 		return nil, fmt.Errorf("%w: not a fleet snapshot", ErrDamaged)
-	}
-	if !k.recovery && keyID != k.id {
+	case authentic && keyID != own.id:
+		return nil, fmt.Errorf("%w: it names another key than the one that made it", ErrDamaged)
+	case !authentic && keyID == own.id:
+		return nil, fmt.Errorf("%w: its authenticator does not hold: this master did not make it", ErrDamaged)
+	case !k.recovery && keyID != k.id:
 		return nil, fmt.Errorf("%w (key %s)", ErrForeignKey, keyID)
 	}
 	damaged := func(err error) error { return fmt.Errorf("%w: %v", ErrDamaged, err) }
@@ -289,7 +339,7 @@ func openSnapshot(ctx context.Context, r io.Reader, k *Key, host string) (_ *sna
 	if m.Host != host {
 		return nil, damaged(fmt.Errorf("it belongs to machine %s", m.Host))
 	}
-	s := &snapshot{meta: m}
+	s := &snapshot{meta: m, authentic: authentic}
 	defer func() {
 		if err != nil {
 			for _, db := range []*memDB{s.episodic, s.semantic} {

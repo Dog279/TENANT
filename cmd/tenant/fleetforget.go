@@ -195,7 +195,8 @@ func recordFleetForget(cfgDir, dataDir string, sel privacy.Selector) (string, er
 	}
 	return "The same is forgotten from every fleet machine's memory by the Tenant process that holds the fleet (at once while one runs, else when one next starts): " +
 		"its shadow on this master, then a new copy on the machine, which is told to delete its older copies; a machine that is offline is told when it is back. " +
-		"Copies a machine keeps under an earlier fleet key cannot be deleted from here: the operator deletes them on that machine.", nil
+		"Copies a machine keeps under an earlier fleet key cannot be deleted from here: the operator deletes them on that machine. " +
+		"The request, which names what is forgotten, is kept, sealed, until every machine has dropped its older copies, then deleted.", nil
 }
 
 // --- in the process that holds the fleet ---
@@ -234,6 +235,14 @@ func (m *fleetMemory) loadForgets() {
 
 // saveForgets writes the record. The caller holds fgMu.
 func (m *fleetMemory) saveForgets() error {
+	if len(m.forgets) == 0 {
+		// Nothing left to do: the record goes, and with it the last of what
+		// was to be forgotten.
+		if err := os.Remove(m.forgetsPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
 	raw, err := json.Marshal(m.forgets)
 	if err != nil {
 		return err
@@ -332,7 +341,8 @@ func (m *fleetMemory) applyForgets(ctx context.Context) {
 			changed = true
 		}
 	}
-	if changed {
+	// A machine revoked since the last look no longer holds a forget back.
+	if m.dropFinished() || changed {
 		if err := m.saveForgets(); err != nil {
 			m.log.Warn("fleet: the record of forgets was not written", "err", err)
 		}
@@ -369,11 +379,11 @@ func (m *fleetMemory) applyForget(ctx context.Context, id string, f *fleetForget
 			removed += it.Count
 		}
 	}
-	*on = forgetOn{Applied: true, Gen: c.Gen, Purged: c.Gen == 0}
+	// Purged waits for the machine to be in step, also with no generation
+	// (gen 0): only then is it known what it keeps (purgeIfOwed).
+	*on = forgetOn{Applied: true, Gen: c.Gen}
 	m.log.Info("fleet: a forget was applied to a machine's memory", "machine", id, "removed", removed, "generation", c.Gen)
-	if c.Gen > 0 {
-		m.kick(id) // the new generation goes to the machine, and then the purge
-	}
+	m.kick(id) // the new generation goes to the machine, and then the purge
 	return nil
 }
 
@@ -403,51 +413,104 @@ func (m *fleetMemory) reapplyForgets(ctx context.Context, id string, gen uint64)
 	}
 }
 
-// purgeIfOwed tells a machine that holds its master's newest generation to
-// drop its older copies, once for every forget it has not been told of.
-func (m *fleetMemory) purgeIfOwed(ctx context.Context, id string) {
+// purgeIfOwed is a machine in step with its master (it holds the master's
+// newest generation; copies is what it said it keeps): it is told to drop
+// its older copies, once for every forget it has not been told of, and what
+// it keeps under another key is noted on every forget it holds back. Then
+// the forgets with nothing left to do are dropped (dropFinished).
+func (m *fleetMemory) purgeIfOwed(ctx context.Context, id string, copies []shadow.Copy) {
 	keep, _, err := m.shadows.Newest(id)
-	if err != nil {
-		return
-	}
-	m.fgMu.Lock()
-	owed := false
-	for _, f := range m.forgets {
-		if on := f.Machines[id]; on != nil && on.Applied && !on.Purged && on.Gen <= keep.Gen {
-			owed = true
-		}
-	}
-	m.fgMu.Unlock()
-	if !owed {
-		return
-	}
-	if err := m.mgr.MemoryPurge(ctx, id, keep); err != nil {
-		m.log.Warn("fleet: a machine was not told to drop its older copies after a forget; it is told at the next comparison", "machine", id, "err", err)
+	switch {
+	case errors.Is(err, shadow.ErrNoCopy):
+		// No generation yet, and in step: the machine keeps nothing under
+		// this key either, so there is nothing to drop.
+		keep, err = shadow.Copy{KeyID: m.key.ID()}, nil
+	case err != nil:
 		return
 	}
 	foreign := false
-	if copies, err := m.mgr.MemoryList(ctx, id); err == nil {
-		for _, c := range copies {
-			foreign = foreign || c.KeyID != keep.KeyID
-		}
+	for _, c := range copies {
+		foreign = foreign || c.KeyID != keep.KeyID
 	}
 	m.fgMu.Lock()
-	told := false
+	owed, open := false, false
 	for _, f := range m.forgets {
-		if on := f.Machines[id]; on != nil && on.Applied && !on.Purged && on.Gen <= keep.Gen {
-			told = told || (foreign && !on.Foreign)
-			on.Purged, on.Foreign = true, foreign
+		if on := f.Machines[id]; on != nil && on.Applied && on.Gen <= keep.Gen {
+			open = true
+			owed = owed || !on.Purged
 		}
 	}
-	err = m.saveForgets()
+	m.fgMu.Unlock()
+	if !open {
+		return
+	}
+	if owed && keep.Gen > 0 {
+		if err := m.mgr.MemoryPurge(ctx, id, keep); err != nil {
+			m.log.Warn("fleet: a machine was not told to drop its older copies after a forget; it is told at the next comparison", "machine", id, "err", err)
+			return
+		}
+		m.log.Info("fleet: a machine dropped the copies of its memory older than a forget", "machine", id, "kept", keep.Gen)
+	}
+	m.fgMu.Lock()
+	told, changed := false, false
+	for _, f := range m.forgets {
+		if on := f.Machines[id]; on != nil && on.Applied && on.Gen <= keep.Gen && (!on.Purged || on.Foreign != foreign) {
+			told = told || (foreign && !on.Foreign)
+			on.Purged, on.Foreign, changed = true, foreign, true
+		}
+	}
+	if m.dropFinished() || changed {
+		err = m.saveForgets()
+	}
 	m.fgMu.Unlock()
 	if err != nil {
 		m.log.Warn("fleet: the record of forgets was not written", "err", err)
 	}
-	m.log.Info("fleet: a machine dropped the copies of its memory older than a forget", "machine", id, "kept", keep.Gen)
 	if told {
-		m.tell(fmt.Sprintf("fleet: machine %s keeps copies of its memory made under another fleet key. A forget cannot delete them from the master: delete them on the machine (the memory folder in its child directory) if they may hold what was forgotten.", id))
+		m.tell(fmt.Sprintf("fleet: machine %s keeps copies of its memory made under another fleet key. A forget cannot delete them from the master: delete them on the machine (the memory folder in its child directory) if they may hold what was forgotten. Until they are gone the forget is kept, to be applied again.", id))
 	}
+}
+
+// dropFinished removes the forgets that have nothing left to do, and reports
+// whether it removed any. A forget is finished when every machine it
+// reached that is still in the fleet has had it applied, was told to drop
+// its older copies, and keeps no copy under another key. A machine revoked
+// since, or gone from fleet.json, no longer holds it back; one enrolled
+// after it was never reached by it. While fleet.json cannot be read nothing
+// is dropped. The log says how many went, and nothing of what they forgot.
+// The caller holds fgMu and saves the record.
+//
+// What is dropped is not applied again: a machine's copy older than the
+// forget that comes back after (the machine restored from a backup of its
+// own disk) is not purged, and a memory rebuilt from it holds what was
+// forgotten. That is the price of keeping no record of what was forgotten
+// for longer than it is needed (decision A72).
+func (m *fleetMemory) dropFinished() bool {
+	kept := m.forgets[:0:0]
+	for _, f := range m.forgets {
+		done := true
+		for id, on := range f.Machines {
+			if on.Applied && on.Purged && !on.Foreign {
+				continue
+			}
+			mach, err := m.store.Machine(id)
+			switch {
+			case errors.Is(err, fleet.ErrUnknown), err == nil && mach.State == fleet.StateRevoked:
+				continue // no longer in the fleet
+			}
+			done = false
+			break
+		}
+		if !done {
+			kept = append(kept, f)
+		}
+	}
+	dropped := len(m.forgets) - len(kept)
+	if dropped > 0 {
+		m.forgets = kept
+		m.log.Info("fleet: forgets with nothing left to do were dropped from the record", "dropped", dropped, "left", len(kept))
+	}
+	return dropped > 0
 }
 
 // --- the inventory ---

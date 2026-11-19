@@ -25,6 +25,10 @@ type FleetControl interface {
 	// the machine shows it confirms the machine; set is category=mode pairs for
 	// that machine alone.
 	Confirm(name, code string, set []string) (string, error)
+	// Enroll makes the one-time code that adds a machine as name, and says
+	// what `tenant fleet enroll` says: the code, the lines to paste on the new
+	// machine, the addresses the code carries and the next step.
+	Enroll(name string) (string, error)
 	// Revoke ends a machine. scheme is "keep" or "delete" (its approval
 	// scheme); "" only asks which.
 	Revoke(name, scheme string) (string, error)
@@ -43,7 +47,7 @@ type CronFleetControl interface {
 	SetFleet(id string, machines []string) (CronJobView, error)
 }
 
-const fleetUsage = "usage: /fleet   |   /fleet show <name>   |   /fleet confirm <name> [<six digits> [category=mode ...]]   |   /fleet revoke <name> [keep|delete]   |   /fleet relay [discord|imessage [on|off]]   (a machine's permissions: /permissions fleet <name>)"
+const fleetUsage = "usage: /fleet   |   /fleet show <name>   |   /fleet enroll <name>   |   /fleet confirm <name> [<six digits> [category=mode ...]]   |   /fleet revoke <name> [keep|delete]   |   /fleet relay [discord|imessage [on|off]]   (a machine's permissions: /permissions fleet <name>)"
 
 // slashFleet runs /fleet.
 func slashFleet(m *model, line string) tea.Cmd {
@@ -82,6 +86,11 @@ func slashFleet(m *model, line string) tea.Cmd {
 		return answer(func() (string, error) { return fc.Status(), nil })
 	case sub == "show" && len(f) == 2:
 		return answer(func() (string, error) { return fc.Show(f[1]) })
+	case sub == "enroll" && len(f) == 2:
+		if !typed() {
+			return nil
+		}
+		return answer(func() (string, error) { return fc.Enroll(f[1]) })
 	case sub == "confirm" && len(f) >= 2:
 		// The six digits may be typed with a space in them; a pair has an "=".
 		var code string
@@ -158,6 +167,7 @@ func fleetCommands() []*slashCommand {
 			Rows: []cmdreg.Row{
 				{Syntax: "/fleet", Desc: "each machine: online or offline, OS, user, last seen; and which process holds the fleet"},
 				{Syntax: "/fleet show <name>", Desc: "everything known about one machine, with what it reported marked as its own words"},
+				{Syntax: "/fleet enroll <name>", Desc: "a one-time code for a new machine, and the line to paste there, with Tenant on it or with nothing on it"},
 				{Syntax: "/fleet confirm <name>", Desc: "the confirm screen of a pending machine: what it reported, the scheme it starts with"},
 				{Syntax: "/fleet confirm <name> <six digits> [category=mode ...]", Desc: "confirm it with the digits it shows; a pair sets that category for this machine alone"},
 				{Syntax: "/fleet revoke <name> [keep|delete]", Desc: "end a machine; keep or delete its approval scheme"},

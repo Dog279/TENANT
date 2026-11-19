@@ -27,6 +27,7 @@
 {{define "fl-rule-tag"}}<span class="{{if eq . "deny"}}act-errtag{{else if eq . "ask"}}risk{{else}}tag{{end}}">{{if eq . "deny"}}blocked{{else if eq . "ask"}}asks you first{{else}}runs without asking{{end}}</span>{{end}}
 
 {{define "fleet-list"}}
+{{with .Added}}{{template "fleet-added" .}}{{end}}
 <div class="card">
   <div class="card-head">Who holds the fleet</div>
   <div>{{.View.Holder}}</div>
@@ -55,8 +56,18 @@
   </table></div>
   <div class="dim mt">* Reported by the machine: its own words, in quotes. This Tenant has not checked them.</div>
   {{else}}
-  {{template "ui-empty" "No machines yet. In a terminal on the computer running Tenant, run tenant fleet enroll and a name for the machine, then paste the line it prints on the new machine."}}
+  {{template "ui-empty" "No machines yet. Add one below: give it a name, then paste the line this page shows on the new machine."}}
   {{end}}
+</div>
+<div class="card">
+  <div class="card-head">Add machine</div>
+  <form method="POST" action="/fleet/add" class="cronactions" data-on:submit__prevent__throttle.1s="@post('/fleet/add', {contentType:'form', retryMaxCount:0})">
+    <input type="text" name="name" class="cinput" maxlength="63" placeholder="a name, e.g. web1" aria-label="A name for the new machine" required>
+    <label class="dim"><input type="radio" name="runs" value="user" checked> runs as you, from logon</label>
+    <label class="dim"><input type="radio" name="runs" value="boot"> runs as root or SYSTEM, from boot</label>
+    <button type="submit" class="btn sm">Make a code</button>
+  </form>
+  <div class="dim mt">This makes a one-time code and the line to paste on the new machine. The code joins nothing by itself: the machine shows six digits and waits here until they are typed on the computer running Tenant.</div>
 </div>
 <div class="card">
   <div class="card-head">The fleet's rules <span class="dim">· every newly confirmed machine starts with these, laid over the settings it copies from this Tenant</span></div>
@@ -68,6 +79,26 @@
   <div class="dim mt">They are changed in the terminal on the computer running Tenant. Changing them moves no machine that is confirmed already; a machine's own page can apply them again.</div>
 </div>
 {{end}}
+{{end}}
+
+{{/* fleet-added is the code Add machine made, in the answer to that
+     request only (handleFleetAdd): the code is a secret while it lives, so it
+     is in no URL, flash or form, and a reload does not show it again. Each
+     line is plain text in a block that selects whole; Copy reads the block's
+     own text, so the code is never in an attribute or an expression. */}}
+{{define "fleet-added"}}
+<div class="card" role="status">
+  <div class="card-head">Paste one line on {{.Name}} <span class="dim">· {{if .Boot}}it runs as root or SYSTEM, from boot{{else}}it runs as the account that pastes it, from logon{{end}}</span></div>
+  <p>The code in it works once, until {{.Expires}}. This page shows it this once.</p>
+  {{with .Note}}<div class="banner info">{{.}}</div>{{end}}
+  {{range .Lines}}
+  <div class="mt"><strong>{{.For}}</strong></div>
+  <div class="cronactions"><code class="fl-paste">{{.Line}}</code><button type="button" class="btn sm" data-on:click="navigator.clipboard.writeText(el.previousElementSibling.textContent)">Copy</button></div>
+  {{end}}
+  <p class="mt">The code tells the machine to dial {{range $i, $a := .Addresses}}{{if $i}}, {{end}}<span class="nm">{{$a}}</span>{{end}}. Change the list in a terminal: <code>tenant fleet address add HOST:PORT</code>.</p>
+  {{with .Warning}}<div class="banner err" role="alert">{{.}}</div>{{end}}
+  <p class="mt">The machine then shows six digits and waits. It appears under Machines as waiting for you (reload this page): open it and type those digits, in a browser on the computer running Tenant.</p>
+</div>
 {{end}}
 
 {{/* fl-start lists what a pending machine would start with. Its argument is

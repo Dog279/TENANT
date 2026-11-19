@@ -128,6 +128,7 @@ generated from `internal/archtest/rules.go`, and
 |---|---|---|
 | every `internal/**` package | `internal/logs/event`, `internal/logs/catalog`, `internal/logs/capture`, `internal/procprotect` | on top of its own row: the event model, the built-in providers (the Security log's records among them) and child capture, so an event is written, and a child filed, where the action happens; and procprotect, through which every command is started |
 | `cmd/**` | anything | the composition root and command adapters |
+| `scripts/releasekey` | `internal/selfupdate`, `internal/fsperm` | signs releases in the exact form the binary verifies (TEN-542); both are stdlib-only leaves |
 | `scripts/**` | nothing in the module | build tools stand alone |
 | `reference/**` | `reference/**` | examples for tool builders; never tenant/internal |
 | `internal/archtest` | nothing in the module | these tests |
@@ -1434,6 +1435,15 @@ body of `POST /fleet/recover` to the holder, whose `fleetMemory.recoverWith`
 reads the newest copy under another key with `shadow.Store.AdoptAs` (which
 accepts a copy naming the machine's old id only under a recovery identity)
 and pushes the result as a generation under the new key.
+
+**Whose word an update is taken on** (decision A71). `fleet.Update` carries the release's
+`Asset`, `Checksums` and `Bundle` on the opening piece of each send (`sendPieces`). A child on
+the default rule (`child.json` `updates` empty or `release`) runs `childUpdater.verifyRelease`
+before it takes a byte: the asset name for its own target, `cosign verify-blob --offline`
+(`selfupdate.CosignArgs`) against `childReleaseRepo`, which is the binary's own `version.Repo`, and
+the verified checksums' entry for the asset equal to the SHA-256 sent. `updates: master` keeps
+the master's hash. The rule is set only by `tenant child install --updates` and `tenant child
+updates`; `TestChildUpdateRuleIsNotSetOverTheLink` pins `fleet/addresses` to the addresses.
 
 ### 5.13 `cmd/tenant` — CLI (main.go + wiring.go + commands.go)
 

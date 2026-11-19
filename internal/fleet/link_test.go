@@ -1581,7 +1581,7 @@ func TestWireShapesThatNeverChange(t *testing.T) {
 		t.Errorf("hello result: %+v, %v", h, err)
 	}
 	var ack UpdateAck
-	if err := json.Unmarshal([]byte(`{"received":5,"applying":true,"later":1}`), &ack); err != nil || ack != (UpdateAck{5, true}) {
+	if err := json.Unmarshal([]byte(`{"received":5,"applying":true,"later":1}`), &ack); err != nil || ack != (UpdateAck{Received: 5, Applying: true}) {
 		t.Errorf("update ack: %+v, %v", ack, err)
 	}
 	// The master's own ping answer.

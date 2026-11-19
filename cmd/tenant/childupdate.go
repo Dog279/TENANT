@@ -7,6 +7,12 @@ package main
 //
 // How it goes, and who does what:
 //
+//  0. Whose word it is taken on (decision A71, child.json "updates"). By
+//     default the release's own: the master's first piece of each send, the
+//     one with no data, carries the release's checksums.txt and signature
+//     bundle (verifyRelease), and nothing else is taken until they verify on
+//     this machine against the release identity built into its binary. With
+//     "updates": "master", the SHA-256 the master names, as before.
 //  1. The master sends the archive in pieces with its SHA-256 (fleet/update).
 //     The child keeps them in <dir>-data/update/<sha256>.part and touches
 //     nothing else until the last piece is in and the whole file hashes to
@@ -44,6 +50,7 @@ package main
 // restart.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -108,6 +115,123 @@ type childUpdater struct {
 
 	mu       sync.Mutex
 	applying *childStaged
+	verified string // the SHA-256 the release's verified material lists for this machine's archive
+}
+
+var (
+	// childReleaseRepo is the release identity an update's signature is
+	// matched against: the repository this binary was built from, stamped
+	// in at release time (version.Repo). Never the master's word, never the
+	// environment: a child that could be told whose signature to accept
+	// would accept anyone's. Tests replace it.
+	childReleaseRepo = func() string { return version.Repo }
+	// childCosign runs cosign with args, offline, with no console window.
+	// Tests replace it.
+	childCosign = func(ctx context.Context, args ...string) error {
+		path, err := exec.LookPath("cosign")
+		if err != nil {
+			return errors.New("cosign is not installed on this machine, and the release's signature is verified with it")
+		}
+		cmd := exec.CommandContext(ctx, path, args...)
+		childNoWindow(cmd)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			said, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+			return fmt.Errorf("%v: %s", err, fleetQuote(said))
+		}
+		return nil
+	}
+)
+
+// errNoReleaseIdentity: this build names no release, so the default rule
+// can verify nothing. Said at install, in status, and to the master.
+const errNoReleaseIdentity = "this build of Tenant names no release to verify an update against (a development build), and this machine takes only updates whose release signature it verified: it refuses every update until `tenant child updates master` makes it trust its master's hash"
+
+// childReason keeps what the master is told one bounded sentence.
+func childReason(err error) error {
+	s := err.Error()
+	if len(s) > 1024 {
+		s = strings.ToValidUTF8(s[:1024], "") + "..."
+	}
+	return errors.New(s)
+}
+
+// verifyRelease is the default rule (decisions A71, TEN-542), on this
+// machine and with no network: the archive named is this machine's for the
+// version named; the checksums are signed, either with the project key this
+// binary carries when the master sent a project signature (and then that
+// signature alone decides), or else by the release workflow of the
+// repository this binary was built from (cosign); and the verified
+// checksums list the archive with the SHA-256 the master sent. The archive
+// itself is then checked against that hash when it is whole. It says which
+// signature verified (fleet.VerifiedProjectKey or fleet.VerifiedCosign).
+func (u *childUpdater) verifyRelease(ctx context.Context, p fleet.Update, dir string) (string, error) {
+	repo := childReleaseRepo()
+	keys, err := selfupdate.ParseKeys(version.ReleaseKeys)
+	if err != nil {
+		return "", fmt.Errorf("this build's project key does not read (%v), and this machine takes no update until it runs a build whose key does", err)
+	}
+	keyed := len(keys) > 0 && len(p.Signature) > 0
+	switch want := selfupdate.AssetName(p.Version, runtime.GOOS, runtime.GOARCH); {
+	case repo == "" && len(keys) == 0:
+		return "", errors.New(errNoReleaseIdentity)
+	case p.Asset == "" || len(p.Checksums) == 0:
+		return "", errors.New("the master sent no release checksums or signature with the update, and this machine takes only an update whose release signature it verified " +
+			"(update the master's Tenant, or on this machine `tenant child updates master`)")
+	case p.Asset != want:
+		return "", fmt.Errorf("the archive is %s, not %s, this machine's for version %s", fleetQuote(p.Asset), want, fleetQuote(p.Version))
+	case keyed:
+		if _, err := selfupdate.VerifyProject(p.Checksums, p.Signature, keys); err != nil {
+			return "", fmt.Errorf("the release's project signature does not verify on this machine: %v", err)
+		}
+		if err := checksumsList(p); err != nil {
+			return "", err
+		}
+		return fleet.VerifiedProjectKey, nil
+	case len(p.Bundle) == 0 && len(keys) > 0:
+		return "", errors.New("the master sent neither a project signature nor a signature bundle with the release, and this machine takes only an update whose release signature it verified " +
+			"(`tenant child updates master` on this machine trusts the master's hash instead)")
+	case len(p.Bundle) == 0:
+		return "", errors.New("the release carries no signature bundle, and this machine takes only an update whose release signature it verified " +
+			"(`tenant child updates master` on this machine trusts the master's hash instead)")
+	case repo == "":
+		return "", errors.New("the master sent no project signature with the release, and this build names no release for cosign to verify its signature bundle against")
+	}
+	tmp, err := os.MkdirTemp(dir, ".release-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(tmp)
+	sums, bundle := filepath.Join(tmp, "checksums.txt"), filepath.Join(tmp, "checksums.txt.sigstore.json")
+	if err := os.WriteFile(sums, p.Checksums, 0o600); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(bundle, p.Bundle, 0o600); err != nil {
+		return "", err
+	}
+	vctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	if err := childCosign(vctx, selfupdate.CosignArgs(sums, bundle, repo, true)...); err != nil {
+		if len(keys) > 0 {
+			return "", fmt.Errorf("the master sent no project signature with the release (its Tenant may be older, or the release carries none), so this machine verified the release workflow's signature with cosign instead, and it does not verify as %s's release workflow: %v", repo, err)
+		}
+		return "", fmt.Errorf("the release's signature does not verify as %s's release workflow on this machine: %v", repo, err)
+	}
+	if err := checksumsList(p); err != nil {
+		return "", err
+	}
+	return fleet.VerifiedCosign, nil
+}
+
+// checksumsList checks that a release's verified checksums list the archive
+// with the SHA-256 the master named.
+func checksumsList(p fleet.Update) error {
+	switch got, ok := selfupdate.ParseChecksums(bytes.NewReader(p.Checksums))[p.Asset]; {
+	case !ok:
+		return fmt.Errorf("the release's checksums list no %s", p.Asset)
+	case got != p.SHA256:
+		return fmt.Errorf("the release's checksums list another SHA-256 for %s than the master named", p.Asset)
+	}
+	return nil
 }
 
 func newChildUpdater(dir, exe string, log *slog.Logger) *childUpdater {
@@ -126,11 +250,26 @@ func (u *childUpdater) reset() {
 // here, and the master goes on from there. What arrives is kept on disk under
 // its SHA-256, so a link that drops mid-transfer goes on where it stopped.
 func (u *childUpdater) piece(ctx context.Context, p fleet.Update) (fleet.UpdateAck, error) {
+	ack, err := u.take(ctx, p)
+	if err != nil {
+		return fleet.UpdateAck{}, childReason(err)
+	}
+	return ack, nil
+}
+
+func (u *childUpdater) take(ctx context.Context, p fleet.Update) (fleet.UpdateAck, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	// The rule is child.json's as it is now: the operator's word on this
+	// machine, read at every piece.
+	child, err := fleet.LoadChild(fleet.ChildPath(u.dir))
+	if err != nil {
+		return fleet.UpdateAck{}, err
+	}
+	rule := child.Rule()
 	if u.applying != nil {
 		if u.applying.sha == p.SHA256 {
-			return fleet.UpdateAck{Received: p.Size, Applying: true}, nil
+			return fleet.UpdateAck{Received: p.Size, Applying: true, Rule: string(rule)}, nil
 		}
 		return fleet.UpdateAck{}, errors.New("this machine is already applying another update")
 	}
@@ -140,6 +279,26 @@ func (u *childUpdater) piece(ctx context.Context, p fleet.Update) (fleet.UpdateA
 	}
 	// One transfer at a time: anything else in the folder is an older one.
 	part := filepath.Join(dir, p.SHA256+".part") // p.SHA256 is 64 lowercase hex digits (fleet.Update.validate)
+	how := ""
+	if rule == fleet.UpdatesRelease {
+		sent := p.Asset != "" || len(p.Checksums) > 0 || len(p.Bundle) > 0 || len(p.Signature) > 0
+		if sent || u.verified != p.SHA256 {
+			u.verified = ""
+			var err error
+			if how, err = u.verifyRelease(ctx, p, dir); err != nil {
+				_ = os.Remove(part) // nothing of an archive this machine will not take stays
+				return fleet.UpdateAck{}, fmt.Errorf("%w; nothing was changed", err)
+			}
+			u.verified = p.SHA256
+		}
+	}
+	ack, err := u.write(ctx, p, dir, part)
+	ack.Rule, ack.Verified = string(rule), how
+	return ack, err
+}
+
+// write takes one piece of an archive whose rule has been applied.
+func (u *childUpdater) write(ctx context.Context, p fleet.Update, dir, part string) (fleet.UpdateAck, error) {
 	if old, err := os.ReadDir(dir); err == nil {
 		for _, e := range old {
 			if e.Name() != filepath.Base(part) {

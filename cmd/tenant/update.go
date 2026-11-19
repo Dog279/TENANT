@@ -12,6 +12,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"flag"
 	"fmt"
@@ -343,19 +344,66 @@ func fetchRelease(ctx context.Context, client *http.Client, repo, gh string, rel
 			return "", "", err
 		}
 	}
+	// The project signature (TEN-542), fetched whenever the release has one
+	// (a master sends it on to its machines), checked when this build
+	// carries the project key, and then required.
+	signed := false
+	if url, ok := rel.Assets[selfupdate.SignatureAsset]; ok {
+		signed = true
+		if err := selfupdate.Download(ctx, client, url, gh, filepath.Join(stage, selfupdate.SignatureAsset)); err != nil {
+			return "", "", err
+		}
+	}
+	keys, err := selfupdate.ParseKeys(version.ReleaseKeys)
+	if err != nil {
+		return "", "", fmt.Errorf("this build's project key does not read (%v), so it takes no update", err)
+	}
+	if len(keys) > 0 {
+		if !signed {
+			return "", "", fmt.Errorf("release %s carries no project signature (%s), and this build of Tenant takes only a release signed with the project key it carries", rel.Tag, selfupdate.SignatureAsset)
+		}
+		if err := verifyProjectFiles(stage, keys); err != nil {
+			return "", "", fmt.Errorf("release %s: %w", rel.Tag, err)
+		}
+	}
 	if err := selfupdate.Verify(archive, sums); err != nil {
 		return "", "", err
 	}
-	switch {
-	case bundle != "" && selfupdate.HaveCosign():
+	cosigned := false
+	if bundle != "" && selfupdate.HaveCosign() {
 		if err := selfupdate.CosignVerify(ctx, runCmd, sums, bundle, repo); err != nil {
 			return "", "", err
 		}
+		cosigned = true
+	}
+	switch {
+	case len(keys) > 0 && cosigned:
+		return archive, "verified checksum, the project key's signature and the release workflow's signature", nil
+	case len(keys) > 0 && bundle == "":
+		return archive, "verified checksum and the project key's signature (the release carries no signature bundle for cosign)", nil
+	case len(keys) > 0:
+		return archive, "verified checksum and the project key's signature (install cosign to verify the release workflow's signature as well)", nil
+	case cosigned:
 		return archive, "verified checksum and signature", nil
 	case bundle == "":
 		return archive, "verified checksum only (the release carries no signature bundle)", nil
 	}
 	return archive, "verified checksum only (install cosign to verify the signature)", nil
+}
+
+// verifyProjectFiles checks the checksums.txt.sig fetchRelease left in dir
+// over the checksums.txt beside it, both read within their bounds.
+func verifyProjectFiles(dir string, keys []ed25519.PublicKey) error {
+	sums, err := readReleaseFile(dir, "checksums.txt", selfupdate.MaxChecksums, true)
+	if err != nil {
+		return err
+	}
+	sig, err := readReleaseFile(dir, selfupdate.SignatureAsset, selfupdate.MaxSignature, true)
+	if err != nil {
+		return err
+	}
+	_, err = selfupdate.VerifyProject(sums, sig, keys)
+	return err
 }
 
 // rollback is --rollback: the previous binary back, a restart, and the

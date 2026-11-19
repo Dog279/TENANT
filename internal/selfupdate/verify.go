@@ -80,15 +80,27 @@ func Verify(archivePath, checksumsPath string) error {
 // sigstore-go (a new module); revisit when the operator base outgrows
 // "cosign installed where it matters".
 func CosignVerify(ctx context.Context, run func(ctx context.Context, name string, args ...string) (string, error), checksumsPath, bundlePath, repo string) error {
-	_, err := run(ctx, "cosign", "verify-blob",
-		"--bundle", bundlePath,
-		"--certificate-identity-regexp", "^https://github.com/"+regexp.QuoteMeta(repo)+`/\.github/workflows/release\.yml@`,
-		"--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
-		checksumsPath)
+	_, err := run(ctx, "cosign", CosignArgs(checksumsPath, bundlePath, repo, false)...)
 	if err != nil {
 		return fmt.Errorf("cosign verify-blob %s: %w", filepath.Base(checksumsPath), err)
 	}
 	return nil
+}
+
+// CosignArgs are cosign's arguments for verifying the bundle over
+// checksums.txt as signed by repo's release workflow. offline adds
+// --offline: the bundle's own log entry and cosign's trusted root, no
+// network (a fleet child, which has none, decision A71). An empty repo is
+// refused by the caller: it would match any repository.
+func CosignArgs(checksumsPath, bundlePath, repo string, offline bool) []string {
+	args := []string{"verify-blob",
+		"--bundle", bundlePath,
+		"--certificate-identity-regexp", "^https://github.com/" + regexp.QuoteMeta(repo) + `/\.github/workflows/release\.yml@`,
+		"--certificate-oidc-issuer", "https://token.actions.githubusercontent.com"}
+	if offline {
+		args = append(args, "--offline")
+	}
+	return append(args, checksumsPath)
 }
 
 // HaveCosign reports whether cosign is on PATH. Without it an update is

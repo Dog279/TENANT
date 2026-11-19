@@ -3,12 +3,14 @@ package shadow
 import (
 	"bytes"
 	"crypto/hkdf"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 
@@ -135,6 +137,63 @@ func (k *Key) Unseal(blob []byte, limit int64) ([]byte, error) {
 		err = fmt.Errorf("shadow: more than %d bytes", limit)
 	}
 	return data, err
+}
+
+// macLabel is what the snapshot authenticator's key is derived under. It is
+// a key of its own: the fleet secret itself is never used as one.
+const macLabel = "tenant fleet snapshot authenticator v1"
+
+// macSize is the length of the authenticator a snapshot ends with.
+const macSize = sha256.Size
+
+// errNoMAC is a key that makes no authenticator: a recovery identity, which
+// can read what the old fleet made and can vouch for none of it.
+var errNoMAC = errors.New("shadow: a recovery identity makes no authenticator")
+
+// mac is the snapshot authenticator, HMAC-SHA-256 under a key derived from
+// the fleet secret with HKDF (macLabel). Only the holder of the fleet key's
+// secret can make one; its public half, which anyone who can encrypt to the
+// fleet has, does not help. The derived key is cleared when done returns.
+func (k *Key) mac() (h hash.Hash, done func(), err error) {
+	if k.recovery {
+		return nil, nil, errNoMAC
+	}
+	var key []byte
+	if err := k.buf.With(func(p []byte) error {
+		var err error
+		key, err = hkdf.Key(sha256.New, p, nil, macLabel, sha256.Size)
+		return err
+	}); err != nil {
+		return nil, nil, err
+	}
+	return hmac.New(sha256.New, key), func() { clear(key) }, nil
+}
+
+// authentic reports whether the first size bytes of r are a snapshot this
+// fleet key made: its last macSize bytes are the authenticator of all that
+// comes before them. It reads r through once, from the start, keeps nothing
+// of it, and parses nothing. The comparison takes the same time however
+// much of the authenticator is right.
+func (k *Key) authentic(r io.ReadSeeker, size int64) bool {
+	if size <= macSize {
+		return false
+	}
+	h, done, err := k.mac()
+	if err != nil {
+		return false
+	}
+	defer done()
+	if _, err := r.Seek(0, io.SeekStart); err != nil {
+		return false
+	}
+	if _, err := io.CopyN(h, r, size-macSize); err != nil {
+		return false
+	}
+	var tag [macSize]byte
+	if _, err := io.ReadFull(r, tag[:]); err != nil {
+		return false
+	}
+	return hmac.Equal(h.Sum(nil), tag[:])
 }
 
 // Locked reports whether the key's memory is locked into RAM, and if not,
