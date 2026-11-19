@@ -1,9 +1,9 @@
 package config
 
 import (
-	"fmt"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
