@@ -59,6 +59,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -161,6 +162,9 @@ var serveSessionHelper atomic.Pointer[sessionHelper]
 // sessionHelperStart is how long the helper has to make its window.
 const sessionHelperStart = 15 * time.Second
 
+// maxHelperLine bounds a line serve reads from the helper.
+const maxHelperLine = 4096
+
 // serveWindowTitle is the title of the window of the serve that uses
 // dataDir: how a command of the same install finds it.
 func serveWindowTitle(dataDir string) string {
@@ -204,12 +208,17 @@ func watchSessionEnd(dataDir string, hide bool) (ending <-chan struct{}, err err
 	if err != nil {
 		return nil, fmt.Errorf("the helper that owns serve's window did not start: %w", err)
 	}
-	lines := bufio.NewReader(out)
+	lines := helperLines(out)
 	ready := make(chan error, 1)
 	go func() {
-		line, err := lines.ReadString('\n')
-		if word := strings.TrimSpace(line); err == nil && word != "ready" {
-			err = errors.New(word)
+		var err error
+		switch {
+		case !lines.Scan():
+			if err = lines.Err(); err == nil {
+				err = io.ErrUnexpectedEOF
+			}
+		case strings.TrimSpace(lines.Text()) != "ready":
+			err = errors.New(strings.TrimSpace(lines.Text()))
 		}
 		ready <- err
 	}()
@@ -224,14 +233,8 @@ func watchSessionEnd(dataDir string, hide bool) (ending <-chan struct{}, err err
 		return nil, fmt.Errorf("the helper that owns serve's window: %w", err)
 	}
 	go func() {
-		for {
-			line, err := lines.ReadString('\n')
-			if strings.TrimSpace(line) == "ending" {
-				h.endOnce.Do(func() { close(h.ending) })
-			}
-			if err != nil {
-				break
-			}
+		if followHelper(lines, func() { h.endOnce.Do(func() { close(h.ending) }) }) != nil {
+			_ = c.Process.Kill() // a line past the bound: nothing more is read from it
 		}
 		_ = c.Wait()
 		if !h.finished.Load() { // it went while serve runs: the window went with it
@@ -241,6 +244,27 @@ func watchSessionEnd(dataDir string, hide bool) (ending <-chan struct{}, err err
 	}()
 	serveSessionHelper.Store(h)
 	return h.ending, nil
+}
+
+// helperLines reads the helper's output a line at a time. A line is a word,
+// or the reason the helper could not make its window; one longer than
+// maxHelperLine stops the reading with bufio.ErrTooLong.
+func helperLines(out io.Reader) *bufio.Scanner {
+	s := bufio.NewScanner(out)
+	s.Buffer(make([]byte, 0, 256), maxHelperLine)
+	return s
+}
+
+// followHelper reads what the helper says after "ready" until its output
+// ends: each "ending" calls ending. The error is the reading's, nil at the
+// end of the output.
+func followHelper(lines *bufio.Scanner, ending func()) error {
+	for lines.Scan() {
+		if strings.TrimSpace(lines.Text()) == "ending" {
+			ending()
+		}
+	}
+	return lines.Err()
 }
 
 // sessionEndFinished is main's word that serve has returned and everything
@@ -262,6 +286,10 @@ func runSessionWatcher() (was bool, code int) {
 	if len(os.Args) != 4 || os.Args[1] != sessionWatchArg {
 		return false, 0
 	}
+	// Ctrl-C and Ctrl-Break at the console it shares with serve are for
+	// serve: it stops, and the helper goes when serve has gone. (The Go
+	// runtime ends a program that does not take the signal.)
+	signal.Notify(make(chan os.Signal, 1), os.Interrupt)
 	// Told about the end of the session before serve is: 0x280 is where a
 	// program starts, and a higher level is asked first.
 	_, _, _ = windows.NewLazySystemDLL("kernel32.dll").NewProc("SetProcessShutdownParameters").Call(0x3ff, 0)
