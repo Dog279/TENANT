@@ -6268,10 +6268,10 @@ Writes the `turns` log.
 `Tool {tool} finished in {duration}`
 
 - **Level:** info · **Channel:** operational · **Task:** Tool call · **Log:** turns
-- **Fields:** `agent`, `iter`, `tool`, `duration`
+- **Fields:** `agent`, `iter`, `tool`, `duration`, `host`
 - **Find it:** `provider:turns id:1101`
 
-**What it means.** A tool call returned. Its arguments and result are in the diagnostic channel (turns 9001 and 9002).
+**What it means.** A tool call returned. Its arguments and result are in the diagnostic channel (turns 9001 and 9002). host names the fleet machine a fleet_* call worked on.
 
 **Why it happens.** The model called a tool.
 
@@ -6548,10 +6548,10 @@ Writes the `turns` log.
 `Tool {tool} failed after {duration}`
 
 - **Level:** error · **Channel:** operational · **Task:** Tool call · **Log:** turns
-- **Fields:** `agent`, `iter`, `tool`, `duration`, `error`
+- **Fields:** `agent`, `iter`, `tool`, `duration`, `error`, `host`
 - **Find it:** `provider:turns id:3101`
 
-**What it means.** A tool call returned an error. The model gets the error and usually tries something else; the result is in the diagnostic channel (turns 9003), and error holds a failure outside the tool itself.
+**What it means.** A tool call returned an error. The model gets the error and usually tries something else; the result is in the diagnostic channel (turns 9003), and error holds a failure outside the tool itself. host names the fleet machine a fleet_* call worked on.
 
 **Why it happens.** The tool refused its arguments, its service failed, or the tool is broken.
 

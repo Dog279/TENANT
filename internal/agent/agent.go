@@ -1216,7 +1216,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		for _, call := range resp.ToolCalls {
 			call = unstringifyArgs(call, a.cfg.Tools)
 			if err := validateToolCall(call, a.cfg.Tools); err != nil {
-				span.AddTool(runtrace.ToolCall{ID: call.ID, Name: call.Name, Arguments: string(call.Arguments), Result: err.Error(), Outcome: "validation_error"})
+				span.AddTool(runtrace.ToolCall{ID: call.ID, Name: call.Name, Host: callHost(call), Arguments: string(call.Arguments), Result: err.Error(), Outcome: "validation_error"})
 				a.feedValidationError(ctx, call, err)
 				continue
 			}
@@ -1226,7 +1226,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 			// otherwise still reach the dispatcher. Refuse it here with a clean
 			// tool error instead.
 			if spec, ok := a.cfg.Tools.Get(call.Name); ok && spec.Gate != "" && !profile.AllowsTool(spec.Gate) {
-				span.AddTool(runtrace.ToolCall{ID: call.ID, Name: call.Name, Arguments: string(call.Arguments), Outcome: "denied"})
+				span.AddTool(runtrace.ToolCall{ID: call.ID, Name: call.Name, Host: callHost(call), Arguments: string(call.Arguments), Outcome: "denied"})
 				a.feedToolResult(ctx, ToolCallResult{
 					Call:    call,
 					Result:  fmt.Sprintf("%q is not available for the current model.", call.Name),
@@ -1274,7 +1274,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 			parallel = 1
 		}
 		for _, call := range validCalls {
-			a.emit(Event{Kind: EventToolCall, Iter: iter, Tool: call.Name, ToolCallID: call.ID, Args: string(call.Arguments)})
+			a.emit(Event{Kind: EventToolCall, Iter: iter, Tool: call.Name, Host: callHost(call), ToolCallID: call.ID, Args: string(call.Arguments)})
 		}
 		toolStart := time.Now()
 		batchResults := dispatchBatch(a.ev(ctx), validCalls, callFlows, parallel, a.cfg.Dispatcher)
@@ -1318,18 +1318,22 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 			if br.Err != nil && toolResult == "" {
 				toolResult = br.Err.Error()
 			}
-			span.AddTool(runtrace.ToolCall{ID: br.Call.ID, Name: br.Call.Name, Arguments: string(br.Call.Arguments), Result: toolResult, Outcome: toolOutcome})
-			a.emit(Event{Kind: EventToolResult, Iter: iter, Tool: br.Call.Name, ToolCallID: br.Call.ID, Result: toolResult, IsErr: toolOutcome == "error", Duration: br.Duration})
+			host := callHost(br.Call)
+			span.AddTool(runtrace.ToolCall{ID: br.Call.ID, Name: br.Call.Name, Host: host, Arguments: string(br.Call.Arguments), Result: toolResult, Outcome: toolOutcome})
+			a.emit(Event{Kind: EventToolResult, Iter: iter, Tool: br.Call.Name, Host: host, ToolCallID: br.Call.ID, Result: toolResult, IsErr: toolOutcome == "error", Duration: br.Duration})
 			// The operational record of the call; its payloads are the
 			// diagnostic rows above (EntryFor).
+			kv := []any{"agent", a.cfg.AgentID, "iter", iter, "tool", br.Call.Name, "duration", br.Duration}
+			if host != "" {
+				kv = append(kv, "host", host)
+			}
 			if toolOutcome == "error" {
-				kv := []any{"agent", a.cfg.AgentID, "iter", iter, "tool", br.Call.Name, "duration", br.Duration}
 				if br.Err != nil {
 					kv = append(kv, "error", br.Err)
 				}
 				ToolFailed.Log(a.ev(ctx), kv...)
 			} else {
-				ToolDone.Log(a.ev(ctx), "agent", a.cfg.AgentID, "iter", iter, "tool", br.Call.Name, "duration", br.Duration)
+				ToolDone.Log(a.ev(ctx), kv...)
 			}
 			seen = append(seen, fmt.Sprintf("%q %q %q %q", br.Call.Name, br.Call.Arguments, a.feedToolResult(ctx, br, profile.ToolResultCap()), imagePaths(br.Images)))
 		}
