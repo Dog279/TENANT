@@ -706,6 +706,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		safety:      broker, // and the SafetyControl (Permissions/SetPermissionFrom) — TEN-207
 		safetyFacts: newSafetyFacts(),
 		rules:       dashRules{defaultToolRules},
+		fleet:       newDashFleet(c, stg, &stgMu), // the Fleet page, over the same operations as tenant fleet (TEN-533)
 		broker:      evBroker,
 		logs:        hub,
 		runs:        st.runs,

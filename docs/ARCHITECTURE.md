@@ -1404,6 +1404,20 @@ command judgement is never asked, and the request and every Security record
 name the machine. An origin that was not opened for the fleet reaches no
 machine at all (`Decider.Reach`).
 
+**The dashboard's Fleet page** (`internal/dashboard/fleet.go`,
+`cmd/tenant/fleet_dashctl.go`, TEN-533) runs the same operations as `tenant
+fleet` and `/fleet` (`fleetOps`) over the running process's state: the
+machines with their link, what each reports about itself (escaped and quoted
+by `fleetQuote` before it reaches the page), each machine's scheme, and its
+drift from what `Fleet.Inherit` would give it now (`Scheme.Drift`), with "copy
+again" and "apply fleet rules". Its memory column reads the `fleetMemory`
+interface, which answers "not available yet" until TEN-532. A machine is
+confirmed there only from a browser signed in on the computer running Tenant
+(`Server.atThisComputer`: loopback peer, loopback Host, no proxy header, the
+session cookie and never the API key); `TestOnlyTheOperatorConfirmsAMachine`
+holds the dashboard to that one handler. `GET /api/fleet` is the page as JSON
+and changes nothing.
+
 ### 5.13 `cmd/tenant` — CLI (main.go + wiring.go + commands.go)
 
 A real subcommand CLI (stdlib `flag`, no cobra). Runs fully offline on

@@ -42,10 +42,11 @@ type SafetyFacts struct {
 type ApprovalItem struct {
 	ID, Category, Title, Action, Detail string
 	From                                string // "" = this computer, "iMessage"; none for pairing
+	Machine                             string // the fleet machine the action lands on, by its id; "" = this computer
 	Waited                              string // waited(AgeSecs)
 	Can                                 string
 	Lines                               int  // Detail line count; > 8 adds "This request is N lines long. Read all of it before you allow it." (over 400 bytes on fewer lines: "This request is long.")
-	Standing                            bool // modes wired && SessionOK && Origin=="local" && cat != sandbox && !(cat == exec && !sandboxed(…))
+	Standing                            bool // modes wired && SessionOK && Origin=="local" && no fleet machine && cat != sandbox && !(cat == exec && !sandboxed(…))
 	Pairing                             bool
 	Actionable                          bool // ID matches ^[A-Za-z0-9-]+$
 }
@@ -166,9 +167,22 @@ func (s *Server) queue() approvalQueue {
 		// no session step: with it, the agent could answer its own requests.
 		// Nor does Leave the sandbox: its grant re-runs every command the box
 		// refuses on the computer itself, unasked, which is the same thing.
-		it.Standing = s.safety != nil && p.SessionOK && p.Origin == "local" &&
+		// Nor does an action on a fleet machine: the modes card is this
+		// computer's, and a machine keeps no session grant.
+		it.Standing = s.safety != nil && p.SessionOK && p.Origin == "local" && p.Host == "" &&
 			p.Category != "sandbox" && (p.Category != "exec" || boxed)
 		switch {
+		case p.Host != "":
+			// The action lands on a fleet machine, not here: the card names it
+			// first. HostName is the machine's label as the broker escaped it;
+			// the detail starts with its id and that name too.
+			it.Machine = p.Host
+			it.Title = `On the machine "` + p.HostName + `": your agent `
+			if it.Can != "" {
+				it.Title += "wants to " + strings.TrimSuffix(it.Can, " on this computer")
+			} else {
+				it.Title += "is asking for your OK"
+			}
 		case it.Pairing:
 			it.Title = "Another computer wants to pair with this one"
 		case p.Category == "investigate":
@@ -180,13 +194,6 @@ func (s *Server) queue() approvalQueue {
 		}
 		if p.Origin == "imessage" {
 			it.From = "iMessage"
-		}
-		if p.Host != "" {
-			// An action on a fleet machine (TEN-531): the headline names the
-			// machine, where every category's own line says "on this
-			// computer". "For this session" covers one request there, so the
-			// step that promises more is not offered.
-			it.Title, it.Standing = "Your agent wants to act on your fleet machine "+p.HostName, false
 		}
 		q.Items = append(q.Items, it)
 	}

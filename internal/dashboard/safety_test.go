@@ -446,14 +446,14 @@ func TestSafety_QueueNamesTheFleetMachine(t *testing.T) {
 	s := safetyServer(&fakeSafety{perms: safetyPerms()}, fq, SafetyFacts{Account: "dylan"})
 	page := get(t, s, "/safety").Body.String()
 	it := item(t, page, "ap-fleet")
-	if !strings.Contains(it, "<b>Your agent wants to act on your fleet machine web1</b>") || strings.Contains(it, "on this computer") {
+	if !strings.Contains(it, "<b>On the machine &#34;web1&#34;: your agent wants to run commands and programs</b>") || strings.Contains(it, "on this computer") {
 		t.Errorf("the card for a fleet machine:\n%s", it)
 	}
 	if !strings.Contains(it, `[host m0123456789abcdef &#34;web1&#34;] rm -rf /srv/old`) {
 		t.Errorf("the card's detail does not name the machine:\n%s", it)
 	}
 	odd := item(t, page, "ap-odd")
-	if !strings.Contains(odd, "fleet machine &lt;b&gt;</b>") || strings.Contains(odd, "Allow for the rest of this session") {
+	if !strings.Contains(odd, "On the machine &#34;&lt;b&gt;&#34;: your agent wants to create and change files</b>") || strings.Contains(odd, "Allow for the rest of this session") {
 		t.Errorf("a machine's name is escaped and its card has no session step:\n%s", odd)
 	}
 }

@@ -2511,6 +2511,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		// the TUI now shows + resolves the SAME pending queue, no channel-stealing.
 		approvals: broker,
 		rules:     dashRules{defaultToolRules},
+		fleet:     newDashFleet(c, stg, &stgMu), // the Fleet page, over the same operations as /fleet (TEN-533)
 		broker:    evBroker,
 		logs:      hub, // the log book: Activity backfill + replay + the folders on disk
 		runs:      st.runs,

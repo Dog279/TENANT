@@ -52,7 +52,7 @@ var ApprovalExpired = Security.Event(4105, event.Warning, "Approval", "Approval 
 var ModeChanged = Security.Event(4106, event.Info, "Approval", "{broker} approvals for {category} set to {mode}", "broker", "category", "mode", "was").
 	Keywords("audit.success").
 	Doc("The operator changed how one category of gated actions is approved on one surface (broker: local, discord or imessage) or for one fleet machine (broker: fleet: followed by the machine's id): ask, allow or deny.",
-		"/permissions, /relay permissions or /imessage permissions in the terminal, or the dashboard's Access page. An Always grant sets allow too; its record is the grant (4102).",
+		"/permissions, /relay permissions or /imessage permissions in the terminal, tenant fleet permissions, or the dashboard's Access page or, for a fleet machine, its Fleet page. An Always grant sets allow too; its record is the grant (4102).",
 		"None when intended.")
 
 // Execution: every os_exec and cron shell command, on every backend. The
@@ -132,15 +132,15 @@ var FleetCodeReplayed = Security.Event(4322, event.Error, "Fleet", "A spent flee
 
 var FleetMachineChanged = Security.Event(4323, event.Info, "Fleet", "Fleet machine {name}: {change}", "name", "machine", "change", "detail").
 	Keywords("audit.success").
-	Doc("The operator changed the fleet: change is initialised (this Tenant became a master), code issued, confirmed, renamed, revoked or removed (revoked, and its record and approval scheme deleted). For a confirmed machine, detail is what the machine reported about itself (its own words) and the categories the operator loosened.",
-		"tenant fleet init, enroll, confirm, rename or revoke, or /fleet confirm or revoke in the terminal.",
+	Doc("The operator changed the fleet: change is initialised (this Tenant became a master), code issued, confirmed, renamed, revoked, removed (revoked, and its record and approval scheme deleted) or scheme changed (the machine's approval scheme was replaced by a fresh copy of the master's, or the fleet's rules were laid over it again; detail says which). For a confirmed machine, detail is what the machine reported about itself (its own words) and the categories the operator loosened. surface is where the operator was: cli, tui or dashboard.",
+		"tenant fleet init, enroll, confirm, rename, revoke or permissions --from; /fleet confirm or revoke in the terminal; or the dashboard's Fleet page.",
 		"None when intended. Otherwise tenant fleet revoke the machine.")
 
 var FleetConfirmRefused = Security.Event(4324, event.Warning, "Fleet", "Fleet machine {name} was not confirmed: {reason}", "name", "machine", "reason").
 	Keywords("audit.failure").
-	Doc("A confirmation of a pending fleet machine was refused, and the machine stays pending.",
-		"The six digits typed are not the ones that machine shows (a typo, or the pending machine is not the one in front of you), or the machine is not waiting for confirmation.",
-		"Read the six digits from the machine's own screen and try again. If they never match, the pending machine is not yours: tenant fleet revoke it.")
+	Doc("A confirmation of a pending fleet machine was refused, and the machine stays pending. On the dashboard the actor is the operator when a browser signed in on the computer running Tenant asked, and otherwise the address the request came from.",
+		"The six digits typed are not the ones that machine shows (a typo, or the pending machine is not the one in front of you), or the machine is not waiting for confirmation. On the dashboard also: the request did not come from a browser signed in on the computer running Tenant (it came with the API key, by a tailnet or proxy name, through a proxy or from another address), or too many attempts for that machine failed and the next ones have to wait.",
+		"Read the six digits from the machine's own screen and try again. If they never match, the pending machine is not yours: tenant fleet revoke it. A machine is confirmed in the terminal, or in a browser on the computer running Tenant at the dashboard's 127.0.0.1 address; a refusal from an address you don't know means someone who can reach the dashboard tried.")
 
 // system: the Security log's own health (4000s).
 

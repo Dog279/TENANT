@@ -290,6 +290,16 @@ var reviewedMutations = map[string]confirmGate{
 	"POST /safety/mode":           unless("mode", "ask", "deny"),
 	"POST /safety/new":            noStep,
 	"POST /safety/approvals/{id}": withArm(unless("decision", "approve", "deny"), pairingRequest),
+	// Fleet (TEN-533): typing a machine's six digits is the step, and the
+	// route takes them from a browser on this computer only. Revoking,
+	// replacing a machine's settings and letting the agent do more on it ask.
+	"POST /fleet/confirm":      noStep,
+	"POST /fleet/rename":       noStep,
+	"POST /fleet/revoke":       always,
+	"POST /fleet/permission":   unless("mode", "ask", "deny"),
+	"POST /fleet/rules/add":    unless("mode", "ask", "deny"),
+	"POST /fleet/rules/remove": always, // unless the rule itself is allow (fleetRuleMode); the harness has none
+	"POST /fleet/scheme":       always,
 	// Sign-in.
 	"POST /auth/login":  noStep,
 	"POST /auth/logout": noStep,

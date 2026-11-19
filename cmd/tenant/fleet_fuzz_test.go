@@ -5,8 +5,10 @@ import (
 	"flag"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"tenant/internal/approval"
 )
@@ -201,6 +203,58 @@ func FuzzFleetFlagsAnywhere(f *testing.F) {
 		if !slices.Equal(pos, wantPos) || *cfg != wantCfg || *data != wantData || *from != wantFrom || *defaults != wantDefaults || !slices.Equal([]string(set), wantSet) {
 			t.Fatalf("parse of %q:\n  arguments %q, want %q\n  config %q/%q data %q/%q from %q/%q defaults %v/%v set %q/%q",
 				args, pos, wantPos, *cfg, wantCfg, *data, wantData, *from, wantFrom, *defaults, wantDefaults, []string(set), wantSet)
+		}
+	})
+}
+
+// What a machine says about itself, where it connected from and why its link
+// ended reach the dashboard's Fleet page. Whatever that text is, the page has
+// the markup, the lines and the characters it has for a machine that says
+// "linux", the text stands in each place exactly as fleetQuote wrote it, and
+// what fleetQuote wrote is one quoted, printable string of at most 64
+// characters.
+func FuzzFleetDashSaid(f *testing.F) {
+	for _, s := range append(slices.Clone(fleetHostile), "linux", "", "Ubuntu 24.04.1 LTS", `NT AUTHORITY\SYSTEM`, "1.2.3+build.5 (go1.25)", "&#34;</td>") {
+		f.Add(s)
+	}
+	pager := newFleetPager()
+	clean, cleanLink := saidEverywhere("linux")
+	cleanList, cleanOne := pager.pages(f, clean, cleanLink)
+	cleanOdd := [2]map[rune]bool{oddRunes(cleanList), oddRunes(cleanOne)}
+	f.Fuzz(func(t *testing.T, said string) {
+		q := fleetQuote(said)
+		body, cut := strings.CutSuffix(q, "...")
+		inner, err := strconv.Unquote(body)
+		if err != nil || strings.ContainsFunc(q, func(r rune) bool { return r < 0x20 || r > 0x7e }) || utf8.RuneCountInString(inner) > 64 || (!cut && len(inner) < len(strings.ToValidUTF8(said, ""))) {
+			t.Fatalf("fleetQuote(%q) = %q: not one quoted, printable string of at most 64 characters (%v)", said, q, err)
+		}
+		if said == "" {
+			return // a link that ended on nothing has no line to say so: one row fewer, not more
+		}
+		m, link := saidEverywhere(said)
+		list, one := pager.pages(t, m, link)
+		cell := `<td class="fl-said">` + pageText(q) + `</td>`
+		if n := strings.Count(list, cell); n != 3 {
+			t.Errorf("the list for %q has exactly %q %d times, want 3", said, cell, n)
+		}
+		if n := strings.Count(one, cell+"</tr>"); n < 6 { // five things it reports, and why its link ended
+			t.Errorf("the machine's page for %q has exactly %q %d times, want 6", said, cell, n)
+		}
+		for i, pair := range [][2]string{{list, cleanList}, {one, cleanOne}} {
+			got, want := pair[0], pair[1]
+			for _, part := range []string{"\n", "<", ">", " data-", "<form", "<input"} {
+				if g, w := strings.Count(got, part), strings.Count(want, part); g != w {
+					t.Errorf("page %d for %q has %q %d times, a plain machine's %d", i, said, part, g, w)
+				}
+			}
+			for r := range oddRunes(got) {
+				if !cleanOdd[i][r] {
+					t.Errorf("page %d for %q carries %U, which a plain machine's does not", i, said, r)
+				}
+			}
+			if len(got) > len(want)+9*(12*64+16) {
+				t.Errorf("page %d for %q is %d bytes, a plain machine's %d", i, said, len(got), len(want))
+			}
 		}
 	})
 }

@@ -10,7 +10,7 @@ The operator is not a developer. They run Tenant on a home computer or a Windows
 |---|---|
 | Is my agent healthy? | Overview, Logs; the status strip (busy, waiting) |
 | What has it learned, and is it getting better? | Memory, Skills, Quality, Research |
-| What can it do, and who can reach it? | Tools, Helpers, Remote services, Integrations, Access |
+| What can it do, and who can reach it? | Tools, Helpers, Remote services, Fleet, Integrations, Access |
 | Is anything waiting for my OK? | Approvals & safety; the strip's "N actions are waiting for your OK" on every page |
 | Can I change this safely? | The confirm step and its consequence line (§5) |
 
@@ -194,6 +194,7 @@ A form post answered with `redirectFlash` reloads the page, which jumps back to 
 - Logs: "Delete this view" (the page it's on is the view it deletes, so it goes to the Summary), and a plain post of "Save as view", which opens the new view.
 - Memory: "Keep which fact?" (the picker's state is in the URL, which the answer has to clear), and Edit a fact and "Make this current again" (each makes a new version, and its page is the next step).
 - Research, on a run's own page: Run again and Delete (both end on `/research`).
+- Fleet, on a machine's own page: both Revoke steps and "Delete its record" (the page it's on can be the machine it deletes, so the answer is the list).
 - Remote services: Connect and Reconnect (the connection is made after the reply, the instruction to approve the sign-in on the computer running Tenant has to stay on screen, and the reload clears an address that can hold a key).
 - Not converted yet: Tools' "Turn on all / Turn off all" (its URL names the plugin; it needs a fixed route with the plugin as a field), a tool's own on/off (`toolrow.html`, a button whose URL names the tool; it patches its own `#tool-<name>` row and has no throttle, and needs a fixed route with the name and on/off as fields) and the status strip's Stop (`ui-busy`; Autopilot writes its busy line out so its own Stop posts in place).
 - Sign in and Log out.
@@ -217,7 +218,7 @@ The rules:
   A plain POST still gets the 303 and its flash. A Datastar POST gets three patches: `#toast` (mode `replace`, so a new toast starts its fade again), `#ui-status`, and `region()`, the page's changed part rendered from a `{{define}}` with a stable ID (`access-body` renders `#access-body`), which Datastar morphs. The scroll, the focus and text typed in an input stay; an open confirm step closes, because the new HTML has no `open`. An error changed nothing, so it leaves `region()` out: an open step stays open with what was typed in it. Errors still go through `flashFor`. The region holds the page's `ui-flash`, so a banner from a plain post goes with the first in-place answer.
   - `formWarn(w, r, page, warn, region)` is for a change that happened but needs the operator's eye (the model switched, but it can't answer yet): an alert toast, and the region, because it changed.
   - `createDone` (Helpers' Add, Research's start, Model's server add) replaces the region whole instead of morphing it, so the form comes back empty. `createWarn` is the same with an alert toast: a server added whose tool calls weren't confirmed.
-- The regions, each a `{{define}}` of the same name: Access `#access-body`; Model `#models-body`; Provider keys `#keys-body`; Integrations `#integrations-body`; Skills `#skills-body`; Remote services `#mcp-body`; Tools `#tools-body` (a tool's own toggle patches its `#tool-<name>` row); Scheduled jobs `#jobs-flash`, `#jobs-add` (after an add, with a new form ID so its boxes are empty) and `#jobs-body`; Quality `#eval-body`; Memory `#mem-soul-body`, `#mem-facts-body`, `#mem-removed-body` (a Restore answers with its row alone, `#removed-<id>`, so the list doesn't get shorter under the finger) and `#mem-fact-body`; Approvals & safety `#safety-modes`; Helpers `#agents-body`; Research `#research-ask`, `#research-live` and `#research-history`; Autopilot `#goal-body`; Logs below.
+- The regions, each a `{{define}}` of the same name: Access `#access-body`; Model `#models-body`; Provider keys `#keys-body`; Integrations `#integrations-body`; Skills `#skills-body`; Remote services `#mcp-body`; Tools `#tools-body` (a tool's own toggle patches its `#tool-<name>` row); Scheduled jobs `#jobs-flash`, `#jobs-add` (after an add, with a new form ID so its boxes are empty) and `#jobs-body`; Quality `#eval-body`; Memory `#mem-soul-body`, `#mem-facts-body`, `#mem-removed-body` (a Restore answers with its row alone, `#removed-<id>`, so the list doesn't get shorter under the finger) and `#mem-fact-body`; Approvals & safety `#safety-modes`; Helpers `#agents-body`; Research `#research-ask`, `#research-live` and `#research-history`; Autopilot `#goal-body`; Fleet `#fleet-body` (the list, or one machine's page); Logs below.
 - A region may be several elements, each with its ID, when a change touches parts that sit apart. Logs: saving a view redraws `#lg-tree`; a log's properties redraw `#lg-props` and `#lg-clear`, which sit inside their `<details>`, so an open section stays open; a clear also redraws `#lg-tree`, `#lg-grid`, `#lg-count` (counted now, not the page's `data-init`) and `#lg-detail`. A form carries what its answer needs to draw them (the log, the view and the grid's filter) as fields. Keep an element that opens a GET on `data-init` out of a region.
 - A form that holds a key (Model's "Add a cloud model" and "Add a model from a server on your network", a key's Add or Replace, an integration's Save) empties its key boxes when the reply arrives, after an error too, so a typed key never stays on the page; what else was typed stays. The server never puts a key into an input:
 
@@ -234,6 +235,19 @@ The rules:
 - Datastar patches nothing for a reply that isn't 200 (a 403, a 428 from a stale page, a 500) or for a dropped connection. `.toast-wrap` watches the posts of forms and buttons and shows `#toast-fail`, a fixed "That didn't go through. Reload the page and try again.", until the next post starts or it's closed. `needConfirm` still answers 428 without `confirm=yes`, so a stale page gets that alert, never the change.
 - The Activity page is gone: the Logs page replaced it. `GET /activity` redirects to Logs with its filter (`?trace=X` becomes `trace:X`, `?source=` `log:`, `?level=error` or `warn` `level>=error` or `level>=warning`). `GET /api/activity` stays, for `tenant attach`.
 - Tests: per page, a handler test that a Datastar POST gets the three patches and a plain one the 303 (`TestAccess_InlineAnswersEveryForm` and its siblings), and a browser test that the scroll and the page survive and a double tap sends once (`TestAccessInlineFormsInChrome`, which also covers `#toast-fail` on a stale page). `TestTapGuardInChrome` shows the guard alone stops a double tap that crosses rows on Access or presses the Yes of the sheet it opened, that Cancel and the toast's close still work while it is up, and that a lost connection, for a form or a button, shows `#toast-fail` and ends it. Logs: `TestLogs_InlineForms` and `TestLogsInlineFormsInChrome`.
+
+### Another computer's words (Fleet, TEN-533)
+
+What a fleet machine reports about itself (its system, the account it runs as, its version, sandbox and limit), the address it connected from and why its link ended are another computer's text. They reach the page already escaped by the control: printable ASCII, at most 64 characters, in quotes the text cannot close (`fleetQuote` in `cmd/tenant`, the same rule as the terminal's screens). The page shows them:
+
+- in element content only, in a `.fl-said` cell, never in an attribute or a Datastar expression (F1);
+- under words that say whose they are: the list's starred columns and their footnote, and the machine page's "Reported by the machine" card.
+
+A request for an action on a machine is titled "On the machine "<name>": your agent wants to …", gives the machine's id on its second line, and offers no session grant. The name there is the label the broker escaped (`control.PendingApproval.HostName`).
+
+A machine is named in a form by its id alone, in a field called `machine`, and a handler uses it only once it is one of the fleet's.
+
+**Where a machine may be confirmed.** `POST /fleet/confirm` is the one dashboard route that works only for a browser signed in on the computer running Tenant (`atThisComputer`): a loopback peer address, a loopback name in `Host`, no proxy header (`Forwarded`, `Via`, `X-Forwarded-*`, `X-Real-*`, `Tailscale-*`, `Cf-*`), and the session cookie, never the API key. Anything else gets 403 and a Security record (4324); the page shows such a browser where to confirm instead of the form. Attempts are taken one at a time, and after five failures for one machine each further one doubles a wait, up to a minute, as sign-in does per address. There is no `/api` row that changes the fleet.
 
 ## 9. A new page
 
