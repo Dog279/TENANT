@@ -35,34 +35,93 @@ tenant fleet init --listen 0.0.0.0:9777 --address master.example.net:9777
   is not loopback; allow it for the networks your machines are on. (Not yet tried on a real
   master: the tests listen on loopback only.)
 - `--address` (repeatable) is what the machines dial. Without it `init` offers this
-  computer's name and its IPv4 addresses. The list can be changed later with `init --address`
-  again; a connected machine is told the new list over its link.
+  computer's name and its IPv4 addresses. Change the list one address at a time with
+  `tenant fleet address list | add HOST:PORT | remove HOST:PORT` (or replace it whole with
+  `init --address` again); a connected machine is told the new list over its link. When every
+  IP address on the list is private, link-local or loopback, `init`, `enroll`, `address` and the
+  dashboard's Add machine say so: a machine at another site cannot dial them. A host name is
+  not judged.
 - Nothing restarts: a running `serve` (or terminal app) sees the new identity within a few
   seconds, takes the fleet, and says `fleet: listening on …`. One process holds the links;
   another on the same dirs says which (`/fleet`, `tenant fleet list`).
 
 Nothing answers on the fleet port but the pinned link and the enroll endpoint, both TLS 1.3.
 
+## 1a. Where the machines reach the master: three routes (TEN-541)
+
+A machine always dials the master; the master never dials a machine. So only the master needs
+to be reachable, on its one fleet port, at an address on the list a code carries.
+
+- **On one LAN.** The master's LAN address (`192.168.1.5:9777`) is enough. This is what `init`
+  guesses. The warning about private addresses is expected here and can be ignored.
+- **Across sites, over an overlay network (recommended).** Put the master and the machines on
+  WireGuard or Tailscale, make the master listen only on its overlay address, and give that
+  address to the machines:
+
+  ```
+  tenant fleet init --listen 100.101.102.103:9777
+  tenant fleet address add 100.101.102.103:9777
+  tenant fleet address remove 192.168.1.5:9777
+  ```
+
+  Nothing is exposed to the internet, and nothing new is trusted: the overlay is only a route.
+- **Across sites, with a public address or a forwarded port.** This is fine too: both ends are
+  pinned by certificate (the code carries the master's fingerprint, and the master accepts only
+  certificates it pinned at enrollment), so the address is only a route and whoever else holds
+  it learns nothing and can do nothing with it. Say plainly what then faces the internet: the
+  TLS 1.3 handshake on the fleet port, and the enroll endpoint's check of a code (five attempts a
+  minute per address, a body cap, refusals in the Security log). Keep in mind that the fleet port's
+  default listen address is every interface (`0.0.0.0:9777`): on a master with a public
+  address, set `--listen` to the one interface you mean.
+
+There is no discovery and no request to join: a machine joins by its one-time code and nothing
+else. A machine that found a master on the network would know nothing about it, so whatever
+answered first could capture it, and the six digits cannot fix that alone, because they only
+prove both ends once the code has already pinned the master. A sound request to join needs a
+password-authenticated key exchange or digits committed before they are revealed: new protocol,
+not this version.
+
 ## 2. Enroll a machine
 
-On the master:
+On the master, at the command line, in the terminal app (`/fleet enroll web1`), or on the
+dashboard's Fleet page (**Add machine**: a name, and whether it runs as you or from boot):
 
 ```
-tenant fleet enroll web1            # prints a one-time code (15 minutes; --ttl), and the line to paste
+tenant fleet enroll web1            # prints a one-time code (15 minutes; --ttl), and the lines to paste
 ```
 
-On the new machine, with Tenant installed (the install scripts take `TENANT_CHILD=user|system`
-and go straight on to this step):
+It prints the code alone on standard output, then (on standard error) when it expires, the
+addresses it carries, and one line for each kind of machine. For a machine with nothing on it,
+the line fetches the install script from the latest release, checks the download against the
+release's checksums, and goes straight on to `tenant child install`:
+
+```
+# Linux, macOS: the child runs as you, from logon
+curl -fsSL https://github.com/OWNER/REPO/releases/latest/download/install.sh | TENANT_CHILD=user TENANT_ENROLL_CODE='<code>' sh
+# Linux, macOS: a service that runs as root from boot (sudo asks for your password)
+curl -fsSL .../install.sh | TENANT_CHILD=system TENANT_ENROLL_CODE='<code>' sudo --preserve-env=TENANT_CHILD,TENANT_ENROLL_CODE sh
+# Windows PowerShell: as you; for SYSTEM from boot, 'system' in a PowerShell run as administrator
+$env:TENANT_CHILD='user'; $env:TENANT_ENROLL_CODE='<code>'; irm https://github.com/OWNER/REPO/releases/latest/download/install.ps1 | iex
+```
+
+For a machine that has Tenant already:
 
 ```
 printf '%s\n' '<code>' | tenant child install            # Linux, macOS
 '<code>' | tenant child install                          # PowerShell
 ```
 
-Add `--system` from an elevated shell for a service that runs as root or SYSTEM from boot;
-without it the child runs as your account from logon. `--ceiling full|no-exec|read-only` sets
-what the machine lets its master do (below). The code is read from standard input or
-`$TENANT_ENROLL_CODE`, never from an argument.
+Add `--system` (in a root shell, or a PowerShell run as administrator) for a service that runs
+as root or SYSTEM from boot; without it the child runs as your account from logon.
+`--ceiling full|no-exec|read-only` sets what the machine lets its master do (below). The code is
+read from standard input or `$TENANT_ENROLL_CODE`, never from an argument: no line puts it on a
+command line the process list shows. A build of Tenant that names no release repository cannot
+print the install-script lines; it says so and prints the others.
+
+The dashboard's Add machine shows the code in the answer to that one request, with a Copy
+button per line, and nowhere else: not in the address bar, not after a reload, not in any log.
+The Security log records that a code was made, for which name and by which dashboard session.
+The API key cannot make a code.
 
 The machine prints **six digits** and shows as `pending` on the master. Until you confirm it,
 the master sends it nothing.

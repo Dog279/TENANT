@@ -5,6 +5,21 @@ Releases page.
 
 ## Unreleased
 
+- **A machine joins a fleet in one paste** (TEN-541). `tenant fleet enroll <name>` now prints,
+  beside the lines for a machine that has Tenant, the whole line for a machine with nothing on
+  it: `install.sh` (Linux, macOS) or `install.ps1` (PowerShell) from the latest release, which
+  checks the download and goes straight on to `tenant child install`, as the user's own child or
+  as a service from boot. The code travels in `TENANT_ENROLL_CODE` or on standard input, never
+  as an argument; the boot-time line for Linux and macOS keeps it off sudo's command line
+  (`sudo --preserve-env`), and the install script's own example now does too. The same output
+  is `/fleet enroll <name>` in the terminal app, and the dashboard's Fleet page has **Add
+  machine**: a name and whether it runs as you or from boot, then the line with a Copy button,
+  shown once, in that answer only. Making a code there takes a signed-in browser (not the API
+  key); confirming the machine stays on this computer, with its six digits. `tenant fleet
+  address list | add | remove` changes the addresses a code carries one at a time, and every
+  place a code is made warns when each IP address on it is private, link-local or loopback.
+  `docs/fleet-runbook.md` has the three routes: a LAN, an overlay network, a public address.
+  Joining stays by code only: no discovery, no request to join.
 - **A fleet: one Tenant that owns your other machines** (TEN-531, the first of three parts).
   Install Tenant on a machine you own and run `tenant child install` with a one-time code from
   the master (`tenant fleet enroll <name>`): the machine becomes a **child**. It has no model
