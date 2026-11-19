@@ -1,9 +1,9 @@
 package main
 
-// protectiongate.go (TEN-535, section 8 of
-// docs/plans/process-protection-plan.md): a process protection the operating
+// protectiongate.go (TEN-535, section 8 of the process-protection plan,
+// "When a protection cannot be applied"): a process protection the operating
 // system could not apply is acknowledged by a person before Tenant runs the
-// agent.
+// agent. docs/serve-runbook.md has the operator's view.
 //
 // `tenant tui` and `tenant serve` read the report before they load anything
 // else (startGate). At a terminal they say which protection is missing and
@@ -268,6 +268,9 @@ func reportNotStarted(ctx context.Context, c *commonFlags, role string, why erro
 	}
 	hub, err := logs.Open(root, logs.Options{})
 	if err == nil {
+		// logbook.db is what `tenant logs` and the dashboard read. If it does
+		// not open, the day file under <root>/system still gets the line.
+		_, _ = hub.OpenStore(nil)
 		hub.Emit(ctx, sysNotStartedUnprotected.Build(ctx, "role", role, "version", version.Version, "why", why))
 		err = hub.Close()
 	}

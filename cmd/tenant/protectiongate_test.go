@@ -293,6 +293,15 @@ func TestStartGate(t *testing.T) {
 	if _, err := os.Stat(credentialsPath(f.c.cfgDir)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("a refusal touched credentials.json: %v", err)
 	}
+	// It is in logbook.db too, where `tenant logs` and the dashboard read.
+	if _, err := os.Stat(filepath.Join(f.c.dataDir, "logs", "logbook.db")); err != nil {
+		t.Fatalf("the refusal is not in logbook.db: %v", err) // and without one, the query below would ask a dashboard
+	}
+	var found bytes.Buffer
+	if err := runLogs(ctx, []string{"query", "provider:system id:3030", "--log-dir", filepath.Join(f.c.dataDir, "logs"), "--data", f.c.dataDir, "--config", t.TempDir()}, &found); err != nil ||
+		!strings.Contains(found.String(), "serve did not start") || !strings.Contains(found.String(), "operation not permitted") {
+		t.Errorf("tenant logs query: %v\n%s", err, &found)
+	}
 
 	// The log book is where config.json's logs.dir or --log-dir puts it.
 	f = newGateFixture(t, off, "", false)

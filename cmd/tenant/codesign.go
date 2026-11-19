@@ -1,15 +1,15 @@
 package main
 
-// codesign.go (TEN-535, section 3 of
-// docs/plans/process-protection-plan.md): on macOS the installed binary
-// carries the hardened-runtime flag, which makes the system refuse a debugger
-// outright. `tenant service install` and `tenant update` put it there with a
-// local (ad hoc) signature and no entitlements: a copy is signed, the flag is
-// checked on the copy, and only then is the copy moved into place, so the
-// binary that runs is never one that is half signed. scripts/install.sh does
-// the same for the first install. A failure leaves what was there untouched
-// and is reported; whether Tenant then starts is the acknowledgement flow's
-// decision (protectiongate.go), from what the binary that is there can apply.
+// codesign.go (TEN-535, section 3 of the process-protection plan): on macOS
+// the installed binary carries the hardened-runtime flag, which makes the
+// system refuse a debugger outright. `tenant service install` and `tenant
+// update` put it there with a local (ad hoc) signature and no entitlements:
+// a copy is signed, the flag is checked on the copy, and only then is the
+// copy moved into place, so the binary that runs is never one that is half
+// signed. scripts/install.sh does the same for the first install. A failure
+// leaves what was there untouched and is reported; whether Tenant then
+// starts is the acknowledgement flow's decision (protectiongate.go), from
+// what the binary that is there can apply.
 //
 // The file has no build tag. Nothing here runs on another system
 // (signsBinaries), and its tests run on every system against a codesign that
