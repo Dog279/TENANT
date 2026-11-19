@@ -997,9 +997,9 @@ func fleetRecoverCmd(args []string) error {
 var readRecoveryInput = func() ([]byte, error) {
 	var line []byte
 	if isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd()) {
-		fmt.Fprint(os.Stderr, "The fleet's recovery identity (it is not shown as you type): ")
+		fmt.Fprint(fleetNotes, "The fleet's recovery identity (it is not shown as you type): ")
 		b, err := xterm.ReadPassword(os.Stdin.Fd())
-		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(fleetNotes)
 		if err != nil {
 			return nil, err
 		}
