@@ -105,6 +105,13 @@ write covers most prompts. Add it when a real installer needs a TTY.
   `git status|log|diff|show|branch`, `brew list|info`, and similar. It applies
   only when **every** segment of a compound command (`&& || ; | $( )`) is in the
   set, and no segment has an output redirect.
+  As built it was fooled (TEN-534: `env <command>`, PowerShell method calls,
+  `$(…)` as the command, options hidden in quotes, `sort -o` and the like). The
+  rule since: each command is a bare read-only word (no path, no `VAR=value`
+  before it); a word that acts with some arguments has an argument rule
+  (`readOnlyWords` in `internal/plugins/osys/classify.go`) and takes only
+  literal arguments; `$( )` is read only as an argument of a word without a
+  rule; and a line the two shells would read differently is not read-only.
 - **Command rules:** tool rules learn `os_exec(<prefix> *)` patterns, for example
   `os_exec(brew install *)`, `os_exec(npm run *)` and `os_exec(rm *)` set to deny.
   They are matched per segment like Claude Code, with deny > ask > allow. "Allow

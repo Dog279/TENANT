@@ -5,6 +5,26 @@ Releases page.
 
 ## Unreleased
 
+- **Security: a command that only looked read-only ran with no approval prompt (TEN-534).** With
+  the exec permission on ask, a shell command that only looks at the machine (`ls`, `git status`)
+  runs without a prompt, on the host and on Discord. The check behind that was fooled, so these
+  ran unasked: `env <any command>`; on Windows a PowerShell method call or assignment such as
+  `(Get-Item C:\x).Delete()`, a script block, `& (…)`, and a second statement behind a lone
+  carriage return; `$(…)` or backticks in place of the command (`$(echo rm -rf x)`); an option
+  that a substitution or a variable supplies or that quotes hide (`find . $(echo -delete)`,
+  `find . '-delete'`); a `VAR=value` before the command (`PATH=… ls`); a path to a file with a
+  read-only name (`./ls`); and the words that write a file, change a setting or run a program
+  with some arguments: `sort -o`, `uniq IN OUT`, `tree -o`, `find -fprint0`, `rg --pre`,
+  `file -C`, `git log|diff|show --output=FILE`, `git branch NAME` and `-f`, `git remote -v add`
+  and `show URL`, `date -s`, `hostname NAME`. All of them now ask. The check now reads a line as
+  sh and as PowerShell at once, and whatever it cannot tell asks. The plain forms run unasked as
+  before: `env`, `env VAR=value`, `printenv`, `date`, `date +FORMAT`, `hostname`, `Get-Item`,
+  `Get-ChildItem`, `git status`, `ls -la | grep x`. Some harmless forms ask now: a read-only
+  word given by its path (`/usr/bin/grep`) or after `VAR=value`, `date` and `hostname` with any
+  option, `find`, `sort`, `git` and the other words above with a variable, an unquoted glob or
+  `$(…)` among their arguments, a subshell `(ls)`, backticks, `${HOME}` and anything else in
+  braces, `::` anywhere, and characters outside ASCII that are not letters. A command rule
+  (`/permissions add os_exec(date -u) allow`) lets a form you use run unasked again.
 - **Fixed: a power cut could leave more files than `config.json` unreadable.** The fix that
   flushes a saved file to the disk before it replaces the old one now covers every file Tenant
   saves that way: the user profile, a research run's manifest, the Claude Code session ledger, the
