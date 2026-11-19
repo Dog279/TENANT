@@ -23,7 +23,7 @@ import (
 //	process, 0x101401: end it, wait for it, read its basic details (its
 //	         path and command line), which is what Task Manager needs, and
 //	         query its information (PROCESS_QUERY_INFORMATION), which is
-//	         what taskkill /F, Stop-Process and Node's process.kill open it
+//	         what taskkill /F, Stop-Process -Force and Node's process.kill open it
 //	         with before they end it (decision A3);
 //	thread,  0x121001: end it, wait for it, resume it, and read its access
 //	         list (READ_CONTROL), so that Protect can read every thread's

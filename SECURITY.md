@@ -92,8 +92,9 @@ A program of the same user can also end single threads of Tenant, which stops
 work and reads nothing, and read each thread's access list. Such a program
 could always read a protected Tenant's exit code, times, priority, counters,
 the paths of its modules and where its memory lies and how it is protected,
-and the right `taskkill /F` and `Stop-Process` need to end it
-(`PROCESS_QUERY_INFORMATION`) adds which of its pages are resident and shared
+and the right `taskkill /F` and `Stop-Process -Force` need to end it
+(`PROCESS_QUERY_INFORMATION`; plain `Stop-Process` and Python's `os.kill` ask
+for more and are still refused) adds which of its pages are resident and shared
 (the working set), its handles by number, kind and rights, its mitigation
 policy, and a walk of its threads that gives no more than opening each by id:
 nothing of its memory's content, no handle out of it, no thread redirected.
