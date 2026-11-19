@@ -113,6 +113,7 @@ type fleetMemory struct {
 	// across a call on the link.
 	fgMu    sync.Mutex
 	forgets []*fleetForget
+	sweepMu sync.Mutex
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -605,6 +606,8 @@ func (m *fleetMemory) state(id string) (string, string) {
 // confirmed (markInventory), and forgets (recordFleetForget). A shadow in
 // use is left for the next sweep.
 func (m *fleetMemory) sweep() {
+	m.sweepMu.Lock() // one at a time: two would take one forget request twice
+	defer m.sweepMu.Unlock()
 	ctx, cancel := context.WithTimeout(m.ctx, time.Minute)
 	defer cancel()
 	entries, _ := os.ReadDir(fleetShadowDir(m.dataDir))

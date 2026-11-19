@@ -357,6 +357,10 @@ type fleetSessionState struct {
 // fleetSessions are the conversations (agent.Conversation) that have made a
 // fleet call. Only a main agent's, a relay's or a job's turns have the fleet
 // tools; a conversation with none is not here.
+//
+// ponytail: an entry per conversation that ever made a fleet call, kept for
+// the process's life (a few per day of a main agent's sessions); drop it
+// with the agent if conversations ever come by the thousand.
 var fleetSessions sync.Map // string → *fleetSessionState
 
 // fleetSessionOf is ctx's conversation, nil outside one.
