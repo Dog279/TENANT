@@ -418,6 +418,7 @@ var readOnlyRefused = []struct{ name, cmd string }{
 	{"a splat for any word", "echo @args"},
 	{"two quoted pieces, which PowerShell keeps apart", `cat "x"'y'`},
 	{"a variable in what < opens", "wc -l < $HOME/x"},
+	{"a variable after an escaped blank in what < opens", `wc -l < x\ $y`},
 }
 
 // The plain forms must go on running without a prompt.
@@ -698,9 +699,29 @@ func readOnlyViolation(c string) string {
 		}
 		// What < opens, as sh opens it: quotes and backslashes removed.
 		if i := strings.LastIndex(piece, "<"); i >= 0 {
-			target := strings.Fields(strings.NewReplacer(`'`, "", `"`, "", `\`, "").Replace(piece[i+1:]) + " x")[0]
-			if strings.Contains(target, "$") || strings.Contains(target, "/dev/tcp/") || strings.Contains(target, "/dev/udp/") {
-				return "< opens a connection, or a name only expansion tells: " + target
+			// sh's next word: blanks skipped, a backslash takes the next
+			// character as it is (an escaped blank too), quotes dropped.
+			var target strings.Builder
+			rest := strings.TrimLeft(piece[i+1:], " \t")
+			for j, q := 0, byte(0); j < len(rest); j++ {
+				ch := rest[j]
+				switch {
+				case q == 0 && (ch == ' ' || ch == '\t'):
+					j = len(rest)
+					continue
+				case ch == q:
+					q = 0
+				case q == 0 && (ch == '\'' || ch == '"'):
+					q = ch
+				case ch == '\\' && q != '\'' && j+1 < len(rest):
+					j++
+					target.WriteByte(rest[j])
+				default:
+					target.WriteByte(ch)
+				}
+			}
+			if t := target.String(); strings.Contains(t, "$") || strings.Contains(t, "/dev/tcp/") || strings.Contains(t, "/dev/udp/") {
+				return "< opens a connection, or a name only expansion tells: " + t
 			}
 		}
 		strict := roStrictWords[word]

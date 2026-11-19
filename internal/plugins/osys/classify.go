@@ -525,19 +525,33 @@ func psVariable(word, a string) bool {
 // whose name it can only tell once it has expanded it: bash (sh on macOS and
 // on most Linux distributions but Debian's) connects for /dev/tcp/HOST/PORT
 // and /dev/udp/… after quote removal, so `/dev/t'c'p/h/80`, `/dev/tc\p/h/80`
-// and `/dev/tcp$unset/h/80` connect as well. sh holds the arguments as sh
-// hands them over, quotes and backslashes gone.
-func readOnlyRedirect(sh []string) bool {
-	for i, a := range sh {
-		j := strings.LastIndex(a, "<")
-		if j < 0 {
-			continue
+// and `/dev/tcp$unset/h/80` connect as well. The file is read from the text
+// as sh reads its next word (an escaped blank is part of it); a `<` inside
+// quotes is taken for one too, which only refuses more.
+func readOnlyRedirect(text string) bool {
+	for i := strings.Index(text, "<"); i >= 0; i = strings.Index(text, "<") {
+		text = text[i+1:]
+		var file strings.Builder
+		rest := strings.TrimLeft(text, " \t")
+		for j, q := 0, byte(0); j < len(rest); j++ {
+			ch := rest[j]
+			if q == 0 && (ch == ' ' || ch == '\t') {
+				break
+			}
+			switch {
+			case ch == q:
+				q = 0
+			case q == 0 && (ch == '\'' || ch == '"'):
+				q = ch
+			case ch == '\\' && q != '\'' && j+1 < len(rest):
+				j++
+				file.WriteByte(rest[j])
+			default:
+				file.WriteByte(ch)
+			}
 		}
-		target := a[j+1:]
-		if target == "" && i+1 < len(sh) {
-			target = sh[i+1]
-		}
-		if strings.Contains(target, "$") || strings.Contains(target, "/dev/tcp/") || strings.Contains(target, "/dev/udp/") {
+		f := file.String()
+		if strings.Contains(f, "$") || strings.Contains(f, "/dev/tcp/") || strings.Contains(f, "/dev/udp/") {
 			return true
 		}
 	}
@@ -569,7 +583,7 @@ func readOnlyCommand(text string, piped bool) (ok, prints bool) {
 	takesPipe, isCmdlet := psWords[name]
 	// ToLower turns two letters outside ASCII (İ, the Kelvin sign) into i and k.
 	if !known || !agreed || (!reread && !isCmdlet) || strings.IndexFunc(word, func(r rune) bool { return r > unicode.MaxASCII }) >= 0 ||
-		readOnlyReach(name, sh) || readOnlyReach(name, ps) || readOnlyRedirect(sh) {
+		readOnlyReach(name, sh) || readOnlyReach(name, ps) || readOnlyRedirect(rest) {
 		return false, false
 	}
 	// What one command prints must not become another's path: PowerShell hands
