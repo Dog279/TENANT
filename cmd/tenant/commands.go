@@ -1807,6 +1807,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	life := lifecycle.New(log)
 	defer life.Shutdown()
 	run := beginRun(ctx, "tui") // the system log's start-up and stop (TEN-383)
+	warnSecretEnvironment(ctx, c.lc)
 	defer run.failed(&err)
 	// The log book's final flush, then the boot record and crash capture
 	// (TEN-373): the first Release steps registered, so they run last.

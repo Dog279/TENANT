@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -272,6 +273,21 @@ func TestReportMissingAndStillOpen(t *testing.T) {
 	}
 	if StillOpen("plan9") != "" {
 		t.Error("a system with no controls has nothing to say")
+	}
+	for _, tc := range []struct {
+		what, out string
+		err       error
+		want      string
+	}{
+		{"System Integrity Protection", "System Integrity Protection status: enabled.\n", nil, "System Integrity Protection status: enabled."},
+		{"FileVault", "FileVault is On.\nmore\n", nil, "FileVault is On."},
+		{"FileVault", "Encryption in progress\n", nil, "FileVault: Encryption in progress"},
+		{"FileVault", "", nil, "FileVault: could not be read"},
+		{"FileVault", "FileVault is On.", errors.New("exit status 1"), "FileVault: could not be read"},
+	} {
+		if got := statusLine(tc.what, []byte(tc.out), tc.err); got != tc.want {
+			t.Errorf("statusLine(%q, %q, %v) = %q, want %q", tc.what, tc.out, tc.err, got, tc.want)
+		}
 	}
 	if Disabled {
 		if r := Protect(); !r.Disabled || len(r.Controls) != 0 {

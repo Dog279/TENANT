@@ -13,7 +13,10 @@
 // which compiles the controls out (Disabled).
 package procprotect
 
-import "sync"
+import (
+	"strings"
+	"sync"
+)
 
 // Control is one protection Protect applies on this system.
 type Control struct {
@@ -113,3 +116,17 @@ func StillOpen(goos string) string { return stillOpen[goos] }
 // System is what the operating system itself reports about this process's
 // exposure, where that can be read without elevation: a line per fact.
 func System() []string { return system() }
+
+// statusLine is the first line one of the system's own status tools printed
+// (macOS: csrutil status, fdesetup status), or that it could not be asked.
+func statusLine(what string, out []byte, err error) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	line = strings.TrimSpace(line)
+	if err != nil || line == "" {
+		return what + ": could not be read"
+	}
+	if !strings.Contains(line, what) {
+		line = what + ": " + line
+	}
+	return line
+}

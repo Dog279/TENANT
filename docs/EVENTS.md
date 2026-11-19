@@ -5457,6 +5457,7 @@ Writes the `system` log.
 | [5004](#system-5004) | warning | Configuration | `A changed key did not reload into the live model provider: {err}` |
 | [5010](#system-5010) | warning | Agent profile | `Agent profile {profile}: model {configured} is served as {served}; using that` |
 | [5011](#system-5011) | warning | Agent profile | `Agent profile {profile}: the endpoint does not serve model {configured}; its calls may fail` |
+| [5020](#system-5020) | warning | Configuration | `A secret is in an environment variable ({names}), which macOS shows to your other programs` |
 
 ### system 1
 
@@ -5940,6 +5941,21 @@ Writes the `system` log.
 **Why it happens.** The model name is wrong, or the server loaded another model.
 
 **What to do.** Set the profile's model to one of served, or load the model on the server.
+
+### system 5020
+
+`A secret is in an environment variable ({names}), which macOS shows to your other programs`
+
+- **Level:** warning · **Channel:** operational · **Task:** Configuration · **Log:** system
+- **Fields:** `names`
+- **Keywords:** `config`
+- **Find it:** `provider:system id:5020`
+
+**What it means.** Tenant started on macOS with a variable it reads as a secret set. macOS lets a user's programs read each other's starting environment, and process protection does not change that. names lists the variables, never their values.
+
+**Why it happens.** A key was exported in the shell, or set in the service's unit, instead of being saved in the credentials store.
+
+**What to do.** Save the key with /configure <plugin> or the dashboard's keys page, remove the variable, and start Tenant again.
 
 ## toolmux
 
