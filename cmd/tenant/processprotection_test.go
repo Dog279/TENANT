@@ -42,6 +42,12 @@ func TestProcessProtectionCheck(t *testing.T) {
 		t.Errorf("a control off: %+v", r)
 	}
 
+	withDetail := linuxControls(false)
+	withDetail[0].Detail = "thread ids 12, 34"
+	if r = processProtectionCheck(audit(procprotect.Report{Controls: withDetail}, "linux", nil, ""), "linux"); !strings.Contains(r.Detail, ": operation not permitted (thread ids 12, 34). That leaves this open") {
+		t.Errorf("a control off, with a detail: %+v", r)
+	}
+
 	r = processProtectionCheck(audit(procprotect.Report{Disabled: true}, "linux", nil, ""), "linux")
 	if r.Status != statusWarn || r.Detail != debugAttachNote || !strings.Contains(r.Fix, "debugattach") {
 		t.Errorf("compiled out: %+v", r)
@@ -81,6 +87,70 @@ func TestProcessProtectionCheck(t *testing.T) {
 	}
 	if r = processProtectionCheck(audit(ok, "linux", nil, "all"), "linux"); strings.Contains(r.Detail, "GOTRACEBACK") {
 		t.Errorf("GOTRACEBACK=all asks for no dump: %+v", r)
+	}
+
+	// A running Tenant's answer (procprotect.Now): a control undone since it
+	// started is off, and a restart is the fix, not an acknowledgement; one
+	// that cannot be read again says so.
+	running := procprotect.Report{PID: 7, Controls: []procprotect.Control{
+		{ID: "linux.dumpable", Name: "memory reads refused", OK: true, AsAtStart: true, Note: "a note"},
+		{ID: "linux.core-limit", Name: "no core file", Undone: true, Leaves: "a core file",
+			Reason: "it was in force when Tenant started and is not any more: the soft core limit is not 0"}}}
+	r = processProtectionCheck(audit(running, "linux", nil, ""), "linux")
+	if r.Status != statusWarn || !strings.Contains(r.Fix, "tenant service restart") || strings.Contains(r.Fix, "the system's own") ||
+		!strings.Contains(r.Detail, "on:  memory reads refused (a note; as it was when Tenant started: not all of it can be read again)") ||
+		!strings.Contains(r.Detail, "OFF: no core file: it was in force when Tenant started and is not any more: the soft core limit is not 0. That leaves this open: a core file. A restart of Tenant applies it again") ||
+		strings.Contains(r.Detail, "cknowledged") {
+		t.Errorf("a control undone since the start: %+v", r)
+	}
+
+	// What a program of the same user can still do, in plain words: on
+	// Windows, end single threads, and reach in through the starter's handle;
+	// everywhere, get in before the controls are applied.
+	r = processProtectionCheck(audit(win, "windows", nil, ""), "windows")
+	for _, want := range []string{"not stopped: a program of the same user can end Tenant, and can end, wait for and resume each of its threads",
+		"not stopped: whoever started Tenant holds a handle to it from before these controls",
+		"the instant between Tenant's start and these controls"} {
+		if !strings.Contains(r.Detail, want) {
+			t.Errorf("Windows: detail lacks %q:\n%s", want, r.Detail)
+		}
+	}
+}
+
+// Doctor reports the Tenant that is running, as that process says it stands
+// now, and says whose controls it lists either way.
+func TestProcessProtectionAsksTheRunningTenant(t *testing.T) {
+	prev := protection
+	t.Cleanup(func() { protection = prev })
+	protection = procprotect.Report{Controls: linuxControls(true)} // this command's own: all on
+	ask := func(addr string) checkResult {
+		return checkProcessProtection(context.Background(), serveEnv(addr))
+	}
+
+	addr, done := serveStatusServer(t, `{"status":"ok","version":"9.9.9","process_protection":{"disabled":false,"pid":4242,"system":["of the running one"],"controls":[`+
+		`{"id":"linux.dumpable","name":"memory reads refused","ok":false,"undone":true,"reason":"it was in force when Tenant started and is not any more: the dumpable flag is on","leaves":"memory"}]}}`)
+	defer done()
+	r := ask(addr)
+	if r.Status != statusWarn || !strings.HasPrefix(r.Detail, "The Tenant running at "+addr+" (process 4242, version 9.9.9), asked just now:") ||
+		!strings.Contains(r.Detail, "OFF: memory reads refused: it was in force when Tenant started") || !strings.Contains(r.Detail, "of the running one") ||
+		strings.Contains(r.Detail, "no core file") {
+		t.Errorf("a running Tenant's answer: %+v", r)
+	}
+
+	// One from before it said: this binary's own, and doctor says so.
+	old, done2 := serveStatusServer(t, `{"status":"ok","version":"0.1.0"}`)
+	defer done2()
+	r = ask(old)
+	if r.Status != statusOK || !strings.HasPrefix(r.Detail, "The Tenant running at "+old+" (version 0.1.0) does not say what protects it. This is what a start of this binary would get.") ||
+		!strings.Contains(r.Detail, "on:  no core file") {
+		t.Errorf("a running Tenant that does not say: %+v", r)
+	}
+
+	// None running: what a start would get.
+	r = ask("127.0.0.1:1")
+	if r.Status != statusOK || !strings.HasPrefix(r.Detail, "No running Tenant answered (no hub reachable at 127.0.0.1:1 (not running)). This is what a start would get:") ||
+		!strings.Contains(r.Detail, "on:  no core file") {
+		t.Errorf("no Tenant running: %+v", r)
 	}
 }
 

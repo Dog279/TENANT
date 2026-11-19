@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -157,6 +158,10 @@ func TestRESTStatus_Liveness(t *testing.T) {
 	}
 	if st.PendingApprovals != 2 {
 		t.Errorf("pending_approvals = %d, want 2", st.PendingApprovals)
+	}
+	// TEN-535: the process says what protects it now, for doctor.
+	if st.Protection.PID != os.Getpid() || !strings.Contains(rec.Body.String(), `"process_protection":{`) {
+		t.Errorf("process_protection = %+v, want this process's report", st.Protection)
 	}
 	if st.TurnQueueDepth != 2 || st.TurnQueueAgeSecs != 5 || len(st.TurnQueue) != 2 {
 		t.Fatalf("queue status = depth %d age %d entries %+v", st.TurnQueueDepth, st.TurnQueueAgeSecs, st.TurnQueue)
