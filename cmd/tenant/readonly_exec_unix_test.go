@@ -42,6 +42,9 @@ func TestReadOnlyExec_Sh(t *testing.T) {
 		"git branch --sort=signature",
 		// Round three: bash expands ~+ to the working directory in what < opens.
 		"cat < ~+/tcp/127.0.0.1/9",
+		// Round five: options that open the paths their standard input lists.
+		"echo " + keep + " | file -f -",
+		"echo " + keep + " | wc --files0-from=-",
 	} {
 		before := *asked
 		out, isErr := run(cmd, dir)

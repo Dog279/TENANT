@@ -829,7 +829,9 @@ func TestExec_NetworkWorkdirIsRefused(t *testing.T) {
 	for _, dir := range []string{`\\attacker.example\share`, `//attacker.example/share/repo`, `\\?\UNC\attacker.example\share`,
 		// Round three: the NT namespace form, and an automount that picks the
 		// host from the path (/net on macOS and with Linux autofs).
-		`\??\UNC\attacker.example\share`, `/??/UNC/attacker.example/share`, "/net/attacker.example/x", "/./net/attacker.example"} {
+		`\??\UNC\attacker.example\share`, `/??/UNC/attacker.example/share`, "/net/attacker.example/x", "/./net/attacker.example",
+		// Round five: /net itself, where a relative path then names the host.
+		"/net", "/net/", "/NET", "/Users/x/../../net"} {
 		asked := 0
 		d, rr := newDisp(t, Policy{AllowExec: true, Confirm: func(context.Context, string, string) bool { asked++; return true }}, "ok")
 		out, isErr, _ := d.Dispatch(context.Background(), call("os_exec", map[string]any{"command": "ls", "workdir": dir}))
