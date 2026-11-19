@@ -166,6 +166,29 @@ func (f *fakeFleet) Update(id, version, arch string, allowOlder bool) error {
 	return nil
 }
 
+// fakeEnrollCode is the code the fake makes: the shape of a real one.
+const fakeEnrollCode = "tntfleet1_eyJuIjoid2ViMSJ9-_Zz09"
+
+func (f *fakeFleet) Enroll(name string, boot bool, by string) (FleetEnrollment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, strings.Join([]string{"enroll", name, fmt.Sprint(boot), by}, "|"))
+	switch {
+	case f.err != nil:
+		return FleetEnrollment{}, f.err
+	case name == "web 1" || name == "taken":
+		return FleetEnrollment{}, fmt.Errorf("fleet: %q is not a machine name", name)
+	}
+	q := "'" + fakeEnrollCode + "'"
+	return FleetEnrollment{Name: name, Code: fakeEnrollCode, Expires: "2026-11-19 10:15", Boot: boot,
+		Addresses: []string{"192.168.1.5:9777", "10.0.0.2:9777"},
+		Warning:   "warning: every IP address this code carries is private, link-local or loopback: a machine at another site cannot dial these.",
+		Lines: []FleetPasteLine{
+			{"Linux, macOS, nothing installed", "curl -fsSL https://github.com/o/r/releases/latest/download/install.sh | TENANT_CHILD=user TENANT_ENROLL_CODE=" + q + " sh"},
+			{"Windows, Tenant installed (PowerShell)", q + " | tenant child install"},
+		}}, nil
+}
+
 func (f *fakeFleet) called() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -703,8 +726,8 @@ func TestFleetStates(t *testing.T) {
 	if strings.Count(list, `<td>unknown</td>`) != 13 {
 		t.Errorf("the memory column: %d of 13 machines say it is unknown", strings.Count(list, `<td>unknown</td>`))
 	}
-	if strings.Contains(list, "<form") && strings.Contains(list, `action="/fleet/`) {
-		t.Errorf("the list carries a form: every change is on a machine's own page")
+	if strings.Count(list, `action="/fleet/`) != strings.Count(list, `action="/fleet/add"`) {
+		t.Errorf("the list carries a form other than Add machine: every change to a machine is on its own page")
 	}
 
 	// A pending machine, seen from another computer: everything it would start

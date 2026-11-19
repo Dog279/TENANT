@@ -476,4 +476,5 @@ details.tool[open] summary{border-bottom:1px solid var(--line2)}
 .fl-table td:first-child{min-width:110px}
 .fl-facts th{width:1%;padding-right:18px}
 .fl-said{font-family:ui-monospace,monospace;font-size:12px;color:#cdd8ea}
+.fl-paste{flex:1;min-width:0;overflow-wrap:anywhere;user-select:all;font-size:12px}
 /* == end TEN-533 == */
