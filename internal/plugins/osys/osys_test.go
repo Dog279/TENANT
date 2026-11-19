@@ -644,6 +644,13 @@ var tenantSelfCommands = []string{
 	"start tenant update", "cmd /c tenant update", `cmd /C "tenant service stop"`, "sh -c 'tenant update'",
 	"bash -lc 'cd /tmp && tenant update'", `powershell -NoProfile -Command "tenant update"`, "pwsh -c 'tenant update'",
 	"sudo sh -c 'tenant update'", "sudo env X=1 nohup tenant update",
+	// The coordinator's replay of the first version.
+	"timeout 5 tenant update", "timeout 30s tenant service stop", "timeout -k 5 60 tenant update",
+	"timeout -s KILL 5 tenant update", "eval tenant update", `eval "tenant service stop"`, `iex "tenant update"`,
+	"Invoke-Expression 'tenant service stop'", "powershell tenant update", "powershell.exe -NoProfile tenant update",
+	"Start-Process tenant -ArgumentList update", "Start-Process -FilePath tenant.exe -ArgumentList 'service','stop'",
+	"saps tenant -Args update", "start tenant -ArgumentList 'update'", "Start-Process -WindowStyle Hidden tenant update",
+	"xargs tenant update", "xargs -n1 tenant update",
 }
 
 // tenant and a verb as data: no card for these (TEN-498's reason to anchor).
@@ -652,6 +659,9 @@ var tenantSelfData = []string{
 	`git log --grep "tenant service"`, "ls tenant", "rg 'tenant fleet' docs", "rg 'tenant update' docs",
 	`git log --grep "fix; tenant update"`, "echo 'a; tenant update'", "tenant version", "tenant status",
 	"sudo grep tenant service.log", "sh -c 'echo tenant update'", "cat tenant", "tenant",
+	"timeout 5 grep tenant service.log", "eval echo tenant update", "Start-Process notepad tenant-update.md",
+	"xargs grep tenant", "powershell -File tenant-update.ps1", `powershell Get-Content tenant\update.md`,
+	"pwsh tenant update", "Start-Process tenant -ArgumentList version",
 }
 
 func TestClassifyTenantSelfCommandAnywhere(t *testing.T) {
