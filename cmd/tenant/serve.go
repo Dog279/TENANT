@@ -447,7 +447,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	mux.EnableStats(stats)
 	mainLocal.EnableStats(stats)
 	life.AddFunc(lifecycle.Release, "tool stats", stats.StartPersist(time.Minute))
-	mainTools := composite{shared: mux, local: mainLocal, budget: rt.budget, agentID: c.agent}
+	mainTools := composite{shared: mux, local: mainLocal, budget: rt.budget, agentID: c.agent, refresh: fleetToolSync(mainLocal, mux)}
 
 	// Bus traffic → dashboard feed (lossless cursor over the retained log).
 	go func() {
@@ -538,7 +538,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		PerTurnToolRanking:     c.lc.PerTurnToolRanking,
 		Skills:                 skillRetriever{st: skillStore, agentID: c.agent, tools: mainTools},
 		SystemPrompt:           mainPrompt,
-		RenderAgents:           func() string { return renderAgentsForOrchestrator(rt.AgentProfiles()) },
+		RenderAgents:           func() string { return renderAgentsForOrchestrator(rt.AgentProfiles()) + fleetRoster() },
 		Compactor:              compressor,
 		UserProfile:            prof,
 		Stopping:               serveStopping.Load,
