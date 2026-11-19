@@ -46,6 +46,8 @@ func TestMain(m *testing.M) {
 		attackMain()
 	case "child":
 		emit(childState())
+	case "squat":
+		squat() // Windows: a third program on a victim's console
 	default:
 		anchorIfAsked() // Windows: this binary run as a victim's console anchor
 		code := m.Run()
@@ -89,6 +91,7 @@ func emit(v any) {
 
 func victimMain() {
 	kind := os.Getenv(envKind)
+	victimBefore()
 	var rep Report
 	switch kind {
 	case "protected":

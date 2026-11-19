@@ -321,6 +321,9 @@ const threadGetSetSuspend = windows.THREAD_GET_CONTEXT | windows.THREAD_SET_CONT
 var attempts = []attempt{
 	{"ReadProcessMemory (PROCESS_VM_READ)", func(v victimInfo) (string, error) {
 		return openProcess(v, windows.PROCESS_VM_READ, func(h windows.Handle) (string, error) {
+			if v.Len == 0 { // a process with no marker (a victim's helper): the open itself is the way in
+				return "opened for reading", nil
+			}
 			b := make([]byte, v.Len)
 			var n uintptr
 			if err := windows.ReadProcessMemory(h, v.Addr, &b[0], uintptr(len(b)), &n); err != nil {
@@ -446,6 +449,16 @@ var attempts = []attempt{
 				return "", err
 			}
 			return filepath.Base(windows.UTF16ToString(buf[:n])), nil
+		})
+	}},
+	{"suspend the whole process (NtSuspendProcess)", func(v victimInfo) (string, error) {
+		return openProcess(v, 0x0800 /* PROCESS_SUSPEND_RESUME */, func(h windows.Handle) (string, error) {
+			ntdll := windows.NewLazySystemDLL("ntdll.dll")
+			if st, _, _ := ntdll.NewProc("NtSuspendProcess").Call(uintptr(h)); st != 0 {
+				return "", windows.NTStatus(st)
+			}
+			_, _, _ = ntdll.NewProc("NtResumeProcess").Call(uintptr(h))
+			return "suspended, and resumed", nil
 		})
 	}},
 	{"wait for it to exit (SYNCHRONIZE)", func(v victimInfo) (string, error) {

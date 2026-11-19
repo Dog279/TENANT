@@ -1,13 +1,13 @@
 package procprotect
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"reflect"
+	"runtime"
 	"slices"
 	"syscall"
 	"time"
@@ -34,8 +34,8 @@ import (
 //   - The console must outlive the moment nobody is joined to it. Another
 //     client keeps it: the parent, when it is on the same console (a shell
 //     waiting for the command), otherwise a helper started for the purpose
-//     (this program run as anchorArg), which ends as soon as the process is
-//     back.
+//     (this program run as anchorArg), which is ended as soon as the process
+//     is back.
 //   - Windows closes the process's console handles: standard input, output
 //     and error where they are the console. New ones are opened, and put
 //     into the os.File values the Go program already has (os.Stdin and the
@@ -46,13 +46,41 @@ import (
 //     runtime's, which turns Ctrl-C, a closed window, a logoff and a
 //     shutdown into signals, is found beforehand and registered again.
 //
+// The helper is the one thing here another program of the user could act on,
+// so nothing depends on what it does (TEN-535 round three: a program that
+// suspended it made the control fail, and then answered Tenant's question
+// about that at the console). It is born with the restricted access list, on
+// its process and on every thread it will ever have, so it cannot be
+// suspended, read or redirected; whether it is on the console is read from
+// the console's own list of its programs, not from anything it says; and
+// Tenant ends it through the handle it got when it started it. What is left
+// to another program is to end it, or to starve the machine so that it is
+// late. Either way, and whenever the console cannot be joined again, Tenant
+// leaves its console for good: the host then holds no handle at all, which
+// is what the control promises, and a Tenant with no console asks nobody
+// anything. No failure another program can bring about leaves the old handle
+// in place with Tenant running on.
+//
 // What this does not reach: a handle held by whoever started the process
 // (the shell), and anything taken in the moment before Protect ran.
 
 // anchorArg is the one argument of the helper process that keeps a console
 // open while its only client is away. Protect, in that process, does nothing
-// but wait for its standard input to close, and exits: it never runs Tenant.
+// but wait to be ended: it never runs Tenant.
 const anchorArg = "__console-anchor"
+
+// anchorWait is how long the helper has to appear on the console. It is
+// long: nothing another program can do makes the helper slow (it cannot be
+// suspended), so only a machine under load is waited for, and giving up
+// costs the console. A variable, so that a test can make it late.
+var anchorWait = 30 * time.Second
+
+// attachWait is how long joining the console again is retried.
+const attachWait = 3 * time.Second
+
+// anchorUp, when a test sets it, is called once the helper is on the console
+// and before this process leaves it.
+var anchorUp func(pid uint32)
 
 var (
 	kernel32                  = windows.NewLazySystemDLL("kernel32.dll")
@@ -171,61 +199,89 @@ func rejoinConsole() (note string, err error) {
 	defer procSetConsoleCtrlHandler.Call(handler, 1)
 
 	// Who keeps the console while this process is away.
+	why := ""
 	target := uint32(os.Getppid())
-	if !slices.Contains(clients, target) || target == windows.GetCurrentProcessId() {
-		release, pid, err := startAnchor()
-		if err != nil {
-			return "", &failure{reason: "a helper to keep the console open could not be started, so the console was not left: " + err.Error()}
+	if slices.Contains(clients, target) && target != windows.GetCurrentProcessId() {
+		// Held until the end, so that its process id names it and nothing
+		// else for as long as this process may join it.
+		if h, err := windows.OpenProcess(windows.SYNCHRONIZE, false, target); err == nil {
+			defer windows.CloseHandle(h)
 		}
-		defer release()
-		target = pid
+	} else {
+		end, pid, err := startAnchor()
+		if err != nil {
+			why = "the helper that keeps a console open " + err.Error()
+		} else {
+			defer end()
+			target = pid
+			if anchorUp != nil {
+				anchorUp(pid)
+			}
+		}
 	}
 
 	if r, _, e := procFreeConsole.Call(); r == 0 {
 		return "", fmt.Errorf("FreeConsole: %w", e)
 	}
-	r, _, e := procAttachConsole.Call(uintptr(target))
-	if r == 0 {
-		r, _, _ = procAttachConsole.Call(^uintptr(0)) // ATTACH_PARENT_PROCESS: the last way back
+	consoleRejoined = true
+	// From here to the end the console streams' old handle values are closed,
+	// and Windows gives closed values to the next handles it makes. Nothing
+	// in this program may write through them meanwhile.
+	for _, s := range streams {
+		if s.console {
+			s.set(windows.InvalidHandle)
+		}
 	}
-	if r == 0 {
-		// No console any more. The streams that were the console go
-		// nowhere, rather than to whatever takes their handle values next.
-		for _, s := range streams {
-			if s.console {
-				nul, _ := windows.CreateFile(windows.StringToUTF16Ptr("NUL"), windows.GENERIC_READ|windows.GENERIC_WRITE,
-					windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, 0, 0)
-				s.set(nul)
+	if why == "" {
+		// Only the console it left. Another console (the parent's, for one)
+		// would hand this process's input to whoever owns that one. Joining
+		// can fail for a moment with the console still there ("A device
+		// attached to the system is not functioning", about one start in a
+		// few hundred), so it is tried again for a short while. The target's
+		// process id is not reused meanwhile: a handle to it is held here.
+		for deadline := time.Now().Add(attachWait); ; time.Sleep(10 * time.Millisecond) {
+			r, _, e := procAttachConsole.Call(uintptr(target))
+			if r != 0 {
+				why = ""
+				break
+			}
+			why = "AttachConsole: " + e.Error()
+			if time.Now().After(deadline) {
+				break
 			}
 		}
-		return "", fmt.Errorf("this process left its console and could not join it again: AttachConsole: %w", e)
 	}
-	consoleRejoined = true
 	for _, s := range streams {
-		cur, _ := windows.GetStdHandle(s.which)
 		if !s.console { // redirected: exactly as it was
-			if cur != s.saved {
-				_ = windows.SetStdHandle(s.which, s.saved)
-			}
+			_ = windows.SetStdHandle(s.which, s.saved)
 			continue
 		}
 		// Opened here, for reading and writing as the handle a process is
-		// born with is: the one Windows puts in its place on joining reads
-		// only, and typing into the console or flushing its input needs more.
+		// born with is. What Windows has in the stream's place by now is not
+		// looked at and never closed: a process started with its streams
+		// named (STARTF_USESTDHANDLES, which is how Windows Terminal starts
+		// one) is left the old, closed value there, and by this point that
+		// value may be one of the handles opened in this very loop.
+		device := s.device
+		if why != "" {
+			device = "NUL" // no console any more: its streams go nowhere
+		}
 		sa := windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), InheritHandle: 1}
-		h, err := windows.CreateFile(windows.StringToUTF16Ptr(s.device), windows.GENERIC_READ|windows.GENERIC_WRITE,
+		h, err := windows.CreateFile(windows.StringToUTF16Ptr(device), windows.GENERIC_READ|windows.GENERIC_WRITE,
 			windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, &sa, windows.OPEN_EXISTING, 0, 0)
-		switch {
-		case err == nil:
-			if isConsole(cur) && cur != h {
-				windows.CloseHandle(cur)
-			}
-		case isConsole(cur):
-			h = cur
-		default:
-			return "", fmt.Errorf("this process joined its console again but could not open it (%s): %w", s.device, err)
+		if err != nil && why == "" {
+			// On the console, and it cannot be opened: left for good, as below.
+			why = "opening " + s.device + ": " + err.Error()
+			_, _, _ = procFreeConsole.Call()
+			h, _ = windows.CreateFile(windows.StringToUTF16Ptr("NUL"), windows.GENERIC_READ|windows.GENERIC_WRITE,
+				windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, &sa, windows.OPEN_EXISTING, 0, 0)
 		}
 		s.set(h)
+	}
+	if why != "" {
+		// The console host holds no handle to a process that is on no
+		// console: the control is in force, at the cost of the console.
+		return "this process left its console and did not join it again: " + why, nil
 	}
 	return "the console was left and joined again", nil
 }
@@ -240,56 +296,67 @@ func (s *stdStream) set(h windows.Handle) {
 }
 
 // startAnchor starts the helper that keeps the console open, and returns
-// when it has joined the console. release ends it.
-func startAnchor() (release func(), pid uint32, err error) {
+// once the console lists it among its programs. end ends it.
+//
+// It is not given the user's ordinary token, as a command is (Child): it
+// keeps this process's, whose default for new objects is the restricted list
+// by now, and its process and first thread are given that list by name. So
+// from its first instant no other program of the user can suspend it or get
+// into it. It needs nothing the restricted default takes away: it opens
+// nothing, and the pipe it reads was made here.
+func startAnchor() (end func(), pid uint32, err error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, errors.New("could not be started: " + err.Error())
 	}
+	sd, err := windows.SecurityDescriptorFromString(restrictedSDDL)
+	if err != nil {
+		return nil, 0, errors.New("could not be started: " + err.Error())
+	}
+	closed := &syscall.SecurityAttributes{Length: uint32(unsafe.Sizeof(syscall.SecurityAttributes{})), SecurityDescriptor: uintptr(unsafe.Pointer(sd))}
 	c := exec.Command(exe, anchorArg)
 	c.Env = []string{"SystemRoot=" + os.Getenv("SystemRoot")} // nothing of this process's environment
+	c.SysProcAttr = &syscall.SysProcAttr{ProcessAttributes: closed, ThreadAttributes: closed}
 	var in io.WriteCloser
-	var out io.ReadCloser
-	Ordinary(func() {
-		if in, err = c.StdinPipe(); err == nil {
-			if out, err = c.StdoutPipe(); err == nil {
-				Child(c)
-				err = c.Start()
-			}
-		}
-	})
+	Ordinary(func() { in, err = c.StdinPipe() }) // a pipe can only be made there
+	if err == nil {
+		err = c.Start()
+	}
+	runtime.KeepAlive(sd)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, errors.New("could not be started: " + err.Error())
 	}
-	release = func() {
-		in.Close()
-		_ = c.Wait()
-	}
-	ready := make(chan error, 1)
+	gone := make(chan struct{})
 	go func() {
-		line, err := bufio.NewReader(out).ReadString('\n')
-		if err == nil && line != "ready\n" {
-			err = errors.New("it did not say it was ready")
-		}
-		ready <- err
+		_ = c.Wait()
+		close(gone)
 	}()
-	select {
-	case err = <-ready:
-	case <-time.After(10 * time.Second):
-		err = errors.New("it did not come up in time")
+	end = func() {
+		_ = c.Process.Kill() // through the handle it was started with
+		in.Close()
+		<-gone
 	}
-	if err != nil {
-		_ = c.Process.Kill()
-		release()
-		return nil, 0, err
+	pid = uint32(c.Process.Pid)
+	// A process is on the console's list once it has run its first steps; one
+	// that has not run yet is not.
+	for deadline := time.Now().Add(anchorWait); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		if slices.Contains(consoleClients(), pid) {
+			return end, pid, nil
+		}
+		select {
+		case <-gone:
+			in.Close()
+			return nil, 0, errors.New("ended before it was on the console")
+		default:
+		}
 	}
-	return release, uint32(c.Process.Pid), nil
+	end()
+	return nil, 0, errors.New("was not on the console in time")
 }
 
-// anchor is the helper's whole life: say it has joined the console, wait for
-// the process that started it to close its input, and exit.
+// anchor is the helper's whole life: stay on the console until the process
+// that started it ends it, or is gone itself (its input closes then).
 func anchor() {
-	fmt.Println("ready")
 	_, _ = io.Copy(io.Discard, os.Stdin)
 	os.Exit(0)
 }

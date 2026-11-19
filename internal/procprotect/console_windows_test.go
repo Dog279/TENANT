@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -25,9 +26,31 @@ import (
 // alone, so the test opens no console host but its own victims'.
 
 const (
-	envConsole = "PROCPROTECT_CONSOLE" // the victim's streams are its own console: check them
-	envLinger  = "PROCPROTECT_LINGER"  // the victim starts a console command that stays, and says which
+	envConsole     = "PROCPROTECT_CONSOLE"      // the victim's streams are its own console: check them
+	envLinger      = "PROCPROTECT_LINGER"       // the victim starts a console command that stays, and says which
+	envAnchorPause = "PROCPROTECT_ANCHOR_PAUSE" // the victim waits this long with its helper up, and says in <info>.anchor which process it is
+	envAnchorWait  = "PROCPROTECT_ANCHOR_WAIT"  // how long the victim gives its helper to appear
+
+	// namedStreams, with a process creation flag: the victim is started as
+	// Windows Terminal starts a program, with STARTF_USESTDHANDLES and no
+	// handles named. It gets the console's streams all the same, and Windows
+	// then never replaces them when the process joins a console again.
+	namedStreams = 1 << 31
 )
+
+// victimBefore is the victim's, before it calls Protect: what a test asked
+// of its helper.
+func victimBefore() {
+	if d, err := time.ParseDuration(os.Getenv(envAnchorWait)); err == nil {
+		anchorWait = d
+	}
+	if d, err := time.ParseDuration(os.Getenv(envAnchorPause)); err == nil {
+		anchorUp = func(pid uint32) {
+			_ = os.WriteFile(os.Getenv(envInfo)+".anchor", []byte(strconv.Itoa(int(pid))), 0o600)
+			time.Sleep(d)
+		}
+	}
+}
 
 // anchorIfAsked: a victim alone on its console starts this test binary as the
 // helper that keeps the console open, as Tenant starts itself.
@@ -62,6 +85,20 @@ func commandThatStays(t *testing.T, v victimInfo) uint32 {
 // test.
 func startVictimWith(t *testing.T, kind string, how uint32, env ...string) victimInfo {
 	t.Helper()
+	return launchVictim(t, kind, how, env...).await(t)
+}
+
+// launchedVictim is a victim that has been started and may not have reported
+// yet.
+type launchedVictim struct {
+	kind, info string
+	process    windows.Handle
+	pid        uint32
+}
+
+// launchVictim starts a victim as startVictimWith does and returns at once.
+func launchVictim(t *testing.T, kind string, how uint32, env ...string) *launchedVictim {
+	t.Helper()
 	info := filepath.Join(t.TempDir(), "victim.json")
 	var block []uint16
 	for _, kv := range append(append(os.Environ(), envHelper+"=victim", envKind+"="+kind, envMarker+"=ten535-"+kind+"-"+t.Name(),
@@ -71,8 +108,11 @@ func startVictimWith(t *testing.T, kind string, how uint32, env ...string) victi
 	block = append(block, 0)
 	cmdline := windows.StringToUTF16Ptr(windows.EscapeArg(os.Args[0]))
 	si := windows.StartupInfo{Cb: uint32(unsafe.Sizeof(windows.StartupInfo{})), Flags: windows.STARTF_USESHOWWINDOW, ShowWindow: windows.SW_HIDE}
+	if how&namedStreams != 0 {
+		si.Flags |= windows.STARTF_USESTDHANDLES
+	}
 	var pi windows.ProcessInformation
-	flags := how | windows.CREATE_UNICODE_ENVIRONMENT
+	flags := how&^namedStreams | windows.CREATE_UNICODE_ENVIRONMENT
 	var err error
 	if ordinaryToken != 0 { // this test process is protected itself by now: start an ordinary one
 		sa := &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: ordinarySD}
@@ -89,6 +129,28 @@ func startVictimWith(t *testing.T, kind string, how uint32, env ...string) victi
 		_, _ = windows.WaitForSingleObject(pi.Process, 10_000)
 		windows.CloseHandle(pi.Process)
 	})
+	return &launchedVictim{kind: kind, info: info, process: pi.Process, pid: pi.ProcessId}
+}
+
+// helper waits for the victim to say which process its console helper is
+// (envAnchorPause).
+func (l *launchedVictim) helper(t *testing.T) uint32 {
+	t.Helper()
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if b, err := os.ReadFile(l.info + ".anchor"); err == nil && len(b) > 0 {
+			pid, _ := strconv.Atoi(string(b))
+			return uint32(pid)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the %s victim did not say which process its console helper is", l.kind)
+		}
+	}
+}
+
+// await waits for the victim's report.
+func (l *launchedVictim) await(t *testing.T) victimInfo {
+	t.Helper()
+	kind, info, process := l.kind, l.info, l.process
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		b, err := os.ReadFile(info)
@@ -104,7 +166,7 @@ func startVictimWith(t *testing.T, kind string, how uint32, env ...string) victi
 			}
 			return v
 		}
-		if ev, _ := windows.WaitForSingleObject(pi.Process, 50); ev == windows.WAIT_OBJECT_0 || time.Now().After(deadline) {
+		if ev, _ := windows.WaitForSingleObject(process, 50); ev == windows.WAIT_OBJECT_0 || time.Now().After(deadline) {
 			t.Fatalf("the %s victim in its own console did not report (ended: %v): %v %s", kind, ev == windows.WAIT_OBJECT_0, err, b)
 		}
 	}
@@ -218,8 +280,20 @@ func TestTheStandardStreamsSurviveTheConsoleBeingRejoined(t *testing.T) {
 	if Disabled {
 		t.Skip("built with -tags debugattach")
 	}
-	for _, kind := range []string{"plain", "protected"} {
-		v := startConsoleVictim(t, kind)
+	type start struct {
+		kind string
+		how  uint32
+	}
+	for _, s := range []start{{"plain", windows.CREATE_NEW_CONSOLE}, {"protected", windows.CREATE_NEW_CONSOLE},
+		// As Windows Terminal starts a program. Windows leaves such a process
+		// the old, closed stream handles when it joins a console again, and
+		// round two of the independent test lost its keyboard that way.
+		{"plain", windows.CREATE_NEW_CONSOLE | namedStreams}, {"protected", windows.CREATE_NEW_CONSOLE | namedStreams}} {
+		kind := s.kind
+		if s.how&namedStreams != 0 {
+			kind += ", its streams named at its start"
+		}
+		v := startVictimWith(t, s.kind, s.how, envConsole+"=1", envLinger+"=1")
 		checked := 0
 		for k, got := range v.Self {
 			if !strings.HasPrefix(k, "console: ") {
@@ -244,7 +318,7 @@ func TestTheStandardStreamsSurviveTheConsoleBeingRejoined(t *testing.T) {
 		if shown := visibleWindows(tree); len(shown) != 0 {
 			t.Errorf("%s victim: windows of its processes are shown on the desktop: %v", kind, shown)
 		}
-		if kind == "protected" {
+		if s.kind == "protected" {
 			var c Control
 			for _, x := range v.Report.Controls {
 				if x.ID == "windows.console-host" {
@@ -397,6 +471,134 @@ func visibleWindows(tree map[uint32]string) (shown []string) {
 	})
 	_, _, _ = user32.NewProc("EnumWindows").Call(each, 0)
 	return shown
+}
+
+// consoleControl is the console host's control in a victim's report.
+func consoleControl(v victimInfo) (c Control) {
+	for _, x := range v.Report.Controls {
+		if x.ID == "windows.console-host" {
+			c = x
+		}
+	}
+	return c
+}
+
+// squat is this test binary as a third program on a victim's console: it
+// leaves its own, joins the victim's, says so, and stays until it is ended.
+// It starts nothing.
+func squat() {
+	pid, _ := strconv.Atoi(os.Getenv(envTarget))
+	_, _, _ = procFreeConsole.Call()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if r, _, _ := procAttachConsole.Call(uintptr(pid)); r != 0 {
+			fmt.Println("on")
+			time.Sleep(time.Minute)
+			return
+		}
+	}
+	fmt.Println("no console to join")
+}
+
+// TestTheConsoleHelperCannotBeTurnedAgainstTheControl: a victim alone on its
+// console starts a helper to keep the console open while it is away. Round
+// two of the independent test suspended that helper, which made the control
+// fail, and then typed the yes to Tenant's question about it. Here is each
+// thing another program of the user can try on the helper, and what the
+// victim does. None ends with the console host still holding the handle it
+// took when the victim started.
+func TestTheConsoleHelperCannotBeTurnedAgainstTheControl(t *testing.T) {
+	if Disabled {
+		t.Skip("built with -tags debugattach")
+	}
+	if why := attackerTooStrong(); why != "" {
+		t.Skip(why)
+	}
+	const hostAttempt = "copy the console host's handle to it (conhost.exe)"
+	const forGood = "this process left its console and did not join it again: "
+	// noWayIn: the victim's console host, if it still has one, holds nothing
+	// that reads it. (The attempts end the victim; it is asked last.)
+	noWayIn := func(t *testing.T, v victimInfo, wantHost bool) {
+		t.Helper()
+		if len(v.Report.Missing()) != 0 {
+			t.Errorf("the victim reports controls not in force: %+v", v.Report.Missing())
+		}
+		got := attack(t, v)[hostAttempt]
+		switch {
+		case got.OK:
+			t.Errorf("the console host's handle read the victim: %q", got.Got)
+		case wantHost && !strings.Contains(got.Err, "0x101001"):
+			t.Errorf("the console host's handle: %s; want the owner's three rights, 0x101001", got.Err)
+		case !wantHost && !strings.Contains(got.Err, "no console host"):
+			t.Errorf("the victim left its console for good, and: %s; want no console host at all", got.Err)
+		}
+	}
+
+	t.Run("suspended, read or redirected: refused; ended: the victim leaves its console for good", func(t *testing.T) {
+		l := launchVictim(t, "protected", windows.CREATE_NEW_CONSOLE, envAnchorPause+"=4s")
+		helper := l.helper(t)
+		got := attack(t, victimInfo{PID: int(helper)}) // every attempt of the table, against the helper
+		refused := 0
+		for _, a := range attempts {
+			o := got[a.name]
+			switch {
+			case a.name == hostAttempt: // about a victim's host, and the helper has none of its own
+			case o.OK && !stillAllowed[a.name]:
+				t.Errorf("against the helper, %q was NOT refused (got %q)", a.name, o.Got)
+			case !o.OK:
+				refused++
+			}
+		}
+		if o := got["suspend the whole process (NtSuspendProcess)"]; o.OK || o.Name == "" {
+			t.Errorf("the helper was suspended, or the attempt was not made: %+v", o)
+		}
+		t.Logf("%d attempts against the helper were refused", refused)
+		// The table ends by ending what it attacks, which is the owner's
+		// right: the helper is gone before the victim leaves its console.
+		v := l.await(t)
+		if c := consoleControl(v); !c.OK || !strings.HasPrefix(c.Note, forGood) {
+			t.Errorf("with its helper ended, the victim's console control = %+v; want it in force, the console left for good", c)
+		}
+		noWayIn(t, v, false)
+	})
+
+	t.Run("late: the victim leaves its console for good", func(t *testing.T) {
+		v := startVictimWith(t, "protected", windows.CREATE_NEW_CONSOLE, envAnchorWait+"=1ns")
+		if c := consoleControl(v); !c.OK || !strings.HasPrefix(c.Note, forGood) || !strings.Contains(c.Note, "was not on the console in time") {
+			t.Errorf("with its helper late, the victim's console control = %+v; want it in force, the console left for good", c)
+		}
+		if v.Child["error"] != "" { // it still starts commands, with no window
+			t.Errorf("a victim that left its console for good could not start a command: %s", v.Child["error"])
+		}
+		noWayIn(t, v, false)
+	})
+
+	t.Run("a third program on the console: the console is left and joined all the same", func(t *testing.T) {
+		l := launchVictim(t, "protected", windows.CREATE_NEW_CONSOLE, envAnchorPause+"=3s")
+		l.helper(t) // the victim is on its console, its helper up, and waits
+		c := exec.Command(os.Args[0])
+		c.Env = append(os.Environ(), envHelper+"=squat", envTarget+"="+strconv.Itoa(int(l.pid)))
+		var out io.ReadCloser
+		var err error
+		Ordinary(func() { out, err = c.StdoutPipe() }) // the test process may be protected itself by now
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := Start(c); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = c.Process.Kill()
+			_ = c.Wait()
+		})
+		if line, err := bufio.NewReader(out).ReadString('\n'); err != nil || strings.TrimSpace(line) != "on" {
+			t.Fatalf("the third program did not join the victim's console: %q %v", line, err)
+		}
+		v := l.await(t)
+		if c := consoleControl(v); !c.OK || c.Note != "the console was left and joined again" {
+			t.Errorf("with a third program on its console, the victim's console control = %+v", c)
+		}
+		noWayIn(t, v, true)
+	})
 }
 
 // consoleHostsOf lists the console hosts started for pid: its children named
