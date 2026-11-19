@@ -1140,7 +1140,7 @@ func TestFleetTools_LinkVersionsThatDoNotGoTogether(t *testing.T) {
 	r.online(k, true)
 
 	for tool, args := range everyFleetCall("future") {
-		if tool == "fleet_list" {
+		if tool == "fleet_list" || tool == "fleet_note" { // a note goes to the master's memory, not over the link
 			continue
 		}
 		out, isErr := r.call(fleetTurnCtx(), tool, args)
