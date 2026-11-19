@@ -317,7 +317,7 @@ func (m *fleetMemory) sync(id string) {
 		case shadow.Nothing:
 			m.inStep(id, st)
 			m.reembedIfOwed(ctx, id)
-			m.purgeIfOwed(ctx, id) // after a forget: the machine holds the generation that has it
+			m.purgeIfOwed(ctx, id, copies) // after a forget: the machine holds the generation that has it
 			return
 		case shadow.Lost:
 			m.set(id, memoryUnknown, "the master's memory of this machine is damaged and no copy of it is left on either side; nothing was changed")
@@ -564,6 +564,16 @@ func (m *fleetMemory) recoverWith(ctx context.Context, id, was string, identity 
 		m.reembed[id] = true
 		m.mu.Unlock()
 	}
+	recovered := ""
+	if got.Recovered {
+		// No key of this master's made the copy, so an inventory or a note in
+		// it is the machine's now (shadow.RecoveredOrigin); the master takes
+		// its own inventory again, from what fleet.json says the machine is.
+		recovered = "; the inventory and notes in it were not made by this master and are recalled as the machine's own words, and a new inventory is taken"
+		if err := markInventory(m.dataDir, id); err != nil {
+			recovered += " (not yet: " + err.Error() + ")"
+		}
+	}
 	// Until the machine holds a generation under this key newer than its old
 	// copies, "who wins" goes on asking for the recovery key: send it now.
 	c, nb, err := m.shadows.Newest(id)
@@ -572,6 +582,7 @@ func (m *fleetMemory) recoverWith(ctx context.Context, id, was string, identity 
 	}
 	m.kick(id)
 	done := fmt.Sprintf("its generation %d, made under another fleet key, was read with the recovery identity and is generation %d under this master's key", pick.Gen, got.Gen)
+	done += recovered
 	if err != nil {
 		return done + "; it is not on the machine yet (" + err.Error() + "), and goes there at the next comparison", nil
 	}

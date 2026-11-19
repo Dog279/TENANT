@@ -259,6 +259,37 @@ new master gave the machine a new id and the copies name the old one; without th
 with another fleet's identity, nothing is read. The same command reads a machine's memory after
 the master's fleet key file was replaced (then without `--was`).
 
+What the recovery reads cannot be checked the way a copy of this master's is. Every snapshot a
+master makes ends with an authenticator only its fleet key's secret makes, and a copy under the
+master's own key without it is refused unread. The old fleet's secret is gone, so a copy under
+the old key vouches for nothing but the recovery key's public half, which the old master kept in
+`fleet.json`: anyone who had that file could have made it. So whatever the recovered copy says
+the master recorded (its inventory, notes made with `fleet_note`) is recalled from then on as
+the machine's own words, inside its frame, under "Records from a copy of its memory that this
+master did not make", and the new master takes the machine's inventory again. Look at those
+records before relying on any of them.
+
+### Forget on the machines
+
+`tenant privacy forget` leaves a request beside the machines' memory, sealed to the fleet key
+and the recovery key, since it names what is to be forgotten. The Tenant that holds the fleet
+deletes it from each machine's memory and from what was kept aside, sends the machine a new
+copy, and tells it to delete its older ones; a machine that is offline is told when it is back.
+A memory rebuilt from a copy older than the forget has it applied again, for as long as the
+request is kept. The request is kept until every machine still in the fleet has had it, has
+dropped its older copies and keeps no copy under another fleet key; then it is deleted, and
+`<data>/fleet/forgets.age` with it when it was the last. A machine enrolled after the forget
+does not hold it back, and one revoked since no longer does.
+
+That has a price. Once the request is gone, a copy older than the forget that comes back (the
+machine restored from a backup of its own disk) is neither purged nor looked into: newer copies
+push it out in time, but if this master loses its own memory of the machine while that copy is
+the machine's newest, the memory is rebuilt from it and holds what was forgotten. Forget again
+then. Copies a machine keeps under another fleet key are never deleted by a forget: delete them
+on the machine (the `memory` folder in its child directory); until they are gone the request is
+kept, and a copy under another key that turns up after the request was deleted brings nothing
+back unless `tenant fleet recover` reads it.
+
 ## 6. When a link drops
 
 Nothing is pushed to you. A link that goes silent is given up on after two missed pings (30

@@ -100,8 +100,8 @@ func TestAForgetReachesTheMachineAndItsCopies(t *testing.T) {
 	if got := l.gens(); got != "2" {
 		t.Fatalf("after the purge the machine keeps %q", got)
 	}
-	if on := l.forgetOf(); len(on) != 1 || on[0] != (forgetOn{Applied: true, Gen: 2, Purged: true}) {
-		t.Fatalf("the record of the forget: %+v", on)
+	if on := l.forgetOf(); len(on) != 0 || l.recordExists() {
+		t.Fatalf("a forget with nothing left to do is still recorded: %+v", on)
 	}
 	entries, _ := os.ReadDir(fleetShadowDir(l.data))
 	for _, e := range entries {
@@ -137,8 +137,8 @@ func TestAForgetReachesAMachineThatWasOffline(t *testing.T) {
 	l.connect()
 	l.await(memoryInStep, "generation 2 on both sides")
 	eventually(t, "the machine drops its copy from before the forget", func() bool { return l.gens() == "2" })
-	if on := l.forgetOf(); on[0] != (forgetOn{Applied: true, Gen: 2, Purged: true}) {
-		t.Fatalf("the record after the machine was told: %+v", on)
+	if on := l.forgetOf(); len(on) != 0 || l.recordExists() {
+		t.Fatalf("a forget with nothing left to do is still recorded: %+v", on)
 	}
 }
 
@@ -178,8 +178,8 @@ func TestAForgetSurvivesARebuild(t *testing.T) {
 		t.Fatalf("after the rebuild from a copy older than the forget:\n%s", memoryText(t, l.ch.id))
 	}
 	eventually(t, "the machine drops the copy that holds it", func() bool { return l.gens() == "2" })
-	if on := l.forgetOf(); on[0] != (forgetOn{Applied: true, Gen: 2, Purged: true}) {
-		t.Fatalf("the record after the rebuild: %+v", on)
+	if on := l.forgetOf(); len(on) != 0 || l.recordExists() {
+		t.Fatalf("a forget with nothing left to do is still recorded: %+v", on)
 	}
 	assertNowhere(t, gone, l.data, l.ch.dir)
 }
@@ -394,4 +394,10 @@ func TestAForgetOfAnEpisodeReachesTheMachinesExtractOfIt(t *testing.T) {
 	if text := memoryText(t, l.ch.id); strings.Contains(text, gone) || !strings.Contains(text, kept) {
 		t.Fatalf("after forgetting the master's episode %d:\n%s", ids[gone], text)
 	}
+}
+
+// recordExists says the record of forgets is on disk.
+func (l *memLab) recordExists() bool {
+	_, err := os.Stat(filepath.Join(fleetShadowDir(l.data), fleetForgetsFile))
+	return err == nil
 }
