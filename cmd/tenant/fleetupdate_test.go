@@ -803,3 +803,53 @@ type atomicBool struct {
 
 func (b *atomicBool) set(v bool) { b.mu.Lock(); b.v = v; b.mu.Unlock() }
 func (b *atomicBool) get() bool  { b.mu.Lock(); defer b.mu.Unlock(); return b.v }
+
+// FuzzChildUpdatePieces sends a child's updater an archive in pieces of any
+// size, at any offset, with the right hash or a wrong one. Whatever arrives,
+// nothing is unpacked unless the whole archive hashes to what it was sent
+// with, a whole archive with the wrong hash is not kept, and the updater
+// never says it holds more than the archive's size.
+func FuzzChildUpdatePieces(f *testing.F) {
+	f.Add([]byte("PK\x03\x04 not really"), uint16(3), int8(0), true)
+	f.Add([]byte{0x1f, 0x8b, 8, 0, 0, 0}, uint16(1), int8(-2), true)
+	f.Add(bytes.Repeat([]byte("x"), 300), uint16(64), int8(5), false)
+	f.Add([]byte("a"), uint16(0), int8(1), true)
+	f.Fuzz(func(t *testing.T, archive []byte, chunk uint16, skew int8, rightHash bool) {
+		if len(archive) == 0 || len(archive) > 64<<10 {
+			return
+		}
+		u, dir := childUpdaterRig(t)
+		claim := shaOf(archive)
+		if !rightHash {
+			claim = shaOf(append([]byte{1}, archive...))
+		}
+		n := max(1, int(chunk)%len(archive)+1)
+		p := fleet.Update{Version: "2.0.0", SHA256: claim, Size: int64(len(archive))}
+		for off := 0; off < len(archive); off += n {
+			at := min(len(archive), max(0, off+int(skew)))
+			p.Offset, p.Data = int64(at), archive[at:min(len(archive), at+n)]
+			ack, err := u.piece(context.Background(), p)
+			if err != nil {
+				break
+			}
+			if ack.Received < 0 || ack.Received > p.Size {
+				t.Fatalf("the updater says it holds %d of %d bytes", ack.Received, p.Size)
+			}
+		}
+		select {
+		case s := <-u.ready:
+			if s.sha != shaOf(archive) || !rightHash {
+				t.Fatalf("staged an archive whose hash does not check: %+v", s)
+			}
+		default:
+		}
+		if !rightHash {
+			parts, _ := filepath.Glob(filepath.Join(childDataDir(dir), "update", "*"))
+			for _, part := range parts {
+				if fi, err := os.Stat(part); err == nil && fi.Size() == int64(len(archive)) {
+					t.Fatalf("a whole archive with the wrong hash was kept: %s", part)
+				}
+			}
+		}
+	})
+}
