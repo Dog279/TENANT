@@ -311,8 +311,13 @@ What an operator meets:
   start logs "The previous run ended unexpectedly"). Restart Tenant to get the helper back. For an instant at
   start a second helper, `tenant __console-anchor`, holds the console open while Tenant leaves
   it and joins it again; that is how the console host comes to hold a handle with the owner's
-  three rights and no more. A Tenant with no console (the `--system` service) has nothing to
-  leave, and doctor says so.
+  three rights and no more. The helper is born with Tenant's own closed access list, so no
+  other program can suspend it or get into it. If it is ended, or is not on the console within
+  30 seconds, or the console cannot be joined again, Tenant leaves its console for good rather
+  than ask anything: the console window closes, Tenant runs on with no console (serve keeps
+  serving; `chat` and the TUI, which need the keyboard, end), and doctor shows the control on
+  with "left its console and did not join it again". A Tenant with no console (the `--system`
+  service) has nothing to leave, and doctor says so.
 - **Windows: no window opens.** A command Tenant starts runs on Tenant's own console, which the
   logon task hides. A Tenant that has no console (the `--system` service, one another program
   started detached, or one that left its console and could not join it again) starts every
@@ -322,10 +327,10 @@ What an operator meets:
   did when serve hid it itself.
 - **Windows: folders that pass no permissions on.** In a folder with no inheritable
   permissions (after `icacls /inheritance:r`, for one) a new file takes the default of the
-  thread that makes it. Tenant makes its data, config and log directories pass their own
-  permissions on to what is made in them, the first time it uses them: the entries are the
-  ones the directory had, marked to be inherited, so nobody gains or loses access. Files a
-  command or a tool writes elsewhere are made with your ordinary permissions.
+  thread that makes it. A data, config or log directory Tenant makes itself passes its own
+  permissions on to what is made in it: the entries it was made with, marked to be inherited.
+  A directory that was there before Tenant used it is never changed, nor is anything in it.
+  Files a command or a tool writes are made with your ordinary permissions.
 - **Stopping a stuck Tenant still works.** `kill`, `systemctl stop`, Task Manager's "End task"
   and `tenant service stop` are not affected.
 - **Dumps and debuggers are refused, to you too.** `gdb -p`, `dlv attach`, `strace -p`,

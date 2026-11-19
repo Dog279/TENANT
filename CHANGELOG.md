@@ -28,7 +28,9 @@ Releases page.
     handle; so Tenant leaves its console and joins it again once its access list is set, and the
     handle the host then holds carries the three rights above and no more. When Tenant is alone
     on its console, a helper (`tenant __console-anchor`) holds the console open for that
-    instant. And a window lets any program running as you load code into the process that owns
+    instant. The helper is born with Tenant's closed access list, so no other program can
+    suspend it; if it is ended, or the console cannot be joined again, Tenant leaves its console
+    for good and asks nothing. And a window lets any program running as you load code into the process that owns
     it; the window through which Windows tells `tenant serve` about a logoff or a shutdown is
     now owned by a helper process (`tenant __session-watch`, started by serve with none of
     serve's environment), so Task Manager shows a second, small `tenant.exe` under serve.
@@ -70,7 +72,10 @@ Releases page.
   moment where the system lets a process read its own state again, because some controls can be
   undone from outside while Tenant runs: the Windows Error Reporting exclusion is a registry
   value of yours, and on Linux `prlimit` raises the core limit of a process of the same user.
-  Such a control shows as OFF, with what was found, and a restart applies it again. What cannot
+  Such a control shows as OFF, with what was found, and a restart applies it again. The
+  exclusion is kept by file name and doctor applies the controls to itself at its start like
+  every command, so on Windows it puts a removed exclusion back before it asks; it then says
+  "OFF until this doctor started" rather than report it on. What cannot
   be read again is marked "as it was when Tenant started": the access lists of the threads that
   exist and the console host's handle on Windows, the attach denial on macOS. With no Tenant
   running, doctor says that what it shows is what a start would get.
@@ -108,9 +113,11 @@ Releases page.
   land on a file or a folder made where nothing is inherited from the folder above (one set up
   with `icacls /inheritance:r`, say), and its owner could then not open it. So a command and a
   tool call run inside `procprotect.Ordinary`, `internal/fsperm` makes its files and folders
-  inside it, and a directory given to `fsperm.MkdirAll`, which is one of Tenant's own, is made
-  to pass its permissions on to what is made in it. What is left: a file made with the plain
-  `os` calls on another goroutine, in a folder that is not Tenant's and passes nothing on.
+  inside it, and a directory `fsperm.MkdirAll` makes itself is made to pass its permissions on
+  to what is made in it. A directory that was there already is never changed: making its
+  entries pass on would hand them to every file already in it. What is left: a file made with
+  the plain `os` calls on another goroutine, in a folder that Tenant did not make and that
+  passes nothing on.
   Make such a file through `fsperm`, or inside `Ordinary`. The acceptance tests of
   the acknowledgement run a `tenant` built with `-tags procprotecttest`, in which the environment
   can say that a control cannot be applied; `tenant version` announces such a build, and no
