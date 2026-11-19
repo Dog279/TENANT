@@ -650,7 +650,10 @@ var fleetInitWait = 2*settingsWatchInterval + 2*time.Second
 func holderLine(cfgDir string, wait time.Duration) string {
 	deadline := time.Now().Add(wait)
 	for {
-		if h, held := fleet.CurrentHolder(cfgDir); held {
+		// A holder takes the lock first and records who and where it is a
+		// moment later: the line waits for that record while the wait lasts.
+		h, held := fleet.CurrentHolder(cfgDir)
+		if held && (h.PID != 0 && h.Address != "" || !time.Now().Before(deadline)) {
 			return strings.TrimPrefix((&fleet.HeldError{Holder: h}).Error(), "fleet: ")
 		}
 		if !time.Now().Before(deadline) {
