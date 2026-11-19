@@ -29,7 +29,21 @@ import (
 // handed a handle before Protect ran (whoever started Tenant).
 const restrictedSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x101001;;;OW)"
 
-const leavesThreads = "another program running as the same user can open one of Tenant's threads and redirect it (SetThreadContext, QueueUserAPC), which runs code inside Tenant and so reads its memory"
+// tokenSDDL is the access list of the process's token, an object of its own
+// that anyone who may read the process's basic details can ask for. The token
+// holds the default list new threads get, so an owner who could write the
+// token could put the old default back. The owner keeps two rights, 0x000a:
+// read it (Task Manager's "User name"), and copy it, which Windows itself
+// does inside the process to answer "is this user in that group"
+// (CheckTokenMembership) and which gives another program of the same user
+// nothing it does not have.
+const tokenSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x000a;;;OW)"
+
+// ownToken is this process's token, opened once, before its access list is
+// closed: the handle keeps the rights it was opened with.
+var ownToken windows.Token
+
+const leavesThreads ="another program running as the same user can open one of Tenant's threads and redirect it (SetThreadContext, QueueUserAPC), which runs code inside Tenant and so reads its memory"
 
 func protect() []Control {
 	sd, err := windows.SecurityDescriptorFromString(restrictedSDDL)
@@ -82,7 +96,8 @@ func tokenDefaultDACLOf(t windows.Token) (*windows.ACL, error) {
 // for new objects, and the ones that exist, one by one.
 //
 // The default is changed first, so no thread can start in between with the
-// old list. Before it is changed, the ordinary token and list are kept for
+// old list, and the token that holds it is then closed to its owner
+// (tokenSDDL). Before it is changed, the ordinary token and list are kept for
 // Child and Ordinary (spawn_windows.go): if they cannot be kept, the default
 // is left alone, because with it changed and no way back Tenant could not
 // start a command at all.
@@ -91,11 +106,17 @@ func restrictThreads(sd *windows.SECURITY_DESCRIPTOR) error {
 	if err != nil {
 		return err
 	}
-	var tok windows.Token
-	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY|windows.TOKEN_DUPLICATE|windows.TOKEN_ADJUST_DEFAULT, &tok); err != nil {
-		return fmt.Errorf("OpenProcessToken: %w", err)
+	tokenSD, err := windows.SecurityDescriptorFromString(tokenSDDL)
+	if err != nil {
+		return err
 	}
-	defer tok.Close()
+	if ownToken == 0 {
+		if err := windows.OpenProcessToken(windows.CurrentProcess(),
+			windows.TOKEN_QUERY|windows.TOKEN_DUPLICATE|windows.TOKEN_ADJUST_DEFAULT|windows.WRITE_DAC, &ownToken); err != nil {
+			return fmt.Errorf("OpenProcessToken: %w", err)
+		}
+	}
+	tok := ownToken
 	if ordinaryToken == 0 {
 		if err := keepOrdinary(tok); err != nil {
 			return fmt.Errorf("keeping the ordinary access list for the commands Tenant starts: %w", err)
@@ -104,6 +125,9 @@ func restrictThreads(sd *windows.SECURITY_DESCRIPTOR) error {
 	def := tokenDefaultDACL{DefaultDacl: dacl}
 	if err := windows.SetTokenInformation(tok, windows.TokenDefaultDacl, (*byte)(unsafe.Pointer(&def)), uint32(unsafe.Sizeof(def))); err != nil {
 		return fmt.Errorf("SetTokenInformation(TokenDefaultDacl): %w", err)
+	}
+	if err := windows.SetKernelObjectSecurity(windows.Handle(tok), windows.DACL_SECURITY_INFORMATION, tokenSD); err != nil {
+		return fmt.Errorf("the token's own access list: %w", err)
 	}
 
 	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)

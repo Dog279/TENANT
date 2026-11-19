@@ -61,7 +61,8 @@ of the same user access to its memory (TEN-535): on Linux the dumpable flag is
 turned off, which refuses `ptrace`, `/proc/<pid>/mem`, `/proc/<pid>/environ`,
 `process_vm_readv`, `pidfd_getfd` and `perf_event_open` and stops crash dumps;
 on Windows the access lists of the process and of every thread give the owner
-only the rights to end it, wait for it and read its basic details, and the
+only the rights to end it, wait for it and read its basic details, the
+process's token can be read and copied by its owner but not changed, and the
 program is excluded from Windows Error Reporting; on macOS a later debugger
 attach is denied and core files are off.
 

@@ -253,7 +253,7 @@ protection"; `tenant security audit` raises a finding when one is off.
 | | Refused to the user's other programs | Still readable |
 |---|---|---|
 | Linux | a debugger (`ptrace`), `/proc/<pid>/mem`, `/proc/<pid>/environ`, `process_vm_readv`, `pidfd_getfd`, `perf_event_open`; no crash dump, to a file or to a crash collector | the command line, `/proc/<pid>/status` |
-| Windows | reading memory, a dump (Task Manager, procdump), a debugger, opening or redirecting a thread, rewriting the access list | the command line, the program's path, the account |
+| Windows | reading memory, a dump (Task Manager, procdump), a debugger, opening or redirecting a thread, rewriting the access lists, changing the process's token | the command line, the program's path, the account |
 | macOS | a later debugger attach (reported as "attach denied, not verified"), core files | the command line, and the environment Tenant started with |
 
 It is one layer. The files on disk are as readable as before, an administrator or root is not

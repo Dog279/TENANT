@@ -4,8 +4,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -24,9 +26,11 @@ var controlIDs = []string{"windows.thread-dacl", "windows.process-dacl", "window
 // What the user's other programs may still do to a protected Tenant: Task
 // Manager lists it and ends it, and a program can wait for it to exit.
 var stillAllowed = map[string]bool{
-	"list it and read its path (PROCESS_QUERY_LIMITED_INFORMATION)": true,
-	"wait for it to exit (SYNCHRONIZE)":                             true,
-	"end it (TerminateProcess, Task Manager's End task)":            true,
+	"list it and read its path (PROCESS_QUERY_LIMITED_INFORMATION)":                 true,
+	"wait for it to exit (SYNCHRONIZE)":                                             true,
+	"read its account (its token, TOKEN_QUERY; Task Manager's User name)":           true,
+	"copy its token (TOKEN_DUPLICATE; the copy is no more than the attacker's own)": true,
+	"end it (TerminateProcess, Task Manager's End task)":                            true,
 }
 
 // attackerTooStrong: an elevated administrator and SYSTEM are let in by the
@@ -239,6 +243,22 @@ func openProcess(v victimInfo, access uint32, do func(windows.Handle) (string, e
 	return do(h)
 }
 
+// openToken opens the victim's token with access, through the one right on
+// the process its owner keeps for that, and runs do on it.
+func openToken(v victimInfo, access uint32, do func(windows.Token) (string, error)) (string, error) {
+	return openProcess(v, windows.PROCESS_QUERY_LIMITED_INFORMATION, func(h windows.Handle) (string, error) {
+		var t windows.Token
+		if err := windows.OpenProcessToken(h, access, &t); err != nil {
+			return "", fmt.Errorf("OpenProcessToken: %w", err)
+		}
+		defer t.Close()
+		if do == nil {
+			return "opened", nil
+		}
+		return do(t)
+	})
+}
+
 // everyThread tries to open each of the victim's threads with access, and
 // runs do on the first that opens. It is refused only when no thread opens.
 func everyThread(v victimInfo, access uint32, do func(windows.Handle) error) (string, error) {
@@ -368,6 +388,40 @@ var attempts = []attempt{
 	}},
 	{"read the process's access list (READ_CONTROL)", func(v victimInfo) (string, error) {
 		return openProcess(v, windows.READ_CONTROL, nil)
+	}},
+	// The process's token is an object of its own, reached through the right
+	// to read the process's basic details. It holds the default access list
+	// the Go runtime's new threads get: whoever can write it can undo that.
+	{"reset the access list its new threads get (its token, TOKEN_ADJUST_DEFAULT)", func(v victimInfo) (string, error) {
+		return openToken(v, windows.TOKEN_QUERY|windows.TOKEN_ADJUST_DEFAULT, func(t windows.Token) (string, error) {
+			acl, err := tokenDefaultDACLOf(t)
+			if err != nil {
+				return "", err
+			}
+			def := tokenDefaultDACL{DefaultDacl: acl} // the list it already has: a real call that changes nothing
+			if err := windows.SetTokenInformation(t, windows.TokenDefaultDacl, (*byte)(unsafe.Pointer(&def)), uint32(unsafe.Sizeof(def))); err != nil {
+				return "", err
+			}
+			return "set its default access list", nil
+		})
+	}},
+	{"rewrite its token's access list as its owner (WRITE_DAC)", func(v victimInfo) (string, error) {
+		return openToken(v, windows.WRITE_DAC, nil)
+	}},
+	{"change its token's privileges (TOKEN_ADJUST_PRIVILEGES)", func(v victimInfo) (string, error) {
+		return openToken(v, windows.TOKEN_ADJUST_PRIVILEGES, nil)
+	}},
+	{"copy its token (TOKEN_DUPLICATE; the copy is no more than the attacker's own)", func(v victimInfo) (string, error) {
+		return openToken(v, windows.TOKEN_DUPLICATE, nil)
+	}},
+	{"read its account (its token, TOKEN_QUERY; Task Manager's User name)", func(v victimInfo) (string, error) {
+		return openToken(v, windows.TOKEN_QUERY, func(t windows.Token) (string, error) {
+			u, err := t.GetTokenUser()
+			if err != nil {
+				return "", err
+			}
+			return u.User.Sid.String(), nil
+		})
 	}},
 	{"list it and read its path (PROCESS_QUERY_LIMITED_INFORMATION)", func(v victimInfo) (string, error) {
 		return openProcess(v, windows.PROCESS_QUERY_LIMITED_INFORMATION, func(h windows.Handle) (string, error) {
@@ -536,6 +590,55 @@ func TestProtectThisProcess(t *testing.T) {
 			t.Errorf("os.Pipe after a nested Ordinary returned: %v", err)
 		}
 	})
+	// What Tenant does in its own process still works: Windows copies the
+	// process's token to answer a group question, the data-protection
+	// service is asked to seal a secret, and names resolve.
+	users, _ := windows.CreateWellKnownSid(windows.WinBuiltinUsersSid)
+	if _, err := windows.Token(0).IsMember(users); err != nil {
+		t.Errorf("CheckTokenMembership on the process's own token: %v", err)
+	}
+	if _, err := user.Current(); err != nil {
+		t.Errorf("user.Current: %v", err)
+	}
+	secret := []byte("ten535")
+	in := windows.DataBlob{Size: uint32(len(secret)), Data: &secret[0]}
+	var sealed, opened windows.DataBlob
+	if err := windows.CryptProtectData(&in, nil, nil, 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &sealed); err != nil {
+		t.Errorf("CryptProtectData: %v", err)
+	} else {
+		if err := windows.CryptUnprotectData(&sealed, nil, nil, 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &opened); err != nil ||
+			string(unsafe.Slice(opened.Data, opened.Size)) != "ten535" {
+			t.Errorf("CryptUnprotectData: %v", err)
+		}
+		windows.LocalFree(windows.Handle(unsafe.Pointer(sealed.Data)))
+		if opened.Data != nil {
+			windows.LocalFree(windows.Handle(unsafe.Pointer(opened.Data)))
+		}
+	}
+	if _, err := net.LookupHost("localhost"); err != nil {
+		t.Errorf("LookupHost: %v", err)
+	}
+	if ln, err := net.Listen("tcp", "127.0.0.1:0"); err != nil {
+		t.Errorf("Listen: %v", err)
+	} else {
+		c, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Errorf("Dial: %v", err)
+		} else {
+			c.Close()
+		}
+		ln.Close()
+	}
+	f, err := os.CreateTemp(t.TempDir(), "made-after-protect")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	f.Close()
+	if g, err := os.OpenFile(f.Name(), os.O_RDWR, 0); err != nil {
+		t.Errorf("a file made after Protect cannot be opened again for writing: %v", err)
+	} else {
+		g.Close()
+	}
 	// Every way a command is started still works, and its child is ordinary.
 	echo := func() *exec.Cmd { return exec.Command("cmd", "/c", "echo ok") }
 	if out, err := Output(echo()); err != nil || strings.TrimSpace(string(out)) != "ok" {

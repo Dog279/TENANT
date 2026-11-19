@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"tenant/internal/plugins/web"
 	"tenant/internal/procprotect"
 	"tenant/internal/sandbox"
+	"tenant/internal/secrets"
 )
 
 // What Tenant starts must still start, and still work, from a process that
@@ -79,6 +81,32 @@ func TestAgentCommandsRunFromAProtectedProcess(t *testing.T) {
 		if err := p.Wait(); err != nil || strings.TrimSpace(string(out)) != want {
 			t.Errorf("%s: Start = %q, %v; want %q", name, out, err, want)
 		}
+	}
+}
+
+// Tenant's own secret files: written owner-only, verified, and read back, by
+// a process that has called Protect. On Windows the verification asks the
+// system whether the user is an administrator, which the system answers by
+// copying the process's token: the one right on it the owner must keep.
+func TestSecretFilesWorkFromAProtectedProcess(t *testing.T) {
+	if !protected(t) {
+		return
+	}
+	path := filepath.Join(t.TempDir(), "secrets", "token.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := secrets.WriteFile(path, []byte(`{"token":"x"}`)); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if p := secrets.Probe(path); !p.Protected {
+		t.Errorf("Probe: %+v", p)
+	}
+	if b, err := secrets.ReadFile(path); err != nil || string(b) != `{"token":"x"}` {
+		t.Errorf("ReadFile: %q, %v", b, err)
+	}
+	if err := secrets.WriteFile(path, []byte(`{"token":"y"}`)); err != nil { // a rewrite replaces the file
+		t.Errorf("WriteFile again: %v", err)
 	}
 }
 
