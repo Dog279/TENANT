@@ -1370,7 +1370,7 @@ func TestFleetTools_Corners(t *testing.T) {
 	kid := &kidTools{specs: append(many, model.ToolSpec{Name: "sql_exec", Description: "safe", Parameters: json.RawMessage(`{}`)})}
 	k := r.child("web1", kid)
 	bare := r.enroll("bare")
-	if _, err := r.store.Confirm(r.master.Fingerprint, bare.id, fleet.ConfirmCode(r.master.Fingerprint, mustMachine(t, r, bare.id).Fingerprint)); err != nil {
+	if _, err := r.store.Confirm(r.master.Fingerprint, bare.id, fleet.ConfirmCode(r.master.Fingerprint, rigMachine(t, r, bare.id).Fingerprint)); err != nil {
 		t.Fatal(err) // confirmed, and nobody gave it a scheme
 	}
 
@@ -1443,7 +1443,7 @@ func TestFleetTools_Corners(t *testing.T) {
 	}
 }
 
-func mustMachine(t *testing.T, r *fleetToolRig, id string) fleet.Machine {
+func rigMachine(t *testing.T, r *fleetToolRig, id string) fleet.Machine {
 	t.Helper()
 	m, err := r.store.Machine(id)
 	if err != nil {
