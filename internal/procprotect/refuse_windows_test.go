@@ -853,11 +853,35 @@ func TestNowReadsTheStateAgain(t *testing.T) {
 	for _, c := range now.Controls {
 		asAtStart[c.ID] = c.AsAtStart
 	}
-	// Read again in full: the process's list and the exclusion. Not, or not
-	// wholly: the threads that exist, and the console host's handle.
-	want := map[string]bool{"windows.thread-dacl": true, "windows.process-dacl": false, "windows.console-host": true, "windows.wer-exclusion": false}
+	// Read again in full: the process's list, every thread's list and the
+	// exclusion. Not: the console host's handle.
+	want := map[string]bool{"windows.thread-dacl": false, "windows.process-dacl": false, "windows.console-host": true, "windows.wer-exclusion": false}
 	if fmt.Sprint(asAtStart) != fmt.Sprint(want) {
 		t.Errorf("as at start: %v, want %v", asAtStart, want)
+	}
+
+	// Round four of the independent test ("threadlate"): a thread's list
+	// changed after the start, through a handle from before Protect. A thread
+	// started now with that list stands in for it.
+	sd, err := windows.SecurityDescriptorFromString("D:(A;;GA;;;WD)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sa := windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}
+	th, _, cerr := kernel32.NewProc("CreateThread").Call(uintptr(unsafe.Pointer(&sa)), 0, kernel32.NewProc("Sleep").Addr(), uintptr(windows.INFINITE), 0, 0)
+	if th == 0 {
+		t.Fatal(cerr)
+	}
+	open := Now().Missing()
+	_, _, _ = kernel32.NewProc("TerminateThread").Call(th, 0)
+	_, _ = windows.WaitForSingleObject(windows.Handle(th), windows.INFINITE)
+	windows.CloseHandle(windows.Handle(th))
+	const changed = "it was in force when Tenant started and is not any more: a thread: " + threadChanged
+	if len(open) != 1 || open[0].ID != "windows.thread-dacl" || !open[0].Undone || open[0].Reason != changed {
+		t.Errorf("with a thread open to everyone, Now() reports as not in force: %+v; want windows.thread-dacl, %q", open, changed)
+	}
+	if m := Now().Missing(); len(m) != 0 {
+		t.Errorf("with that thread ended, Now() still reports: %+v", m)
 	}
 
 	// What the tester did: the value is the user's own to delete.

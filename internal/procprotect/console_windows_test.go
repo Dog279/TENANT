@@ -32,6 +32,8 @@ const (
 	envAnchorWait  = "PROCPROTECT_ANCHOR_WAIT"  // how long the victim gives its helper to appear
 
 	envTamperThread = "PROCPROTECT_TAMPER_THREAD" // before Protect, the victim gives the thread it runs on this access list (SDDL)
+	envEndWalked    = "PROCPROTECT_END_WALKED"    // 1: a thread of the victim's is ended as soon as Protect has given it the restricted list
+	envThreads      = "PROCPROTECT_THREADS"       // before Protect, the victim starts this many threads that only sleep
 
 	// namedStreams, with a process creation flag: the victim is started as
 	// Windows Terminal starts a program, with STARTF_USESTDHANDLES and no
@@ -53,6 +55,37 @@ func victimBefore() {
 		if err != nil {
 			panic(err)
 		}
+	}
+	// Threads Windows starts and Go knows nothing of: each sleeps for ever.
+	sleeper := func() windows.Handle {
+		h, _, err := kernel32.NewProc("CreateThread").Call(0, 64<<10, kernel32.NewProc("Sleep").Addr(), uintptr(windows.INFINITE),
+			0x10000 /* STACK_SIZE_PARAM_IS_A_RESERVATION */, 0)
+		if h == 0 {
+			panic(err)
+		}
+		return windows.Handle(h)
+	}
+	if n, _ := strconv.Atoi(os.Getenv(envThreads)); n > 0 {
+		for range n {
+			windows.CloseHandle(sleeper())
+		}
+	}
+	if os.Getenv(envEndWalked) == "1" {
+		// The independent test's second half (round four, "hidecount"): a
+		// program with a handle from before Protect ends a thread the moment
+		// Protect has handled it, so that a count of the threads handled
+		// agrees with the system's while another thread is hidden.
+		h := sleeper() // full access, from before Protect, as that program's was
+		go func() {
+			defer windows.CloseHandle(h)
+			for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); {
+				if sddl(h) == "D:(A;;0x1fffff;;;SY)(A;;0x1fffff;;;BA)(A;;0x121001;;;OW)" {
+					_, _, _ = kernel32.NewProc("TerminateThread").Call(uintptr(h), 0)
+					_, _ = windows.WaitForSingleObject(h, windows.INFINITE)
+					return
+				}
+			}
+		}()
 	}
 	if d, err := time.ParseDuration(os.Getenv(envAnchorWait)); err == nil {
 		anchorWait = d
@@ -619,7 +652,7 @@ func TestTheConsoleHelperCannotBeTurnedAgainstTheControl(t *testing.T) {
 // gave one a list that refuses its owner WRITE_DAC and lets everyone in;
 // Protect took the refusal for "already restricted" and reported the threads
 // closed. Decision A80: every thread's list is read back and compared, and
-// counted against the system's own count, so each of these ends with the
+// each thread the system lists is opened by its id, so each of these ends with the
 // control reported not in force, for a reason that names what was found.
 func TestATamperedThreadIsNotReportedClosed(t *testing.T) {
 	if Disabled {
@@ -629,16 +662,23 @@ func TestATamperedThreadIsNotReportedClosed(t *testing.T) {
 		t.Skip(why)
 	}
 	const prefix = "a thread that existed at start could not be given the access list: "
-	for _, tc := range []struct{ what, list, cause string }{
-		{"its owner refused WRITE_DAC, everyone let in", "D:(D;;WD;;;OW)(A;;GA;;;WD)", threadNotClosed},
-		{"its owner refused everything (a walk passes over it)", "D:(D;;GA;;;OW)", threadHidden},
+	for _, tc := range []struct{ what, list, cause, more string }{
+		{"its owner refused WRITE_DAC, everyone let in", "D:(D;;WD;;;OW)(A;;GA;;;WD)", threadNotClosed, ""},
+		{"its owner refused everything (a walk passes over it)", "D:(D;;GA;;;OW)", threadHidden, ""},
 		// LOCAL SERVICE stands in for a SID this process does not hold: a
 		// program of the same user in another logon session.
-		{"the owner's three rights, and everything for a SID Tenant lacks", "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x101001;;;OW)(A;;GA;;;LS)", threadUnreadable},
-		{"the restricted list, and one entry more for a SID Tenant lacks", "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x121001;;;OW)(A;;GA;;;LS)", threadNotClosed},
+		{"the owner's three rights, and everything for a SID Tenant lacks", "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x101001;;;OW)(A;;GA;;;LS)", threadUnreadable, ""},
+		{"the restricted list, and one entry more for a SID Tenant lacks", "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x121001;;;OW)(A;;GA;;;LS)", threadNotClosed, ""},
+		// Round four of the independent test: one thread hidden, and one the
+		// walk has handled ended, so that the numbers agree.
+		{"one hidden, and one that was handled ended", "D:P(D;;0x1fffff;;;OW)", threadHidden, envEndWalked + "=1"},
 	} {
 		t.Run(tc.what, func(t *testing.T) {
-			v := startVictim(t, "protected", envTamperThread+"="+tc.list)
+			env := []string{envTamperThread + "=" + tc.list}
+			if tc.more != "" {
+				env = append(env, tc.more)
+			}
+			v := startVictim(t, "protected", env...)
 			var c Control
 			for _, x := range v.Report.Controls {
 				if x.ID == "windows.thread-dacl" {
@@ -651,6 +691,21 @@ func TestATamperedThreadIsNotReportedClosed(t *testing.T) {
 			t.Logf("thread-dacl ok=%v reason=%q detail=%q", c.OK, c.Reason, c.Detail)
 		})
 	}
+	// The independent test's "flood": threads added from outside without
+	// end would make the start endless. Past maxThreads the control is off.
+	t.Run("more threads than a starting Tenant has", func(t *testing.T) {
+		start := time.Now()
+		v := startVictim(t, "protected", envThreads+"="+strconv.Itoa(maxThreads))
+		took := time.Since(start)
+		for _, c := range v.Report.Controls {
+			if c.ID == "windows.thread-dacl" && (c.OK || c.Reason != threadsTooMany) {
+				t.Errorf("windows.thread-dacl with %d threads more: ok=%v reason %q; want it off, for %q", maxThreads, c.OK, c.Reason, threadsTooMany)
+			}
+			if c.ID == "windows.thread-dacl" {
+				t.Logf("thread-dacl ok=%v reason=%q detail=%q; the victim was up in %v", c.OK, c.Reason, c.Detail, took)
+			}
+		}
+	})
 }
 
 // consoleHostsOf lists the console hosts started for pid: its children named
