@@ -53,6 +53,17 @@
 // master: a tool on the child calls Confirm, which asks over the link, and
 // the answer comes from the Confirm of the Call that is running.
 //
+// # On the child
+//
+// What a child lets its master do is decided on the child. Gate stands
+// between the link and the child's tools: it reads the machine's ceiling and
+// its list of served tools from child.json as it is on the disk at each
+// check, and the pause mark beside it, and refuses what they rule out
+// without asking the master. It writes every call to the child's audit log
+// (AuditLog) before the call runs and again when it has ended; a call that
+// cannot be recorded is not run, and each result carries the hash of its
+// record. The log is a chain of hashes, checked by VerifyAudit.
+//
 // One process holds a fleet's links at a time; a second is told which
 // (HeldError). A call to a machine that is offline, paused, pending or
 // revoked fails at once; nothing is queued and nothing is sent twice. What a

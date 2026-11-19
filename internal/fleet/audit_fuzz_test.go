@@ -2,7 +2,10 @@ package fleet
 
 import (
 	"bytes"
+	"encoding/json"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +44,8 @@ func FuzzAuditRecord(f *testing.F) {
 		`{"seq":1,"time":"2026-11-18T12:00:00Z","event":"done","call":"c\n","tool":"a b=\"c\"","outcome":"ok\u0000","prev":"` + auditStart + `"}`,
 		`{"seq":1,"time":"2026-11-18T12:00:00Z","event":"call","asked":[{"action":"a","answer":"b","why":"c","more":1}],"prev":"` + auditStart + `"}`,
 		strings.Repeat(`[`, 5000),
+		// Found by this fuzzer: keys in another case, an empty list, an hour of one digit.
+		`{"SEQ":1,"time":"0000-01-01T0:00:00Z","event":"done","Asked":[],"prev":"` + auditStart + `"}`,
 		`{"seq":1,"time":"2026-11-18T12:00:00Z","event":"call","call":"c","tool":"` + strings.Repeat("t", maxAuditLine) + `","prev":"` + auditStart + `"}`,
 	} {
 		f.Add([]byte(s))
@@ -69,6 +74,9 @@ func FuzzAuditRecord(f *testing.F) {
 				t.Fatalf("written back as %s: %+v, %v", back, again, err)
 			}
 			again.Time = rec.Time
+			if len(rec.Asked) == 0 {
+				rec.Asked = nil // an empty list is written as no list
+			}
 			if !reflect.DeepEqual(again, rec) {
 				t.Fatalf("written back and read again it is %+v, not %+v", again, rec)
 			}
@@ -156,6 +164,56 @@ func FuzzAuditLog(f *testing.F) {
 		next := must(encode(AuditRecord{Seq: seq + 1, Time: time.Unix(1, 0).UTC(), Event: AuditCall, Call: "c", Tool: "t", Prev: prev}))(t)
 		if err := c.line("next", next, fingerprintOf(next)); err != nil {
 			t.Fatalf("the record written after a log that verifies does not: %v", err)
+		}
+	})
+}
+
+// child.json again (FuzzParseChild has the rest of it), seeded for the list
+// this stage added: secret_paths, the operator's own additions to what the
+// file tools refuse. What is accepted is a list of distinct absolute paths
+// that survives a save; anything else refuses the whole file, since a child
+// that misreads the list would read a file its operator closed.
+func FuzzParseChildSecretPaths(f *testing.F) {
+	good := `{"version":1,"id":"m0123456789abcdef","name":"box","master_addresses":["10.0.0.1:7443"],"master_fingerprint":"` + fuzzPrint +
+		`","sandbox":"host","ceiling":"read-only","secret_paths":["/srv/vault","/home/*/app/token.json"]}`
+	for _, seed := range []string{
+		good,
+		strings.Replace(good, `["/srv/vault","/home/*/app/token.json"]`, `["C:\Vault","D:\Keys\*.pem"]`, 1),
+		strings.Replace(good, `["/srv/vault","/home/*/app/token.json"]`, `[]`, 1),
+		strings.Replace(good, `["/srv/vault","/home/*/app/token.json"]`, `null`, 1),
+		strings.Replace(good, `["/srv/vault","/home/*/app/token.json"]`, `["vault"]`, 1),
+		strings.Replace(good, `["/srv/vault","/home/*/app/token.json"]`, `["/a","/a"]`, 1),
+		strings.Replace(good, `["/srv/vault","/home/*/app/token.json"]`, `["/a\n/b"]`, 1),
+		strings.Replace(good, `["/srv/vault","/home/*/app/token.json"]`, `"/srv/vault"`, 1),
+		strings.Replace(good, `["/srv/vault","/home/*/app/token.json"]`, `[""]`, 1),
+		strings.Replace(good, `["/srv/vault","/home/*/app/token.json"]`, `["/`+strings.Repeat("x", maxPathLen)+`"]`, 1),
+		strings.Replace(good, `"secret_paths"`, `"secret_paths":["/x"],"SECRET_PATHS"`, 1),
+		strings.Replace(good, `"secret_paths"`, `"paused":true,"secret_paths"`, 1),
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, in []byte) {
+		c, err := parseChild(in)
+		if err != nil {
+			if !reflect.DeepEqual(c, Child{}) || c.Serves("os_read_file") {
+				t.Fatalf("refused and returned %+v", c)
+			}
+			return
+		}
+		if c.SecretPaths != nil && (len(c.SecretPaths) == 0 || len(c.SecretPaths) > maxSecretPaths) {
+			t.Fatalf("accepted a list of %d secret paths", len(c.SecretPaths))
+		}
+		for i, p := range c.SecretPaths {
+			if !filepath.IsAbs(p) || len(p) > maxPathLen || !printable(p) || slices.Contains(c.SecretPaths[:i], p) {
+				t.Fatalf("accepted the secret path %q", p)
+			}
+		}
+		out, err := json.Marshal(childFile{Version: childVersion, Child: c})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again, err := parseChild(out); err != nil || !reflect.DeepEqual(again, c) {
+			t.Fatalf("%+v does not survive a save: %+v, %v", c, again, err)
 		}
 	})
 }

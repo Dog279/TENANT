@@ -118,6 +118,9 @@ func TestChildInstallSystemUnix(t *testing.T) {
 // A binary an account other than root can replace is not one to run as
 // root. The test binary is exactly that.
 func TestChildExeSafeUnix(t *testing.T) {
+	if err := childExeSafe("/bin/sh"); err != nil {
+		t.Errorf("a binary only root can replace: %v", err)
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("as root the test binary is root's own")
 	}

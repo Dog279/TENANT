@@ -405,12 +405,13 @@ func TestChildInstallRefusals(t *testing.T) {
 		args []string
 		want string
 	}{
-		"a ceiling that is none":      {[]string{"install", "--dir", filepath.Join(t.TempDir(), "c"), "--ceiling", "root"}, "full, no-exec or read-only"},
-		"--system with a directory":   {[]string{"install", "--system", "--dir", filepath.Join(t.TempDir(), "c")}, "does not take --dir"},
-		"--system without elevation":  {[]string{"install", "--system"}, "needs an elevated terminal"},
-		"an argument to another verb": {[]string{"pause", "now"}, "unexpected argument"},
-		"no verb":                     {nil, "usage: tenant child"},
-		"an unknown verb":             {[]string{"rehome"}, "unknown child command"},
+		"a ceiling that is none":       {[]string{"install", "--dir", filepath.Join(t.TempDir(), "c"), "--ceiling", "root"}, "full, no-exec or read-only"},
+		"--system with a directory":    {[]string{"install", "--system", "--dir", filepath.Join(t.TempDir(), "c")}, "does not take --dir"},
+		"--system without elevation":   {[]string{"install", "--system"}, "needs an elevated terminal"},
+		"a sandbox this build has not": {[]string{"install", "--dir", filepath.Join(t.TempDir(), "c"), "--sandbox", "chroot"}, `--sandbox "chroot"`},
+		"an argument to another verb":  {[]string{"pause", "now"}, "unexpected argument"},
+		"no verb":                      {nil, "usage: tenant child"},
+		"an unknown verb":              {[]string{"rehome"}, "unknown child command"},
 	} {
 		fakeElevated(t, false)
 		err := cmdChild(context.Background(), tc.args)
@@ -987,6 +988,23 @@ func TestChildEndToEnd(t *testing.T) {
 			t.Errorf("the system log line carries what a tool was given: %q", l)
 		}
 	}
+	// Everything the child wrote is in its two directories, under these names.
+	for where, known := range map[string][]string{
+		dir:                 {"child.json", "child.json.lock", "child-identity.pem", "child-link.json", "child-paused", "audit"},
+		fleet.AuditDir(dir): {"audit.jsonl", "audit.lock"},
+		childDataDir(dir):   {"proc", "screenshots", "wiki", "mcp", "logs"},
+	} {
+		entries, err := os.ReadDir(where)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if !slices.Contains(known, e.Name()) {
+				t.Errorf("the child left %s in %s; the files a child creates are a list the documentation gives", e.Name(), where)
+			}
+		}
+	}
+
 	// Tampering with it is found.
 	logFile := filepath.Join(fleet.AuditDir(dir), "audit.jsonl")
 	if err := os.WriteFile(logFile, bytes.Replace(mustRead(t, logFile), []byte("hello-from-the-child"), []byte("nothing-to-see-here!"), 1), 0o600); err == nil {
@@ -1135,8 +1153,14 @@ func TestChildSecretList(t *testing.T) {
 		m.refused(id, "os_read_file", map[string]any{"path": `\\.\PhysicalDrive0`}, "names a device")
 		m.refused(id, "os_read_file", map[string]any{"path": `\\localhost\C$\Windows\win.ini`}, "names a device")
 	} else {
-		m.refused(id, "os_read_file", map[string]any{"path": "/proc/self/environ"}, "protected directory")
-		m.refused(id, "os_read_file", map[string]any{"path": "/etc/shadow"}, "holds secrets")
+		// Where the kernel shows devices and other processes as files, and the
+		// machine's own password database.
+		device, passwords := "/proc/self/environ", "/etc/shadow"
+		if runtime.GOOS == "darwin" {
+			device, passwords = "/dev/disk0", "/etc/master.passwd"
+		}
+		m.refused(id, "os_read_file", map[string]any{"path": device}, "protected directory")
+		m.refused(id, "os_read_file", map[string]any{"path": passwords}, "holds secrets")
 	}
 	if m.askedCount() != asked {
 		t.Errorf("the master was asked %d times about what the machine refuses outright", m.askedCount()-asked)
@@ -1419,5 +1443,107 @@ func TestChildAsRealProcesses(t *testing.T) {
 	}
 	if out, exit := runChildCmd(t, "", "status", "--dir", dir); exit != 1 || !strings.Contains(out, "no child is enrolled here") {
 		t.Errorf("status after uninstall: exit %d\n%s", exit, out)
+	}
+}
+
+// The sandbox backend is the machine's own choice, read from child.json for
+// every command. One it does not have runs nothing, approved or not: a
+// machine that asked for confinement is never given the host instead.
+func TestChildSandboxFailsClosed(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("macOS has the restricted backend this test counts on being absent")
+	}
+	dir := filepath.Join(realTemp(t), "child")
+	marker := filepath.Join(realTemp(t), "ran.txt")
+	asked := 0
+	confirm := func(context.Context, string, string) bool { asked++; return true }
+	child := fleet.Child{Sandbox: "restricted", Ceiling: fleet.CeilingFull}
+	var broken error
+	current := func() (fleet.Child, error) { return child, broken }
+	mux, _ := buildChildMux(context.Background(), dir, confirm, current, quietLog)
+	defer mux.Close()
+	run := func(command string) (string, bool) {
+		t.Helper()
+		args, _ := json.Marshal(map[string]any{"command": command})
+		out, failed, err := mux.Dispatch(context.Background(), model.ToolCall{Name: "os_exec", Arguments: args})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out, failed
+	}
+	if out, failed := run(beat(marker)); !failed || !strings.Contains(out, "fail closed") || asked != 1 {
+		t.Errorf("on a backend this machine has not: %q, failed %v, asked %d times", out, failed, asked)
+	}
+	// A child.json that stops loading while the child runs: the command the
+	// master already approved is not run on a guess.
+	broken = errors.New("child.json: not valid")
+	if out, failed := run(beat(marker)); !failed || !strings.Contains(out, "child.json: not valid") {
+		t.Errorf("with no child.json to read the backend from: %q, failed %v", out, failed)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if exists(marker) {
+		t.Fatal("a command ran outside the sandbox the machine asked for")
+	}
+	// On the host, as the file says again, it runs.
+	child.Sandbox, broken = "host", nil
+	if out, failed := run(say("on-the-host")); failed || !strings.Contains(out, "on-the-host") {
+		t.Errorf("on the host: %q, failed %v", out, failed)
+	}
+}
+
+// A child whose child.json does not load when it starts stays up, holds no
+// link and serves nothing; put right, the file is taken up with no restart.
+func TestChildStartsOnAChildFileItCannotRead(t *testing.T) {
+	m := newFleetMaster(t)
+	dir, digits, _ := enrollChild(t, m, "box", childInstallOpts{})
+	mach := m.confirm("box", digits)
+	good := mustRead(t, fleet.ChildPath(dir))
+	if err := os.WriteFile(fleet.ChildPath(dir), bytes.Replace(good, []byte(`"ceiling": "full"`), []byte(`"ceiling": "everything"`), 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	startChild(t, dir)
+	time.Sleep(500 * time.Millisecond)
+	if list, _ := m.mgr.Machines(); len(list) != 1 || list[0].Online {
+		t.Fatalf("a child with a ceiling that is none connected: %+v", list)
+	}
+	if _, err := status(dir); err == nil || !strings.Contains(err.Error(), "serves nothing") {
+		t.Errorf("status: %v", err)
+	}
+	if err := os.WriteFile(fleet.ChildPath(dir), good, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.awaitOnline(mach.ID, true)
+	m.ok(mach.ID, "os_sysinfo", nil)
+}
+
+// A config.json that does not load takes away what it would have added and
+// nothing else; and an audit log nobody has written to says so.
+func TestChildWithoutAConfigItCanRead(t *testing.T) {
+	dir := filepath.Join(realTemp(t), "child")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(launchConfigPath(dir), []byte(`{"skills": {"sql": `), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	current := func() (fleet.Child, error) { return fleet.Child{Sandbox: "host", Ceiling: fleet.CeilingFull}, nil }
+	mux, _ := buildChildMux(context.Background(), dir, func(context.Context, string, string) bool { return false }, current, quietLog)
+	defer mux.Close()
+	names := 0
+	for _, spec := range mux.All() {
+		names++
+		if !strings.HasPrefix(spec.Name, "os_") && !strings.HasPrefix(spec.Name, "web_") {
+			t.Errorf("with a config.json that does not load the child serves %s", spec.Name)
+		}
+	}
+	if names == 0 {
+		t.Error("with a config.json that does not load the child serves nothing at all")
+	}
+	var out bytes.Buffer
+	if err := childAudit(&out, dir); err != nil || !strings.Contains(out.String(), "is empty") {
+		t.Errorf("audit of a child that was never called: %v\n%s", err, out.String())
+	}
+	if got := childDenyRoots("darwin"); !slices.Contains(got, "/dev") || childDenyRoots("windows") != nil {
+		t.Errorf("deny roots: darwin %v, windows %v", got, childDenyRoots("windows"))
 	}
 }

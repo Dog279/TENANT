@@ -42,6 +42,7 @@ import (
 	"tenant/internal/fleet"
 	"tenant/internal/fsperm"
 	"tenant/internal/memory/soul"
+	"tenant/internal/sandbox"
 	"tenant/internal/version"
 )
 
@@ -166,6 +167,10 @@ func childInstall(ctx context.Context, in io.Reader, out io.Writer, dir string, 
 	default:
 		return exitError{2, fmt.Sprintf("--ceiling %q: it is full, no-exec or read-only", o.ceiling)}
 	}
+	if _, err := sandbox.For(o.sandbox); err != nil {
+		// Found out now, and not by the first command the master sends.
+		return exitError{2, fmt.Sprintf("--sandbox %q: %v", o.sandbox, err)}
+	}
 	if o.system && !childElevated() {
 		return exitError{2, "tenant child install --system needs an elevated terminal: the service it installs runs as " + childAccount(true) +
 			", and its key is written where only that account reads it"}
@@ -190,7 +195,7 @@ func childInstall(ctx context.Context, in io.Reader, out io.Writer, dir string, 
 	if err != nil {
 		return err
 	}
-	code, err := readEnrollCode(in)
+	code, err := readEnrollCode(in, out)
 	if err != nil {
 		return err
 	}
@@ -215,8 +220,8 @@ func childInstall(ctx context.Context, in io.Reader, out io.Writer, dir string, 
 	if err != nil {
 		// A key nobody enrolled, or one whose files are not safe, is no use:
 		// the next attempt starts clean. A code is spent once it was sent.
-		for _, p := range []string{fleet.ChildPath(dir), fleet.ChildIdentityPath(dir)} {
-			_ = os.Remove(p)
+		for _, p := range []string{fleet.ChildPath(dir), fleet.ChildIdentityPath(dir), childDataDir(dir), dir} {
+			_ = os.Remove(p) // the two directories only if nothing else is in them
 		}
 		return err
 	}
@@ -233,7 +238,11 @@ func childInstall(ctx context.Context, in io.Reader, out io.Writer, dir string, 
 			"`tenant child run --dir %q` holds the link from this terminal; `tenant child uninstall` undoes the enrollment", err, dir)
 	}
 	_, where := spec.installed(ctx)
-	fmt.Fprintf(out, "Installed %s: it connects again on every boot. `tenant child status` shows where this machine stands.\n", where)
+	when := "every time this account logs on"
+	if o.system {
+		when = "at every boot"
+	}
+	fmt.Fprintf(out, "Installed %s: it connects again %s. `tenant child status` shows where this machine stands.\n", where, when)
 	return nil
 }
 
@@ -241,12 +250,12 @@ func childInstall(ctx context.Context, in io.Reader, out io.Writer, dir string, 
 // that is not set, from the first line of standard input. The variable is
 // taken out of this process's environment at once, so nothing this command
 // starts inherits it.
-func readEnrollCode(in io.Reader) (string, error) {
+func readEnrollCode(in io.Reader, out io.Writer) (string, error) {
 	code := strings.TrimSpace(os.Getenv(childCodeEnv))
 	_ = os.Unsetenv(childCodeEnv)
 	if code == "" {
 		if f, ok := in.(*os.File); ok && isatty.IsTerminal(f.Fd()) {
-			fmt.Fprint(os.Stderr, "Enrollment code (from `tenant fleet enroll <name>` on the master): ")
+			fmt.Fprint(out, "Enrollment code (from `tenant fleet enroll <name>` on the master): ")
 		}
 		sc := bufio.NewScanner(io.LimitReader(in, 64<<10))
 		sc.Buffer(make([]byte, 0, 4096), 64<<10)
@@ -312,6 +321,11 @@ func childRun(ctx context.Context, dir string, log *slog.Logger) error {
 		log.Error("fleet child: the audit log cannot be written, so every call is refused until it can", "err", err)
 	}
 
+	// The unit's working directory. An operator who cleared it out gets it
+	// back, not a service that cannot start.
+	if err := fsperm.MkdirAll(childDataDir(dir)); err != nil {
+		log.Warn("fleet child: the working directory could not be made", "dir", childDataDir(dir), "err", err)
+	}
 	gate := fleet.NewGate(dir, audit, childRunsCommand)
 	mux, stopTools := buildChildMux(ctx, dir, gate.Confirm, gate.Current, log)
 	defer mux.Close()

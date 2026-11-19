@@ -10,13 +10,36 @@
 #   TENANT_REPO         GitHub owner/name asked for the latest release
 #   TENANT_BASE_URL     directory URL that holds the archive and checksums.txt
 #   TENANT_INSTALL_DIR  where tenant.exe goes (default: %LOCALAPPDATA%\Programs\tenant)
+#
+# To make this machine a child of a fleet in the same paste, set TENANT_CHILD:
+# the script goes straight on to `tenant child install`.
+#
+#   $env:TENANT_CHILD = 'user'; $env:TENANT_ENROLL_CODE = '<code>'; irm .../install.ps1 | iex
+#
+#   TENANT_CHILD        user: the child runs as this account, from logon. system: as
+#                       SYSTEM from boot (run this from an elevated PowerShell;
+#                       tenant.exe then goes to %ProgramFiles%\Tenant, where only
+#                       administrators can replace it)
+#   TENANT_ENROLL_CODE  the one-time code `tenant fleet enroll <name>` printed on the
+#                       master. Left unset, it is asked for. It is never passed as an
+#                       argument, where the process list shows it.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 $Repo = if ($env:TENANT_REPO) { $env:TENANT_REPO } else { '__REPO__' }
-$Dir = if ($env:TENANT_INSTALL_DIR) { $env:TENANT_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\tenant' }
+$Child = $env:TENANT_CHILD
+if ($Child -and $Child -ne 'user' -and $Child -ne 'system') { throw "install.ps1: TENANT_CHILD is user or system, not $Child" }
+if ($Child -eq 'system') {
+  $Me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+  if (-not $Me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    throw 'install.ps1: TENANT_CHILD=system installs a service that runs as SYSTEM: run this from an elevated PowerShell'
+  }
+}
+$Dir = Join-Path $env:LOCALAPPDATA 'Programs\tenant'
+if ($Child -eq 'system') { $Dir = Join-Path $env:ProgramFiles 'Tenant' }
+if ($env:TENANT_INSTALL_DIR) { $Dir = $env:TENANT_INSTALL_DIR }
 $Arch = switch ($env:PROCESSOR_ARCHITECTURE) {
   'AMD64' { 'x86_64' }
   'ARM64' { 'aarch64' }
@@ -61,4 +84,16 @@ if (($env:Path -split ';') -notcontains $Dir) { $env:Path = "$env:Path;$Dir" }
 
 Write-Host "Installed $Dir\tenant.exe"
 & (Join-Path $Dir 'tenant.exe') version
-Write-Host 'Next: tenant setup'
+if ($Child) {
+  # The code is read from $env:TENANT_ENROLL_CODE, or tenant asks for it.
+  $ChildArgs = @('child', 'install')
+  if ($Child -eq 'system') { $ChildArgs += '--system' }
+  try {
+    & (Join-Path $Dir 'tenant.exe') @ChildArgs
+    if ($LASTEXITCODE -ne 0) { throw "install.ps1: tenant child install failed (exit $LASTEXITCODE)" }
+  } finally {
+    Remove-Item Env:TENANT_ENROLL_CODE -ErrorAction SilentlyContinue # not left in this session
+  }
+} else {
+  Write-Host 'Next: tenant setup'
+}
