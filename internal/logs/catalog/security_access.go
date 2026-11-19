@@ -12,33 +12,38 @@ import "tenant/internal/logs/event"
 // Approvals. category, action and detail name what was asked; origin is the
 // surface that raised it: local, discord, imessage or cron. via says what
 // decided: operator (a person; the actor names who), mode, session, rule,
-// lock, no_surface or cron (the cron-exec approver).
+// lock, no_surface or cron (the cron-exec approver). For an action that lands
+// on a fleet machine, host is the id the master gave the machine and
+// host_name its label, escaped to plain ASCII (detail starts with both), and
+// via may also be origin (the origin's own rules refused it), fleet (the
+// origin may not reach that machine, or the request was not fit to show) or
+// rate_limit (the machine asked too often).
 
-var ApprovalAsk = Security.Event(4101, event.Info, "Approval", "Approval requested: {action} ({category})", "category", "action", "detail", "origin").
+var ApprovalAsk = Security.Event(4101, event.Info, "Approval", "Approval requested: {action} ({category})", "category", "action", "detail", "origin", "host", "host_name").
 	Keywords("audit.success").
 	Doc("A gated action is waiting for the operator's decision.",
-		"The agent, a job or a peer asked for an action whose category needs approval.",
+		"The agent, a job or a peer asked for an action whose category needs approval. For an action on a fleet machine, host and host_name say which machine, and detail starts with them.",
 		"Approve or deny it where it was asked; it expires when nobody answers.")
 
-var ApprovalYes = Security.Event(4102, event.Info, "Approval", "Approval granted {grant}: {action} ({category})", "category", "action", "detail", "origin", "grant", "via", "nonce").
+var ApprovalYes = Security.Event(4102, event.Info, "Approval", "Approval granted {grant}: {action} ({category})", "category", "action", "detail", "origin", "grant", "via", "nonce", "host", "host_name").
 	Keywords("audit.success").
 	Doc("A gated action was allowed, so it went ahead: once, for the session, or always (which sets its category, or its tool rule, to allow).",
 		"The operator approved it (via operator; on a Discord card, nonce is the card's), or a standing setting allowed it without asking: the category's mode, a session grant, a tool rule, the cron-exec approver.",
 		"None when intended. To be asked again, set the category back to ask (/permissions).")
 
-var ApprovalNo = Security.Event(4103, event.Warning, "Approval", "Approval denied: {action} ({category})", "category", "action", "detail", "origin", "via", "nonce").
+var ApprovalNo = Security.Event(4103, event.Warning, "Approval", "Approval denied: {action} ({category})", "category", "action", "detail", "origin", "via", "nonce", "host", "host_name").
 	Keywords("audit.failure").
 	Doc("A gated action was denied, so it did not run.",
-		"The operator denied it (via operator), a standing setting did (the category's mode, a tool rule, the surface's lock: the Discord relay's exec mode, or the cron-exec approver), or no operator could be reached (no_surface).",
+		"The operator denied it (via operator), a standing setting did (the category's mode, a tool rule, the surface's lock: the Discord relay's exec mode, or the cron-exec approver), or no operator could be reached (no_surface). For an action on a fleet machine (host): the origin's own rules refused it (origin), the origin may not reach that machine or the request was not fit to show (fleet), or the machine asked too often (rate_limit).",
 		"None when intended; otherwise check the category's approval mode.")
 
-var ApprovalShutdown = Security.Event(4104, event.Warning, "Approval", "Approval denied at shutdown: {action} ({category})", "category", "action", "detail", "origin").
+var ApprovalShutdown = Security.Event(4104, event.Warning, "Approval", "Approval denied at shutdown: {action} ({category})", "category", "action", "detail", "origin", "host", "host_name").
 	Keywords("audit.failure").
 	Doc("A gated action still waiting for its decision was denied because Tenant was stopping.",
 		"Tenant stopped while the prompt was open.",
 		"None. The agent can ask again after the restart.")
 
-var ApprovalExpired = Security.Event(4105, event.Warning, "Approval", "Approval expired unanswered: {action} ({category})", "category", "action", "detail", "origin", "nonce").
+var ApprovalExpired = Security.Event(4105, event.Warning, "Approval", "Approval expired unanswered: {action} ({category})", "category", "action", "detail", "origin", "nonce", "host", "host_name").
 	Keywords("audit.failure").
 	Doc("Nobody answered a gated action's prompt in time, so it did not run.",
 		"The prompt timed out (relay.approval_timeout on Discord and iMessage), or the turn that asked ended first.",
@@ -46,7 +51,7 @@ var ApprovalExpired = Security.Event(4105, event.Warning, "Approval", "Approval 
 
 var ModeChanged = Security.Event(4106, event.Info, "Approval", "{broker} approvals for {category} set to {mode}", "broker", "category", "mode", "was").
 	Keywords("audit.success").
-	Doc("The operator changed how one category of gated actions is approved on one surface (broker: local, discord or imessage): ask, allow or deny.",
+	Doc("The operator changed how one category of gated actions is approved on one surface (broker: local, discord or imessage) or for one fleet machine (broker: fleet: followed by the machine's id): ask, allow or deny.",
 		"/permissions, /relay permissions or /imessage permissions in the terminal, or the dashboard's Access page. An Always grant sets allow too; its record is the grant (4102).",
 		"None when intended.")
 
