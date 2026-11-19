@@ -86,6 +86,12 @@ var readOnlyBypasses = []struct{ name, cmd string }{
 	{"uniq IN OUT", "uniq in out"},
 	{"uniq - OUT", "uniq - out"},
 	{"uniq -- IN OUT", "uniq -- in -b"},
+	{"uniq IN OUT where OUT is a comma", "uniq in ,"},
+	{"uniq with a glob that matches two files", "uniq ~/.ssh/id_ed25519*"},
+	// PowerShell makes two arguments of one: 'x'-o is x and -o, -c.a is -c and
+	// .a (seen with a program that prints its arguments).
+	{"PowerShell splits a quoted start from the option after it", "git log 'x'--output=y"},
+	{"PowerShell splits -c.a, and uniq gets IN and OUT", "uniq -c.a -d.b"},
 	{"tree -o", "tree -o out"},
 	{"tree -o in a cluster", "tree -ao out"},
 	{"tree -R", "tree -R -L 1 -H ."},
@@ -103,6 +109,9 @@ var readOnlyBypasses = []struct{ name, cmd string }{
 	{"git branch NAME", "git branch newname"},
 	{"git branch -v NAME", "git branch -v newname"},
 	{"git branch --no-color NAME", "git branch --no-color newname"},
+	{"git branch NAME where --sort takes --list as its value", "git branch --sort --list newname"},
+	{"git branch NAME where --format takes --list as its value", "git branch --format --list newname"},
+	{"git branch NAME where NAME is a comma", "git branch ,"},
 	{"git branch -f", "git branch -f main HEAD~3"},
 	{"git branch --force", "git branch --force main HEAD~3"},
 	{"git branch --edit-description", "git branch --edit-description"},
@@ -190,6 +199,20 @@ var readOnlyRefused = []struct{ name, cmd string }{
 	{"find with a leading glob", "find *"},
 	{"find with an unquoted pattern", "find . -name *.go"},
 	{"find with a glob after a dash", "find . -na*"},
+	{"find with a glob in a path", "find src/*.go -type f"},
+	{"find with a one-character glob", "find . -name a?"},
+	{"find with a bracket glob", "find . -name [ab]"},
+	{"quotes in the middle of an argument", "sort a'b'c"},
+	{"a dot in a short option", "sort -t. -k2 f"},
+	{"a comma at the end", "sort -t,"},
+	{"two commas", "sort a,,b"},
+	{"a comma before a tab", "sort a,\tb"},
+	{"a backslash at the end", `sort in\`},
+	{"a backslash before a tab", "sort in\\\tx"},
+	{"a backslash before a double quote", `echo \"a`},
+	{"a backslash before a parenthesis", `echo \(ls)`},
+	{"a read-only word after a substitution", "echo $(pwd) ls"},
+	{"delete character", "ls\x7f"},
 	{"find with an unknown primary", "find . -newerXY x"},
 	{"find with a lone dash", "find . -"},
 	{"find reading its standard input", "find . -name x < list"},
@@ -205,6 +228,10 @@ var readOnlyRefused = []struct{ name, cmd string }{
 	{"date flag", "date -u"},
 	{"date -d", "date -d yesterday"},
 	{"hostname flag", "hostname -f"},
+	{"hostname with a comma, which sh passes as the name", "hostname ,"},
+	{"hostname with a no-break space, which sh passes as the name", "hostname  "},
+	{"a comma that ends an argument", "sort -t, -k1 f"},
+	{"git branch --sort with its value apart", "git branch --sort refname"},
 	{"uniq with a value-taking flag", "uniq -f 1 in"},
 	{"git branch with an unknown flag", "git branch --frobnicate"},
 	{"git branch --", "git branch -- x"},
@@ -232,10 +259,12 @@ var readOnlyPlain = []string{
 	"ls -la", "ls -la | grep x", "ls ~/src", "ls *.go", "cat x | grep y | wc -l", "cat $HOME/.profile",
 	"echo $(whoami)", "echo $(echo $(whoami))", "echo $(whoami) $(pwd)", "cat $(find . -name x)", "echo hi # a note",
 	"echo \"it's\"", "echo 'say \"hi\"'", "grep -E \"a b\" f", "grep -rn TODO .", "wc -l < file", "ls &",
-	"ls\npwd", "ls\r\npwd", "ls;", "\tls\t", "LS", "Git status",
+	"ls\npwd", "ls\r\npwd", "ls;", "\tls\t", "LS", "Git status", "ls\t-la", "Get-Item\t(Get-Location)",
+	"find . -name '*.go'\t-type f", "git log --grep=fix#12 --author=a@b.c", "git log --format=%h.%s",
+	"git remote --verbose", "git remote get-url --all origin",
 	"brew list", "brew info jq", "brew --version", "brew deps jq", "brew outdated",
 	"find . -name '*.go'", `find . -name "*.go" -newer go.mod`, "find . -maxdepth 2 -type d", "find . -mtime -7 -size -10k",
-	"find src/*.go -type f", "find . -type f -name '*.go' -print0", "find . -iname 'read me' -not -path './x/*'",
+	"find src/main.go -type f", "find . -type f -name '*.go' -print0", "find . -iname 'read me' -not -path './x/*'",
 	"rg -n foo src", "rg --files", "rg -p 'fn main' -t rust", "rg --pretty --pre-glob '*.pdf' x",
 	"sort -u names.txt", "sort -k2,2n -t: f", "sort -rn", "cat a | sort | uniq -c | sort -rn | head -5",
 	"sort src\\names.txt", "uniq -c", "uniq -c names.txt", "uniq -- -odd-name", "uniq -",
@@ -389,7 +418,10 @@ func readOnlyViolation(c string) string {
 			}
 		case "sort", "tree":
 			for _, a := range args {
-				if strings.HasPrefix(a, "--o") || (strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.Contains(a, "o")) {
+				long, isLong := strings.CutPrefix(a, "--")
+				long, _, _ = strings.Cut(long, "=")
+				// --output, or what getopt takes for it: --o, --ou, --out…
+				if (isLong && long != "" && strings.HasPrefix("output", long)) || (!isLong && strings.HasPrefix(a, "-") && strings.Contains(a, "o")) {
 					return word + " writes a file: " + a
 				}
 			}
@@ -414,7 +446,7 @@ func readOnlyViolation(c string) string {
 				return "git without a read subcommand"
 			}
 			for _, a := range args {
-				if strings.HasPrefix(a, "--output") && !strings.HasPrefix(a, "--output-") {
+				if a == "--output" || strings.HasPrefix(a, "--output=") {
 					return "git writes a file: " + a
 				}
 				if args[0] == "branch" && roBranchActs[a] {
