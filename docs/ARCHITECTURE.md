@@ -136,6 +136,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/datalock` | nothing in the module | leaf |
 | `internal/httplimits` | nothing in the module | leaf |
 | `internal/version` | nothing in the module | leaf |
+| `internal/procprotect` | nothing in the module | leaf: asks the operating system to keep other programs out of the process |
 | `internal/selfupdate` | nothing in the module | leaf: finding, verifying and swapping in a release binary; tenant update sequences it |
 | `internal/runtrace` | nothing in the module | leaf |
 | `internal/cmdreg` | nothing in the module | leaf |

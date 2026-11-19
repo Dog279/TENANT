@@ -22,9 +22,17 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+
+	"tenant/internal/procprotect"
 )
 
+// protection is what the operating system was asked to refuse other programs
+// (TEN-535), control by control: doctor and the security audit report it.
+var protection procprotect.Report
+
 func main() {
+	// Before anything else, for every command and for the service.
+	protection = procprotect.Protect()
 	if runWindowsService() { // started by the service control manager (svc_windows.go, TEN-498)
 		return
 	}

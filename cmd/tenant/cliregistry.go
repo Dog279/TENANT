@@ -301,8 +301,15 @@ func cliRegistry() *cmdreg.Registry[cliRun] {
 	return cliReg
 }
 
+// debugAttachNote is what `tenant version` and doctor say about a build made
+// with -tags debugattach (TEN-535).
+const debugAttachNote = "built with -tags debugattach: process protection is compiled out, so a debugger, or any other program of this user, can read this process"
+
 func cmdVersion(context.Context, []string) error {
 	fmt.Printf("tenant %s — speaks MCP %s (Go)\n", version.String(), mcp.ProtocolVersion)
+	if protection.Disabled {
+		fmt.Println(debugAttachNote)
+	}
 	return nil
 }
 
