@@ -4664,6 +4664,10 @@ Writes the `security` log.
 | [4303](#security-4303) | warning | Access | `Request from {remote} refused: {reason}` |
 | [4311](#security-4311) | info | Peering | `Paired with peer {peer}` |
 | [4312](#security-4312) | info | Peering | `Unpaired peer {peer} ({how})` |
+| [4321](#security-4321) | warning | Fleet | `Fleet enrollment from {remote} refused: {reason}` |
+| [4322](#security-4322) | error | Fleet | `A spent fleet enrollment code for {name} was presented again from {remote}` |
+| [4323](#security-4323) | info | Fleet | `Fleet machine {name}: {change}` |
+| [4324](#security-4324) | warning | Fleet | `Fleet machine {name} was not confirmed: {reason}` |
 | [4501](#security-4501) | info | Configuration | `{file} changed: {changes} settings` |
 | [4601](#security-4601) | info | Secret | `Secret {secret} stored from {surface}` |
 | [4602](#security-4602) | info | Secret | `Secret {secret} changed from {surface}` |
@@ -4907,6 +4911,66 @@ Writes the `security` log.
 **Why it happens.** tenant peer remove or revoke, or /peer remove.
 
 **What to do.** None when intended. Pair again to restore it.
+
+### security 4321
+
+`Fleet enrollment from {remote} refused: {reason}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Fleet · **Log:** security
+- **Fields:** `reason`, `remote`, `name`, `machine`, `certificate`
+- **Keywords:** `audit.failure`
+- **Find it:** `provider:security id:4321`
+
+**What it means.** The fleet's enroll endpoint turned an attempt away. reason says why: rate_limited, bad_method, no_certificate, enrollment_off, store_unreadable, body_too_large, bad_request, unknown_code, expired_code, conflict (the name or the certificate is in use). name is the machine name on the code, when the code was recognised; certificate is the fingerprint the attempt presented.
+
+**Why it happens.** A code that was mistyped or has expired, a machine enrolled twice, or something on the network probing the fleet port.
+
+**What to do.** For a machine of yours, make a new code with tenant fleet enroll. Many from an address you don't know mean someone is guessing: keep the fleet port off public networks.
+
+### security 4322
+
+`A spent fleet enrollment code for {name} was presented again from {remote}`
+
+- **Level:** error · **Channel:** operational · **Task:** Fleet · **Log:** security
+- **Fields:** `name`, `machine`, `remote`, `certificate`
+- **Keywords:** `audit.failure`
+- **Find it:** `provider:security id:4322`
+
+**What it means.** An enrollment code that had already enrolled a machine was presented a second time, and refused. Someone other than the machine it enrolled holds the code, or held it first. machine is the id of the machine the code enrolled.
+
+**Why it happens.** The install was run twice on one machine, or the code leaked and one of the two (the machine that is pending, or this attempt) is not yours.
+
+**What to do.** Check the pending machine before you confirm it: compare the six digits on its own screen. If in doubt, tenant fleet revoke it and enroll it again with a new code.
+
+### security 4323
+
+`Fleet machine {name}: {change}`
+
+- **Level:** info · **Channel:** operational · **Task:** Fleet · **Log:** security
+- **Fields:** `name`, `machine`, `change`, `detail`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4323`
+
+**What it means.** The operator changed the fleet: change is initialised (this Tenant became a master), code issued, confirmed, renamed, revoked or removed (revoked, and its record and approval scheme deleted). For a confirmed machine, detail is what the machine reported about itself (its own words) and the categories the operator loosened.
+
+**Why it happens.** tenant fleet init, enroll, confirm, rename or revoke, or /fleet confirm or revoke in the terminal.
+
+**What to do.** None when intended. Otherwise tenant fleet revoke the machine.
+
+### security 4324
+
+`Fleet machine {name} was not confirmed: {reason}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Fleet · **Log:** security
+- **Fields:** `name`, `machine`, `reason`
+- **Keywords:** `audit.failure`
+- **Find it:** `provider:security id:4324`
+
+**What it means.** A confirmation of a pending fleet machine was refused, and the machine stays pending.
+
+**Why it happens.** The six digits typed are not the ones that machine shows (a typo, or the pending machine is not the one in front of you), or the machine is not waiting for confirmation.
+
+**What to do.** Read the six digits from the machine's own screen and try again. If they never match, the pending machine is not yours: tenant fleet revoke it.
 
 ### security 4501
 

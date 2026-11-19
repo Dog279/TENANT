@@ -115,6 +115,33 @@ var PeerUnpaired = Security.Event(4312, event.Info, "Peering", "Unpaired peer {p
 		"tenant peer remove or revoke, or /peer remove.",
 		"None when intended. Pair again to restore it.")
 
+// The fleet (TEN-531): a master's child machines. machine is the id the
+// master gave the machine and name its label.
+
+var FleetEnrollRefused = Security.Event(4321, event.Warning, "Fleet", "Fleet enrollment from {remote} refused: {reason}", "reason", "remote", "name", "machine", "certificate").
+	Keywords("audit.failure").
+	Doc("The fleet's enroll endpoint turned an attempt away. reason says why: rate_limited, bad_method, no_certificate, enrollment_off, store_unreadable, body_too_large, bad_request, unknown_code, expired_code, conflict (the name or the certificate is in use). name is the machine name on the code, when the code was recognised; certificate is the fingerprint the attempt presented.",
+		"A code that was mistyped or has expired, a machine enrolled twice, or something on the network probing the fleet port.",
+		"For a machine of yours, make a new code with tenant fleet enroll. Many from an address you don't know mean someone is guessing: keep the fleet port off public networks.")
+
+var FleetCodeReplayed = Security.Event(4322, event.Error, "Fleet", "A spent fleet enrollment code for {name} was presented again from {remote}", "name", "machine", "remote", "certificate").
+	Keywords("audit.failure").
+	Doc("An enrollment code that had already enrolled a machine was presented a second time, and refused. Someone other than the machine it enrolled holds the code, or held it first. machine is the id of the machine the code enrolled.",
+		"The install was run twice on one machine, or the code leaked and one of the two (the machine that is pending, or this attempt) is not yours.",
+		"Check the pending machine before you confirm it: compare the six digits on its own screen. If in doubt, tenant fleet revoke it and enroll it again with a new code.")
+
+var FleetMachineChanged = Security.Event(4323, event.Info, "Fleet", "Fleet machine {name}: {change}", "name", "machine", "change", "detail").
+	Keywords("audit.success").
+	Doc("The operator changed the fleet: change is initialised (this Tenant became a master), code issued, confirmed, renamed, revoked or removed (revoked, and its record and approval scheme deleted). For a confirmed machine, detail is what the machine reported about itself (its own words) and the categories the operator loosened.",
+		"tenant fleet init, enroll, confirm, rename or revoke, or /fleet confirm or revoke in the terminal.",
+		"None when intended. Otherwise tenant fleet revoke the machine.")
+
+var FleetConfirmRefused = Security.Event(4324, event.Warning, "Fleet", "Fleet machine {name} was not confirmed: {reason}", "name", "machine", "reason").
+	Keywords("audit.failure").
+	Doc("A confirmation of a pending fleet machine was refused, and the machine stays pending.",
+		"The six digits typed are not the ones that machine shows (a typo, or the pending machine is not the one in front of you), or the machine is not waiting for confirmation.",
+		"Read the six digits from the machine's own screen and try again. If they never match, the pending machine is not yours: tenant fleet revoke it.")
+
 // system: the Security log's own health (4000s).
 
 var AuditFailed = System.Event(4001, event.Critical, "Audit", "A Security record was not written: {err}", "event", "policy", "err").
