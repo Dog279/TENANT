@@ -32,6 +32,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mattn/go-isatty"
@@ -265,6 +266,19 @@ func startGate(ctx context.Context, c *commonFlags, role string, visible bool) e
 // Nothing else is loaded for it: the log folder's place is the one key read
 // from config.json.
 func reportNotStarted(ctx context.Context, c *commonFlags, role string, why error) {
+	if err := toLogbook(ctx, c, sysNotStartedUnprotected.Build(ctx, "role", role, "version", version.Version, "why", why)); err != nil {
+		slog.Warn("the reason Tenant did not start could not be written to its log", "err", err)
+	}
+	if err := systemLog(fmt.Sprintf("Tenant %s (%s) did not start: %v", version.Version, role, why)); err != nil {
+		slog.Warn("the reason Tenant did not start could not be written to the system's log", "err", err)
+	}
+}
+
+// toLogbook writes events into Tenant's log book, logbook.db, which `tenant
+// logs` and the dashboard read, through a hub of its own that is closed
+// again. Nothing else is loaded for it: the log folder's place is the one
+// key read from config.json.
+func toLogbook(ctx context.Context, c *commonFlags, evs ...*event.Event) error {
 	root := filepath.Join(c.dataDir, "logs")
 	var cfg struct {
 		Logs struct {
@@ -278,19 +292,16 @@ func reportNotStarted(ctx context.Context, c *commonFlags, role string, why erro
 		root = expandPath(c.logDir)
 	}
 	hub, err := logs.Open(root, logs.Options{})
-	if err == nil {
-		// logbook.db is what `tenant logs` and the dashboard read. If it does
-		// not open, the day file under <root>/system still gets the line.
-		_, _ = hub.OpenStore(nil)
-		hub.Emit(ctx, sysNotStartedUnprotected.Build(ctx, "role", role, "version", version.Version, "why", why))
-		err = hub.Close()
-	}
 	if err != nil {
-		slog.Warn("the reason Tenant did not start could not be written to its log", "err", err)
+		return err
 	}
-	if err := systemLog(fmt.Sprintf("Tenant %s (%s) did not start: %v", version.Version, role, why)); err != nil {
-		slog.Warn("the reason Tenant did not start could not be written to the system's log", "err", err)
+	// If logbook.db does not open, the day file under <root>/system still
+	// gets the line.
+	_, _ = hub.OpenStore(nil)
+	for _, e := range evs {
+		hub.Emit(ctx, e)
 	}
+	return hub.Close()
 }
 
 // borrowCommandLog opens the one-shot commands' log book for serve or the
@@ -317,10 +328,10 @@ var sysNotStartedUnprotected = catalog.System.Event(3030, event.Error, "Lifecycl
 		"A service or a scheduled start met a control the system refuses, on a system where that was never acknowledged, or after an update: a new version asks again.",
 		"Run tenant service start (or tenant serve) at a terminal, read what is missing and answer the question. tenant doctor shows every control and why it is off.")
 
-var sysStartedUnprotected = catalog.System.Event(2030, event.Warning, "Lifecycle", "Running without a process protection: {name} ({control}) could not be applied: {reason}", "control", "name", "reason", "leaves", "acknowledged", "version").
+var sysStartedUnprotected = catalog.System.Event(2030, event.Warning, "Lifecycle", "Running without a process protection ({command}): {name} ({control}) could not be applied: {reason}", "control", "name", "reason", "leaves", "acknowledged", "version", "command").
 	Keywords("lifecycle").
-	Doc("Tenant started although the operating system could not apply one of its process protections, because the operator acknowledged exactly that at a terminal. It is written at every such start. leaves says what the missing control leaves open; acknowledged is when the operator said yes.",
-		"The system refuses the control for the reason given, and a person answered yes to \"Continue without it?\" for this control, this reason and this version.",
+	Doc("A Tenant command started although the operating system could not apply one of its process protections. It is written once at every such start, by every command that opens Tenant's data (serve and the TUI, which first ask at a terminal and go ahead only on an acknowledgement, and every other command, which is not asked: chat, os, the plugin commands, eval and the rest); help, version, completion and a plain doctor or security audit open nothing and write nothing. command is the command; leaves says what the missing control leaves open; acknowledged is when the operator said yes for this control, reason and version, empty when nobody did.",
+		"The system refuses the control for the reason given. For serve and the TUI a person answered yes to \"Continue without it?\"; another command runs without asking.",
 		"None if that is accepted. Removing the cause named in reason restores the protection at the next start; tenant doctor shows every control.")
 
 // warnUnprotected files, at every start of serve or the TUI that goes ahead
@@ -336,11 +347,58 @@ func warnUnprotected(ctx context.Context, c *commonFlags, feed chan<- string) {
 	for _, m := range missing {
 		ack, _ := stg.Acknowledged(m.ID, m.Reason, version.Version)
 		sysStartedUnprotected.Log(ctx, "control", m.ID, "name", m.Name, "reason", m.Reason, "leaves", m.Leaves,
-			"acknowledged", ack.At.Format(time.RFC3339), "version", version.Version)
+			"acknowledged", ack.At.Format(time.RFC3339), "version", version.Version, "command", runningCommand)
 		select {
 		case feed <- fmt.Sprintf("process protection: running without %s (%s): %s. Acknowledged %s; `tenant doctor` says what that leaves open",
 			m.Name, m.ID, m.Reason, ack.At.Format("2006-01-02 15:04 UTC")):
 		default: // a full feed costs the line, never the start
 		}
 	}
+}
+
+// runningCommand is the command this process runs ("chat", "serve"): main
+// sets it, and the service sets "serve".
+var runningCommand string
+
+var unprotectedLogged sync.Once
+
+// stderrAtTerminal: a person can read what is written to stderr. Tests swap
+// it (protecttest.go).
+var stderrAtTerminal = func() bool { return fileIsTerminal(os.Stderr) }
+
+// logUnprotected files every control that is not in force, once per process,
+// for a command other than serve and the TUI (which do it at their start,
+// warnUnprotected): the same event, sysStartedUnprotected, in the log book,
+// and a short line on stderr when that is a terminal. These commands are not
+// asked (decision A40-bis): the record is what the operator finds afterwards.
+//
+// It runs where every command that opens Tenant's data passes, once the
+// directories are known (commonFlags.resolveDirs), so a command added later
+// is covered without knowing of it. A command that opens no data (help,
+// version, completion, doctor and security audit without --fix) writes
+// nothing; with every control in force nothing is written either.
+func logUnprotected(ctx context.Context, c *commonFlags) {
+	missing := protection.Missing()
+	if len(missing) == 0 {
+		return
+	}
+	unprotectedLogged.Do(func() {
+		stg, _ := loadSettings(c.cfgDir, c.agent) // unreadable: nothing counts as acknowledged
+		atTerminal := stderrAtTerminal()
+		var evs []*event.Event
+		for _, m := range missing {
+			at := ""
+			if ack, ok := stg.Acknowledged(m.ID, m.Reason, version.Version); ok {
+				at = ack.At.Format(time.RFC3339)
+			}
+			evs = append(evs, sysStartedUnprotected.Build(ctx, "control", m.ID, "name", m.Name, "reason", m.Reason, "leaves", m.Leaves,
+				"acknowledged", at, "version", version.Version, "command", runningCommand))
+			if atTerminal {
+				fmt.Fprintf(os.Stderr, "process protection: running without %s: %s. `tenant doctor` says what that leaves open\n", m.ID, m.Reason)
+			}
+		}
+		if err := toLogbook(ctx, c, evs...); err != nil {
+			slog.Warn("a missing process protection could not be written to the log book", "err", err)
+		}
+	})
 }

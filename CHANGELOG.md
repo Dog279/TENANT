@@ -81,7 +81,14 @@ Releases page.
     access is denied), attaching a debugger, and reading, suspending or redirecting any of its
     threads are refused, and so is rewriting the access list that says so. A program running as
     you can still end Tenant, and can end, wait for and resume each of its threads: ending
-    threads stops work and reads nothing. Task Manager still lists Tenant and ends it. The
+    threads stops work and reads nothing. Task Manager still lists Tenant and ends it, and so do
+    `taskkill /F`, PowerShell's `Stop-Process -Force` and Node's `process.kill` (they need the
+    right to query the process's information, which shows its exit code, times, priority, where
+    its memory lies and its handles by number and kind, nothing in its memory); Python's
+    `os.kill` asks for every right and is refused. A program running as you can also read each
+    thread's access list, which Tenant reads back itself at start: every thread's list is
+    compared with the one it set and the threads are counted, and a thread that is not as set
+    turns the control off. The
     command line, the program's path and the account stay readable. Tenant also puts its file
     name on your Windows Error Reporting exclusion list. Run on Windows 11, not elevated; an
     actual crash dump by Windows Error Reporting was not attempted.
@@ -89,7 +96,7 @@ Releases page.
     Two other ways in are closed. The console host (`conhost.exe`) opens every console program
     with full access when the program starts, and any program running as you can copy that
     handle; so Tenant leaves its console and joins it again once its access list is set, and the
-    handle the host then holds carries the three rights above and no more. When Tenant is alone
+    handle the host then holds carries the rights above and no more. When Tenant is alone
     on its console, a helper (`tenant __console-anchor`) holds the console open for that
     instant. The helper is born with Tenant's closed access list, so no other program can
     suspend it; if it is ended, or the console cannot be joined again, Tenant leaves its console
@@ -168,6 +175,10 @@ Releases page.
   `settings.<agent>.json` under `protection_acknowledged`: the control, the reason, the version
   and the time. A different control, a different reason or a new version asks again. Every start
   that goes ahead on an acknowledgement says so (system 2030, and a line in the status feed).
+  Every other command that opens Tenant's data is not asked, but leaves the same record at
+  every start it makes without a control: system 2030 in the log book, with the command, the
+  control and the reason, and a line on stderr at a terminal. `help`, `version`, `completion`
+  and a plain `doctor` or `security audit` write nothing.
 
   `tenant service install`, `start` and `restart`, and `tenant setup` when it installs the
   service, ask first, at the terminal you typed them in, because the service has nobody to ask.

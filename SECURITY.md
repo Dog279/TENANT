@@ -61,8 +61,10 @@ of the same user access to its memory (TEN-535): on Linux the dumpable flag is
 turned off, which refuses `ptrace`, `/proc/<pid>/mem`, `/proc/<pid>/environ`,
 `process_vm_readv`, `pidfd_getfd` and `perf_event_open` and stops crash dumps;
 on Windows the access lists of the process and of every thread give the owner
-only the rights to end it, wait for it and read its basic details (for a
-thread: end it, wait for it, resume it), the process's token can be read and
+only the rights to end it, wait for it, read its basic details and query its
+information (for a thread: end it, wait for it, resume it, read its access
+list; every thread's list is read back and checked at start), the process's
+token can be read and
 copied by its owner but not changed, the console host is made to open the
 process again so that the handle it keeps carries those rights and no more,
 the window `tenant serve` needs is owned by a helper process that holds none
@@ -87,7 +89,13 @@ of the same user can also make the Windows Error Reporting exclusion fail at
 start (delete the value and deny writes to the key), so that Tenant asks at a
 terminal whether to go on without it or, as a hidden serve, refuses to start.
 A program of the same user can also end single threads of Tenant, which stops
-work and reads nothing. It does not
+work and reads nothing; read each thread's access list; and query the
+process's information (exit code, times, priority, where its memory lies and
+how it is protected, its handles by number, kind and rights), which is what
+`taskkill /F` and `Stop-Process` need to end it, but nothing in its memory.
+When a control is not in force, every command that opens Tenant's data writes
+system event 2030 to the log book (`tenant logs`) at each start, with the
+command, the control and the reason; serve and the TUI also ask first. It does not
 protect the data: the dashboard token, the credentials file, memory, logs and
 run traces are plain files that a program of the same user can read, and such
 a program can also stop Tenant and run its own copy against them. The Linux

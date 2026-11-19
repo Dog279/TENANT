@@ -17,14 +17,20 @@ import (
 // Windows. A process and each of its threads have an access list, and the
 // default gives the owner, any program of the same user, everything: read
 // the memory, write a dump, attach a debugger, redirect a thread. Protect
-// replaces the lists with restrictedSDDL: SYSTEM and Administrators keep
-// full access; the owner keeps three rights, 0x101001:
+// replaces the lists with processSDDL and threadSDDL: SYSTEM and
+// Administrators keep full access, and the owner keeps a few rights:
 //
-//	process: end it, wait for it, read its basic details (its path and
-//	         command line), which is what Task Manager needs;
-//	thread:  end it, wait for it, resume it. A program of the same user
-//	         can therefore still end single threads of Tenant, which stops
-//	         work and reads nothing.
+//	process, 0x101401: end it, wait for it, read its basic details (its
+//	         path and command line), which is what Task Manager needs, and
+//	         query its information (PROCESS_QUERY_INFORMATION), which is
+//	         what taskkill /F, Stop-Process and Node's process.kill open it
+//	         with before they end it (decision A3);
+//	thread,  0x121001: end it, wait for it, resume it, and read its access
+//	         list (READ_CONTROL), so that Protect can read every thread's
+//	         list back and check it (decision A80). A program of the same
+//	         user can therefore still end single threads of Tenant, which
+//	         stops work and reads nothing, and read a thread's access list,
+//	         which says nothing of its memory or its registers.
 //
 // The owner entry names OWNER RIGHTS. Without one, Windows lets an object's
 // owner read and rewrite its access list whatever the list says.
@@ -36,7 +42,19 @@ import (
 // and a program that opens the process in the moment between its start and
 // Protect. The console host's handle, which is of that kind, is replaced
 // (console_windows.go).
-const restrictedSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x101001;;;OW)"
+const (
+	processSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x101401;;;OW)"
+	// threadSDDL is also the default for every object the process makes from
+	// Protect on (the token's default access list), which is how a thread
+	// the Go runtime starts later gets it.
+	threadSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x121001;;;OW)"
+	// threadReadBack is threadSDDL as a thread carries it: Windows turns the
+	// generic right GA into the thread's own rights when the list is set.
+	threadReadBack = "D:P(A;;0x1fffff;;;SY)(A;;0x1fffff;;;BA)(A;;0x121001;;;OW)"
+
+	ownerProcessRights = 0x101401
+	ownerThreadRights  = 0x121001
+)
 
 // tokenSDDL is the access list of the process's token, an object of its own
 // that anyone who may read the process's basic details can ask for. The token
@@ -60,14 +78,14 @@ var (
 	procGetThreadId     = kernel32.NewProc("GetThreadId")
 )
 
-// ownerThreadRights are the rights restrictedSDDL leaves a thread's owner:
-// end it, wait for it, resume it.
-const ownerThreadRights = 0x101001
-
-// threadNotClosed is the cause when a thread's list grants its owner more
-// than ownerThreadRights and not the right to change it. The same at every
-// start: the gate matches on it.
-const threadNotClosed = "its access list is not the restricted one, gives its owner more than the three rights, and does not let its owner change it"
+// What a thread can be found to be, when it is not as Protect left it. Each
+// is the same at every start: the gate matches on the reason they make.
+const (
+	threadNotClosed  = "its access list, read back, is not the restricted one, and does not let its owner change it"
+	threadUnreadable = "its access list cannot be read back"
+	threadHidden     = "a thread does not let this process open it at all, so its access list cannot be checked"
+	threadsUnsettled = "the threads could not be counted while their number held still"
+)
 
 // grantedAccess is the access h was opened with (OBJECT_BASIC_INFORMATION).
 func grantedAccess(h windows.Handle) (uint32, error) {
@@ -76,6 +94,56 @@ func grantedAccess(h windows.Handle) (uint32, error) {
 		return 0, fmt.Errorf("NtQueryObject: %w", windows.NTStatus(st))
 	}
 	return info[1], nil
+}
+
+// threadCount is how many threads this process has, from the system's list
+// of processes: a count that does not depend on what the threads' own
+// access lists let this process open. (A walk with NtGetNextThread passes
+// over a thread whose list grants this process nothing.) About 7 ms.
+func threadCount() (int, error) {
+	buf := make([]byte, 1<<20)
+	for {
+		var n uint32
+		err := windows.NtQuerySystemInformation(windows.SystemProcessInformation, unsafe.Pointer(&buf[0]), uint32(len(buf)), &n)
+		if err == windows.STATUS_INFO_LENGTH_MISMATCH {
+			buf = make([]byte, n+1<<16)
+			continue
+		}
+		if err != nil {
+			return 0, fmt.Errorf("NtQuerySystemInformation: %w", err)
+		}
+		break
+	}
+	pid := uintptr(windows.GetCurrentProcessId())
+	for off := uintptr(0); off < uintptr(len(buf)); {
+		p := (*windows.SYSTEM_PROCESS_INFORMATION)(unsafe.Pointer(&buf[off]))
+		if p.UniqueProcessID == pid {
+			return int(p.NumberOfThreads), nil
+		}
+		if p.NextEntryOffset == 0 {
+			break
+		}
+		off += uintptr(p.NextEntryOffset)
+	}
+	return 0, errors.New("this process is not in the system's list of processes")
+}
+
+// sameACL: a and b hold the same entries in the same order.
+func sameACL(a, b *windows.ACL) bool {
+	if a == nil || b == nil || a.AceCount != b.AceCount {
+		return false
+	}
+	for i := uint32(0); i < uint32(a.AceCount); i++ {
+		var x, y *windows.ACCESS_ALLOWED_ACE
+		if windows.GetAce(a, i, &x) != nil || windows.GetAce(b, i, &y) != nil {
+			return false
+		}
+		if x.Header != y.Header || x.Mask != y.Mask ||
+			!(*windows.SID)(unsafe.Pointer(&x.SidStart)).Equals((*windows.SID)(unsafe.Pointer(&y.SidStart))) {
+			return false
+		}
+	}
+	return true
 }
 
 // ownToken is this process's token, opened once, before its access list is
@@ -88,7 +156,11 @@ func protect() []Control {
 	if len(os.Args) == 2 && os.Args[1] == anchorArg {
 		anchor() // the helper that keeps a console open: it does nothing else, and exits
 	}
-	sd, err := windows.SecurityDescriptorFromString(restrictedSDDL)
+	sd, err := windows.SecurityDescriptorFromString(processSDDL)
+	var threadSD *windows.SECURITY_DESCRIPTOR
+	if err == nil {
+		threadSD, err = windows.SecurityDescriptorFromString(threadSDDL)
+	}
 	set := func(do func() error) func() error {
 		return func() error {
 			if err != nil {
@@ -100,9 +172,9 @@ func protect() []Control {
 	// The threads first: a process whose own list is closed but whose
 	// threads are open is not closed.
 	threads := apply(Control{ID: "windows.thread-dacl",
-		Name:   "reading or redirecting a thread refused (every thread's access list, and the default for new ones); the owner can still end, wait for and resume a thread",
+		Name:   "reading or redirecting a thread refused (every thread's access list, and the default for new ones); the owner can still end, wait for and resume a thread, and read its access list",
 		Leaves: leavesThreads,
-	}, set(func() error { return restrictThreads(sd) }))
+	}, set(func() error { return restrictThreads(threadSD) }))
 	process := apply(Control{ID: "windows.process-dacl",
 		Name:   "reading memory, writing a dump and attaching a debugger refused (the process's access list)",
 		Leaves: "another program running as the same user can read Tenant's memory (ReadProcessMemory), write a dump of it (Task Manager's \"Create dump file\"), attach a debugger and start a thread in it",
@@ -112,7 +184,7 @@ func protect() []Control {
 	// The console host opens the process again only once its list is closed.
 	var note string
 	console := apply(Control{ID: "windows.console-host",
-		Name:   "the console host's handle to this process carries the owner's three rights and no more (the console is left and joined again once the access list is set)",
+		Name:   "the console host's handle to this process carries the rights the owner keeps and no more (the console is left and joined again once the access list is set)",
 		Leaves: "another program running as the same user can copy the full-access handle the console host (conhost.exe) holds on Tenant, and read Tenant's memory through it",
 	}, func() (err error) {
 		if !process.OK {
@@ -194,51 +266,78 @@ func restrictThreads(sd *windows.SECURITY_DESCRIPTOR) error {
 		return fmt.Errorf("the token's own access list: %w", err)
 	}
 
-	// This process's threads, one after the other (NtGetNextThread), each
-	// opened with whatever its list grants: a list of every thread on the
-	// system, which is what a Toolhelp snapshot reads, cost most of the
-	// start-up time protection adds (about 55 ms of 60).
+	// Every thread's list is established, never inferred (decision A80): a
+	// program in the moment before Protect can give a thread a list that
+	// refuses its owner WRITE_DAC and lets everyone in, one that grants this
+	// process nothing (a walk then passes over it), or one with an entry for
+	// a SID this process does not hold (another logon session of the user).
+	// So each thread whose list may be changed is given threadSDDL, every
+	// thread's list is then read back (the owner keeps READ_CONTROL for
+	// that) and compared entry by entry with threadReadBack, and the threads
+	// walked are counted against the system's own count of them. Threads
+	// come and go while this runs, so a count that differs is taken again,
+	// a few times, before it counts against the control.
+	want, err := windows.SecurityDescriptorFromString(threadReadBack)
+	if err != nil {
+		return err
+	}
+	wantACL, _, err := want.DACL()
+	if err != nil {
+		return err
+	}
 	var causes, ids []string
-	var h windows.Handle
-	for {
-		var next windows.Handle
-		st, _, _ := procNtGetNextThread.Call(uintptr(windows.CurrentProcess()), uintptr(h), windows.MAXIMUM_ALLOWED, 0, 0, uintptr(unsafe.Pointer(&next)))
-		if h != 0 {
-			windows.CloseHandle(h)
+	for try := 0; ; try++ {
+		causes, ids = nil, nil
+		walked, err := eachThread(func(h windows.Handle) {
+			var cause string
+			g, err := grantedAccess(h)
+			if err == nil && g&windows.WRITE_DAC != 0 {
+				err = windows.SetKernelObjectSecurity(h, windows.DACL_SECURITY_INFORMATION, sd)
+			}
+			switch {
+			case err != nil:
+				cause = err.Error()
+			case g&windows.READ_CONTROL == 0:
+				cause = threadUnreadable
+			default:
+				got, err := windows.GetSecurityInfo(h, windows.SE_KERNEL_OBJECT, windows.DACL_SECURITY_INFORMATION)
+				var acl *windows.ACL
+				if err == nil {
+					acl, _, err = got.DACL()
+				}
+				switch {
+				case err != nil:
+					cause = threadUnreadable
+				case !sameACL(acl, wantACL):
+					cause = threadNotClosed
+				}
+			}
+			if cause != "" {
+				if !slices.Contains(causes, cause) {
+					causes = append(causes, cause)
+				}
+				id, _, _ := procGetThreadId.Call(uintptr(h)) // 0 where the list does not let it be read
+				ids = append(ids, strconv.FormatUint(uint64(id), 10))
+			}
+		})
+		if err != nil {
+			return err
 		}
-		if windows.NTStatus(st) == windows.STATUS_NO_MORE_ENTRIES {
+		counted, err := threadCount()
+		if err != nil {
+			return err
+		}
+		if counted == walked {
 			break
 		}
-		if st != 0 {
-			return fmt.Errorf("listing the threads: NtGetNextThread: %w", windows.NTStatus(st))
-		}
-		h = next
-		// What each thread's list is, is established, never inferred from a
-		// refusal: a program in the moment before Protect can give a thread
-		// a list that refuses its owner WRITE_DAC and lets everyone in
-		// (round three of the independent test). The handle carries what the
-		// list grants this process; a list Tenant may change is set, and one
-		// it may not must grant it no more than the restricted list does.
-		// That is what every program of the same user is granted too: they
-		// carry the same user and groups, and OWNER RIGHTS applies to each
-		// of them as the owner. (The access list itself cannot be read
-		// back: the restricted list gives the owner no READ_CONTROL.)
-		g, err := grantedAccess(h)
-		switch {
-		case err != nil:
-		case g&windows.WRITE_DAC != 0:
-			err = windows.SetKernelObjectSecurity(h, windows.DACL_SECURITY_INFORMATION, sd)
-		case g&^ownerThreadRights == 0:
-			continue // the restricted list, or narrower: a thread that started after the default changed
-		default:
-			err = errors.New(threadNotClosed)
-		}
-		if err != nil {
-			if !slices.Contains(causes, err.Error()) {
-				causes = append(causes, err.Error())
+		if try == 4 {
+			cause := threadsUnsettled
+			if counted > walked {
+				cause = threadHidden
 			}
-			id, _, _ := procGetThreadId.Call(uintptr(h))
-			ids = append(ids, strconv.FormatUint(uint64(id), 10))
+			causes = append(causes, cause)
+			ids = append(ids, "("+strconv.Itoa(walked)+" walked, "+strconv.Itoa(counted)+" counted)")
+			break
 		}
 	}
 	if len(causes) > 0 {
@@ -249,6 +348,32 @@ func restrictThreads(sd *windows.SECURITY_DESCRIPTOR) error {
 			detail: "thread ids " + strings.Join(ids, ", ")}
 	}
 	return nil
+}
+
+// eachThread calls do with a handle to each thread of this process, opened
+// with whatever its list grants this process (NtGetNextThread), and returns
+// how many it walked. A thread whose list grants this process nothing is not
+// walked: Windows passes over it. (A list of every thread on the system, a
+// Toolhelp snapshot, cost about 55 ms at every start.)
+func eachThread(do func(windows.Handle)) (int, error) {
+	n := 0
+	var h windows.Handle
+	for {
+		var next windows.Handle
+		st, _, _ := procNtGetNextThread.Call(uintptr(windows.CurrentProcess()), uintptr(h), windows.MAXIMUM_ALLOWED, 0, 0, uintptr(unsafe.Pointer(&next)))
+		if h != 0 {
+			windows.CloseHandle(h)
+		}
+		if windows.NTStatus(st) == windows.STATUS_NO_MORE_ENTRIES {
+			return n, nil
+		}
+		if st != 0 {
+			return n, fmt.Errorf("listing the threads: NtGetNextThread: %w", windows.NTStatus(st))
+		}
+		h = next
+		n++
+		do(h)
+	}
 }
 
 // keepOrdinary keeps, from before the default changes: a primary copy of the
@@ -328,13 +453,13 @@ func reread(id string) (found string, whole bool) {
 		if err != nil {
 			return "", false
 		}
-		if dacl, _, err := sd.DACL(); err != nil || !closedToTheUser(dacl) {
-			found = "the process's access list gives the user's other programs more than the three rights"
+		if dacl, _, err := sd.DACL(); err != nil || !closedToTheUser(dacl, ownerProcessRights) {
+			found = "the process's access list gives the user's other programs more than the rights the owner keeps"
 		}
 		return found, true
 	case "windows.thread-dacl":
-		if dacl, err := tokenDefaultDACLOf(ownToken); err == nil && !closedToTheUser(dacl) {
-			found = "the access list a new thread gets gives the user's other programs more than the three rights"
+		if dacl, err := tokenDefaultDACLOf(ownToken); err == nil && !closedToTheUser(dacl, ownerThreadRights) {
+			found = "the access list a new thread gets gives the user's other programs more than the rights the owner keeps"
 		}
 		return found, false
 	case "windows.wer-exclusion":
@@ -355,8 +480,8 @@ func reread(id string) (found string, whole bool) {
 }
 
 // closedToTheUser: the access list gives SYSTEM and Administrators what it
-// likes, the owner no more than the three rights, and nobody else anything.
-func closedToTheUser(dacl *windows.ACL) bool {
+// likes, the owner no more than owner, and nobody else anything.
+func closedToTheUser(dacl *windows.ACL, ownerMask uint32) bool {
 	if dacl == nil { // no list at all lets everyone in
 		return false
 	}
@@ -370,7 +495,7 @@ func closedToTheUser(dacl *windows.ACL) bool {
 		}
 		switch sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart)); {
 		case sid.Equals(system), sid.Equals(admins):
-		case sid.Equals(owner) && ace.Mask&^0x101001 == 0:
+		case sid.Equals(owner) && uint32(ace.Mask)&^ownerMask == 0:
 		default:
 			return false
 		}

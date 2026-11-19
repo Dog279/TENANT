@@ -24,6 +24,7 @@ var strayAllowed = map[string]int{
 	"cmd/tenant/gstackseeds.go":     2,
 	"cmd/tenant/main.go":            2,
 	"cmd/tenant/mcpctl.go":          5,
+	"cmd/tenant/protectiongate.go":  1, // logUnprotected's line, for one-shot commands only: serve and the TUI never reach it
 	"cmd/tenant/modelctl.go":        1,
 	"cmd/tenant/peerctl.go":         16,
 	"cmd/tenant/research.go":        4,

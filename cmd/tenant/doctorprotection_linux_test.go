@@ -31,3 +31,6 @@ func undoFromOutside(t *testing.T, _ string) (env []string, undo func(t *testing
 		}
 	}, "the soft core limit is not 0"
 }
+
+// removeTestExclusion: only Windows keeps a value for a program that ran.
+func removeTestExclusion(*testing.T, string) {}

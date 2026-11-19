@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -32,6 +33,12 @@ var stillAllowed = map[string]bool{
 	"copy its token (TOKEN_DUPLICATE; the copy is no more than the attacker's own)": true,
 	"read its token as the console host does (TOKEN_READ)":                          true,
 	"end it (TerminateProcess, Task Manager's End task)":                            true,
+	// Decision A3 (kill tools) and A80 (threads read back): what those rights
+	// give, said in "what this does not do".
+	"query its information (PROCESS_QUERY_INFORMATION: exit code, times, priority)":                          true,
+	"map its address space (VirtualQueryEx: where its memory is and how it is protected, not what is in it)": true,
+	"list its handles (ProcessHandleSnapshotInformation: their numbers, kinds and rights, not the objects)":  true,
+	"read a thread's access list (READ_CONTROL on its threads)":                                              true,
 }
 
 // attackerTooStrong: an elevated administrator and SYSTEM are let in by the
@@ -404,6 +411,71 @@ var attempts = []attempt{
 	{"read the process's access list (READ_CONTROL)", func(v victimInfo) (string, error) {
 		return openProcess(v, windows.READ_CONTROL, nil)
 	}},
+	{"WriteProcessMemory (PROCESS_VM_WRITE and PROCESS_VM_OPERATION)", func(v victimInfo) (string, error) {
+		return openProcess(v, windows.PROCESS_VM_WRITE|windows.PROCESS_VM_OPERATION, func(h windows.Handle) (string, error) {
+			if v.Len == 0 {
+				return "opened for writing", nil
+			}
+			b := []byte(v.Marker) // what is there already: a real write that changes nothing
+			var n uintptr
+			return "wrote into it", windows.WriteProcessMemory(h, v.Addr, &b[0], uintptr(len(b)), &n)
+		})
+	}},
+	{"change its information (PROCESS_SET_INFORMATION)", func(v victimInfo) (string, error) {
+		return openProcess(v, windows.PROCESS_SET_INFORMATION, nil)
+	}},
+	// Decision A3: the owner keeps PROCESS_QUERY_INFORMATION, which taskkill
+	// /F, Stop-Process and Node's process.kill ask for before they end a
+	// process. What it gives another program of the same user, each tried:
+	{"query its information (PROCESS_QUERY_INFORMATION: exit code, times, priority)", func(v victimInfo) (string, error) {
+		return openProcess(v, windows.PROCESS_QUERY_INFORMATION, func(h windows.Handle) (string, error) {
+			var code uint32
+			var c, e, k, u windows.Filetime
+			if err := windows.GetExitCodeProcess(h, &code); err != nil {
+				return "", err
+			}
+			if err := windows.GetProcessTimes(h, &c, &e, &k, &u); err != nil {
+				return "", err
+			}
+			prio, err := windows.GetPriorityClass(h)
+			return fmt.Sprintf("exit code %d, started %d, priority %#x", code, c.Nanoseconds(), prio), err
+		})
+	}},
+	{"map its address space (VirtualQueryEx: where its memory is and how it is protected, not what is in it)", func(v victimInfo) (string, error) {
+		return openProcess(v, windows.PROCESS_QUERY_INFORMATION, func(h windows.Handle) (string, error) {
+			var mbi windows.MemoryBasicInformation
+			if err := windows.VirtualQueryEx(h, v.Addr, &mbi, unsafe.Sizeof(mbi)); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("the region of the marker: base %#x, %d bytes, protection %#x", mbi.BaseAddress, mbi.RegionSize, mbi.Protect), nil
+		})
+	}},
+	{"list its handles (ProcessHandleSnapshotInformation: their numbers, kinds and rights, not the objects)", func(v victimInfo) (string, error) {
+		return openProcess(v, windows.PROCESS_QUERY_INFORMATION, func(h windows.Handle) (string, error) {
+			buf := make([]byte, 1<<20)
+			var n uint32
+			if err := windows.NtQueryInformationProcess(h, 51 /* ProcessHandleSnapshotInformation */, unsafe.Pointer(&buf[0]), uint32(len(buf)), &n); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%d handles listed", *(*uintptr)(unsafe.Pointer(&buf[0]))), nil
+		})
+	}},
+	{"its token, opened through PROCESS_QUERY_INFORMATION, for writing (TOKEN_ADJUST_DEFAULT)", func(v victimInfo) (string, error) {
+		return openProcess(v, windows.PROCESS_QUERY_INFORMATION, func(h windows.Handle) (string, error) {
+			var t windows.Token
+			if err := windows.OpenProcessToken(h, windows.TOKEN_ADJUST_DEFAULT, &t); err != nil {
+				return "", fmt.Errorf("OpenProcessToken: %w", err)
+			}
+			t.Close()
+			return "opened", nil
+		})
+	}},
+	{"read a thread's access list (READ_CONTROL on its threads)", func(v victimInfo) (string, error) {
+		return everyThread(v, windows.READ_CONTROL, nil)
+	}},
+	{"open its threads for anything beyond the owner's rights (THREAD_QUERY_INFORMATION)", func(v victimInfo) (string, error) {
+		return everyThread(v, windows.THREAD_QUERY_INFORMATION, nil)
+	}},
 	// The process's token is an object of its own, reached through the right
 	// to read the process's basic details. It holds the default access list
 	// the Go runtime's new threads get: whoever can write it can undo that.
@@ -482,7 +554,48 @@ var attempts = []attempt{
 	}},
 }
 
-const restricted = "D:(A;;0x1fffff;;;SY)(A;;0x1fffff;;;BA)(A;;0x101001;;;OW)"
+// The lists a protected process and its threads carry, as read back.
+const (
+	restrictedProcess = "D:(A;;0x1fffff;;;SY)(A;;0x1fffff;;;BA)(A;;0x101401;;;OW)"
+	restrictedThread  = "D:(A;;0x1fffff;;;SY)(A;;0x1fffff;;;BA)(A;;0x121001;;;OW)"
+)
+
+// TestKillToolsEndAProtectedProcess (decision A3): taskkill /F and
+// PowerShell's Stop-Process -Force open the process with
+// PROCESS_QUERY_INFORMATION before they end it, and the owner keeps that
+// right. (Node's process.kill needs the same; Python's os.kill asks for
+// every right and stays refused. Neither is on every machine, so they are
+// not run here.)
+func TestKillToolsEndAProtectedProcess(t *testing.T) {
+	if Disabled {
+		t.Skip("built with -tags debugattach")
+	}
+	if why := attackerTooStrong(); why != "" {
+		t.Skip(why)
+	}
+	for _, tool := range [][]string{
+		{"taskkill.exe", "/F", "/PID", "%d"},
+		{"powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Stop-Process -Id %d -Force -ErrorAction Stop"},
+	} {
+		v := startVictim(t, "protected")
+		args := make([]string, len(tool))
+		for i, a := range tool {
+			args[i] = strings.ReplaceAll(a, "%d", strconv.Itoa(v.PID))
+		}
+		h, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(v.PID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := exec.Command(args[0], args[1:]...)
+		c.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NO_WINDOW}
+		out, err := CombinedOutput(c)
+		ev, _ := windows.WaitForSingleObject(h, 5000)
+		windows.CloseHandle(h)
+		if ev != windows.WAIT_OBJECT_0 {
+			t.Errorf("%s did not end the protected process: %v %s", args[0], err, out)
+		}
+	}
+}
 
 // TestWhatAProcessSeesOfItself: after Protect the process and every thread
 // the Go runtime made, before and after, carry the restricted access list;
@@ -494,9 +607,9 @@ func TestWhatAProcessSeesOfItself(t *testing.T) {
 	}
 	plain, v := startVictim(t, "plain"), startVictim(t, "protected")
 	want := map[string]string{
-		"process access list":         restricted,
-		"access list new objects get": "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x101001;;;OW)",
-		"access lists of its threads": restricted,
+		"process access list":         restrictedProcess,
+		"access list new objects get": "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x121001;;;OW)",
+		"access lists of its threads": restrictedThread,
 	}
 	for k, w := range want {
 		if v.Self[k] != w {
@@ -530,8 +643,8 @@ func TestThreadsStayClosedWhileCommandsStart(t *testing.T) {
 		t.Skip(why)
 	}
 	v := startVictim(t, "protected", "PROCPROTECT_BUSY=1")
-	if got := v.Self["access lists of its threads"]; got != restricted {
-		t.Errorf("the victim's threads carry %q, want only %q", got, restricted)
+	if got := v.Self["access lists of its threads"]; got != restrictedThread {
+		t.Errorf("the victim's threads carry %q, want only %q", got, restrictedThread)
 	}
 	t.Logf("victim: threads: %s", v.Self["info:threads"])
 	got := attack(t, v)
@@ -596,7 +709,7 @@ func TestProtectThisProcess(t *testing.T) {
 		t.Fatalf("a second Protect() = %+v", r2)
 	}
 	s := selfState()
-	if s["process access list"] != restricted || s["access lists of its threads"] != restricted {
+	if s["process access list"] != restrictedProcess || s["access lists of its threads"] != restrictedThread {
 		t.Fatalf("after Protect: %v", s)
 	}
 	// The side effect every command Tenant starts has to allow for: a pipe
@@ -674,8 +787,8 @@ func TestProtectThisProcess(t *testing.T) {
 			windows.CloseHandle(windows.Handle(h))
 		}
 	})
-	if startedInside != restricted {
-		t.Errorf("a thread Windows starts from inside Ordinary carries %q, want %q", startedInside, restricted)
+	if startedInside != restrictedThread {
+		t.Errorf("a thread Windows starts from inside Ordinary carries %q, want %q", startedInside, restrictedThread)
 	}
 	f, err := os.CreateTemp(t.TempDir(), "made-after-protect")
 	if err != nil {
@@ -771,21 +884,22 @@ func TestNowReadsTheStateAgain(t *testing.T) {
 
 	// An access list that lets the user in is not the restricted one.
 	for sddl, closed := range map[string]bool{
-		restrictedSDDL:               true,
+		processSDDL:                  true,
 		"D:(A;;GA;;;SY)(A;;GA;;;BA)": true,
-		"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x101001;;;OW)(A;;GA;;;WD)": false,
+		"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x101401;;;OW)(A;;GA;;;WD)": false,
 		"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x1fffff;;;OW)":             false,
+		"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x121001;;;OW)":             false, // the threads' list: READ_CONTROL is not the process's
 		"D:(A;;GA;;;SY)(D;;GA;;;WD)":                               false, // not a list Protect writes
 	} {
 		sd, err := windows.SecurityDescriptorFromString(sddl)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if dacl, _, _ := sd.DACL(); closedToTheUser(dacl) != closed {
+		if dacl, _, _ := sd.DACL(); closedToTheUser(dacl, ownerProcessRights) != closed {
 			t.Errorf("closedToTheUser(%s) = %v, want %v", sddl, !closed, closed)
 		}
 	}
-	if closedToTheUser(nil) {
+	if closedToTheUser(nil, ownerProcessRights) {
 		t.Error("no access list at all counts as closed")
 	}
 }

@@ -58,6 +58,7 @@ func main() {
 		writeBeginnerHelp(os.Stderr)
 		os.Exit(2)
 	}
+	runningCommand = c.Names[0]
 	if n := c.Names[0]; n != "serve" && n != "tui" { // those open the full log book themselves
 		openCommandLog = openOneShotLog
 	}

@@ -53,6 +53,7 @@ func init() { // before main, so before Protect
 	}
 	if os.Getenv("TENANT_TEST_TERMINAL") == "1" {
 		ackConsole = func() (*bufio.Reader, io.Writer, bool) { return bufio.NewReader(os.Stdin), os.Stderr, true }
+		stderrAtTerminal = func() bool { return true }
 	}
 	if path := os.Getenv("TENANT_TEST_REPORT"); path != "" {
 		afterProtect = func(r procprotect.Report) {

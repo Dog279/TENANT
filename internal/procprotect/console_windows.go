@@ -27,7 +27,7 @@ import (
 // The cure is to join again. Once the process's access list is the
 // restricted one, the process leaves its console (FreeConsole) and joins the
 // same one (AttachConsole): the host closes the old handle and opens a new
-// one, which now carries the three rights the owner keeps and no more.
+// one, which now carries the rights the owner keeps and no more.
 //
 // Leaving a console costs three things, and each is put back:
 //
@@ -309,20 +309,26 @@ func startAnchor() (end func(), pid uint32, err error) {
 	if err != nil {
 		return nil, 0, errors.New("could not be started: " + err.Error())
 	}
-	sd, err := windows.SecurityDescriptorFromString(restrictedSDDL)
+	sd, err := windows.SecurityDescriptorFromString(processSDDL)
+	var tsd *windows.SECURITY_DESCRIPTOR
+	if err == nil {
+		tsd, err = windows.SecurityDescriptorFromString(threadSDDL)
+	}
 	if err != nil {
 		return nil, 0, errors.New("could not be started: " + err.Error())
 	}
 	closed := &syscall.SecurityAttributes{Length: uint32(unsafe.Sizeof(syscall.SecurityAttributes{})), SecurityDescriptor: uintptr(unsafe.Pointer(sd))}
+	closedThread := &syscall.SecurityAttributes{Length: uint32(unsafe.Sizeof(syscall.SecurityAttributes{})), SecurityDescriptor: uintptr(unsafe.Pointer(tsd))}
 	c := exec.Command(exe, anchorArg)
 	c.Env = []string{"SystemRoot=" + os.Getenv("SystemRoot")} // nothing of this process's environment
-	c.SysProcAttr = &syscall.SysProcAttr{ProcessAttributes: closed, ThreadAttributes: closed}
+	c.SysProcAttr = &syscall.SysProcAttr{ProcessAttributes: closed, ThreadAttributes: closedThread}
 	var in io.WriteCloser
 	Ordinary(func() { in, err = c.StdinPipe() }) // a pipe can only be made there
 	if err == nil {
 		err = c.Start()
 	}
 	runtime.KeepAlive(sd)
+	runtime.KeepAlive(tsd)
 	if err != nil {
 		return nil, 0, errors.New("could not be started: " + err.Error())
 	}

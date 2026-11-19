@@ -284,6 +284,14 @@ Not stopped on Windows, and open in this release:
 
 - **Ending threads.** A program running as the same user can end Tenant, and can end, wait for
   and resume each of its threads. Ending threads stops work and reads nothing.
+- **What the owner's rights show.** On the process the owner keeps `0x101401`: end it, wait for
+  it, its basic details, and its information (`PROCESS_QUERY_INFORMATION`), which `taskkill /F`,
+  `Stop-Process -Force` and Node's `process.kill` need to end it (Python's `os.kill` asks for
+  every right and is still refused). That information is the exit code, the times, the
+  priority, where the process's memory lies and how it is protected, and its handles by number,
+  kind and rights: nothing that is in its memory. On each thread the owner keeps `0x121001`: end,
+  wait for, resume, and read its access list, which is how Tenant checks every thread's list at
+  start; it says nothing of the thread's memory or registers.
 - **The starter's handle.** Whoever started Tenant holds a handle to it from before the
   controls, with full access, for as long as it keeps it. A program of the same user can copy
   that handle out of the starter. A shell that waits for `tenant serve` is such a starter.
@@ -298,9 +306,12 @@ Not stopped on Windows, and open in this release:
 - **The error-reporting exclusion.** A program of the same user can make the Windows Error
   Reporting exclusion fail at start (delete the value and deny writes to the key), so that
   Tenant asks at a terminal whether to go on without it or, as a hidden serve, refuses to start.
-- **A thread changed in the first instant.** If a thread's access list was changed before the
-  controls applied so that Tenant may not set it, `windows.thread-dacl` is reported off ("its
-  access list is not the restricted one, …") and serve and the TUI ask, as for any missing control.
+- **A thread changed in the first instant.** Tenant reads every thread's access list back after
+  setting it, compares it entry by entry, and counts the threads against the system's own
+  count. A thread whose list cannot be read, is anything but the one Tenant set, or cannot be
+  opened at all turns `windows.thread-dacl` off ("its access list, read back, is not the
+  restricted one …", "its access list cannot be read back", "a thread does not let this process
+  open it at all …"), and serve and the TUI ask, as for any missing control.
 
 What an operator meets:
 
@@ -322,8 +333,8 @@ What an operator meets:
   service stop` then end serve without a clean stop, as they did before 0.2.0-rc.3 (the next
   start logs "The previous run ended unexpectedly"). Restart Tenant to get the helper back. For an instant at
   start a second helper, `tenant __console-anchor`, holds the console open while Tenant leaves
-  it and joins it again; that is how the console host comes to hold a handle with the owner's
-  three rights and no more. The helper is born with Tenant's own closed access list, so no
+  it and joins it again; that is how the console host comes to hold a handle with the rights
+  the owner keeps and no more. The helper is born with Tenant's own closed access list, so no
   other program can suspend it or get into it. If it is ended, or is not on the console within
   30 seconds, or the console cannot be joined again, Tenant leaves its console for good rather
   than ask anything: the console window closes, Tenant runs on with no console (serve keeps
@@ -377,6 +388,7 @@ it, and they check before they read the config, a secret or a store. No other co
 | `tenant tui` or `tenant serve`, at a terminal | It says which control is off, the system's reason and what that leaves open, and asks `Continue without it? [y/N]`. `y` or `yes` goes on and is recorded. Anything else, the end of the input included, exits 1. |
 | the service, a scheduled start, `serve --hidden`, or input or output that is not a terminal | It does not start and exits 1. The reason is in the log book (system 3030) and in the system's own log. |
 | either, once that control failing for that reason in that version was acknowledged | It starts, and says so at every start: system 2030, and a `process protection: running without …` line in the status feed (serve's stdout). |
+| any other command that opens Tenant's data (`chat`, `os`, the plugin commands, `eval`, `log` and the rest) | It is not asked and runs, and leaves a record at every start: system 2030 in the log book (`tenant logs query`), with the command, the control, the system's reason and what that leaves open, and one line on stderr when stderr is a terminal: `process protection: running without <control>: <reason>.` followed by a pointer to `tenant doctor`. `help`, `version`, `completion`, and `doctor` and `security audit` without `--fix`, open nothing and write nothing. With every control in force nothing is written. |
 
 The record is in `settings.<agent>.json`, the settings of the agent that serve or the TUI runs
 as (`main` for the service):
