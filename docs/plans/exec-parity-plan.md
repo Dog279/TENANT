@@ -106,12 +106,20 @@ write covers most prompts. Add it when a real installer needs a TTY.
   only when **every** segment of a compound command (`&& || ; | $( )`) is in the
   set, and no segment has an output redirect.
   As built it was fooled (TEN-534: `env <command>`, PowerShell method calls,
-  `$(…)` as the command, options hidden in quotes, `sort -o` and the like). The
-  rule since: each command is a bare read-only word (no path, no `VAR=value`
-  before it); a word that acts with some arguments has an argument rule
-  (`readOnlyWords` in `internal/plugins/osys/classify.go`) and takes only
-  literal arguments; `$( )` is read only as an argument of a word without a
-  rule; and a line the two shells would read differently is not read-only.
+  `$(…)` as the command, options hidden in quotes, `sort -o` and the like, a
+  network path, and a command that wrote the dispatcher's own `[DANGER: ` note
+  so that the broker judged only the text before it). The rule since
+  (`ReadOnly` in `internal/plugins/osys/classify.go`, whose comment lists what
+  still runs unasked): each command is a bare read-only word, as written (no
+  path, no `VAR=value` before it); a word that acts with some arguments has an
+  argument rule (`readOnlyWords`) and takes only literal arguments, judged as
+  sh and as PowerShell 5.1 each hand them to the program; no argument is a
+  network path, and what one command prints is no other's path (`$( )` only
+  after `echo` and `Write-Output`, no pipe into the cmdlets that read a piped
+  string as a path, no `-OutVariable`); and a line the two shells would read
+  differently is not read-only. The broker reads the command out of an
+  approval's detail whole: only an `os_exec_dangerous` detail carries the
+  note, after the command, cut at its last marker.
 - **Command rules:** tool rules learn `os_exec(<prefix> *)` patterns, for example
   `os_exec(brew install *)`, `os_exec(npm run *)` and `os_exec(rm *)` set to deny.
   They are matched per segment like Claude Code, with deny > ask > allow. "Allow

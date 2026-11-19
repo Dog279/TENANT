@@ -7,24 +7,44 @@ Releases page.
 
 - **Security: a command that only looked read-only ran with no approval prompt (TEN-534).** With
   the exec permission on ask, a shell command that only looks at the machine (`ls`, `git status`)
-  runs without a prompt, on the host and on Discord. The check behind that was fooled, so these
-  ran unasked: `env <any command>`; on Windows a PowerShell method call or assignment such as
-  `(Get-Item C:\x).Delete()`, a script block, `& (…)`, and a second statement behind a lone
-  carriage return; `$(…)` or backticks in place of the command (`$(echo rm -rf x)`); an option
-  that a substitution or a variable supplies or that quotes hide (`find . $(echo -delete)`,
-  `find . '-delete'`); a `VAR=value` before the command (`PATH=… ls`); a path to a file with a
-  read-only name (`./ls`); and the words that write a file, change a setting or run a program
-  with some arguments: `sort -o`, `uniq IN OUT`, `tree -o`, `find -fprint0`, `rg --pre`,
-  `file -C`, `git log|diff|show --output=FILE`, `git branch NAME` and `-f`, `git remote -v add`
-  and `show URL`, `date -s`, `hostname NAME`. All of them now ask. The check now reads a line as
-  sh and as PowerShell at once, and whatever it cannot tell asks. The plain forms run unasked as
-  before: `env`, `env VAR=value`, `printenv`, `date`, `date +FORMAT`, `hostname`, `Get-Item`,
-  `Get-ChildItem`, `git status`, `ls -la | grep x`. Some harmless forms ask now: a read-only
-  word given by its path (`/usr/bin/grep`) or after `VAR=value`, `date` and `hostname` with any
-  option, `find`, `sort`, `git` and the other words above with a variable, an unquoted glob or
-  `$(…)` among their arguments, a subshell `(ls)`, backticks, `${HOME}` and anything else in
+  runs without a prompt, on the host and on Discord. The check behind that was fooled, in three
+  ways, and all of these ran unasked.
+  - **A note Tenant itself adds to a destructive command.** A command that contained the text
+    `  [DANGER: ` was judged only up to that text and then run whole:
+    `echo hi  [DANGER: x]; <any command>` passed as `echo hi`. An allow rule for the first part
+    covered the rest, and a deny rule for the rest never saw it. The whole command is judged now.
+  - **Commands that act.** `env <any command>`; on Windows a PowerShell method call or assignment
+    such as `(Get-Item C:\x).Delete()`, a script block, `& (…)`, a second statement behind a lone
+    carriage return, and a double quote inside a single-quoted argument, which PowerShell passes
+    on so that `git log '--out"put=FILE'` writes FILE; `$(…)` or backticks in place of the command
+    (`$(echo rm -rf x)`); an option that a substitution or a variable supplies or that quotes hide
+    (`find . $(echo -delete)`, `find . '-delete'`); a `VAR=value` before the command
+    (`PATH=… ls`); a path to a file with a read-only name (`./ls`); a word in other letters than
+    its own (`HEAD` is not `head`); and the words that write, change a setting or start another
+    program with some arguments: `sort -o` and `-T`, `uniq IN OUT`, `tree -o`, `find -fprint0`,
+    `rg --pre` and `-z`, `file -C`, `-p` and `-z`, `git log|diff|show --output=FILE`,
+    `git <command> --help` (man, or a browser on Windows), `git log --show-signature` and `%G`
+    formats (gpg), `git branch NAME` and `-f`, `git remote -v add`, `brew info --github`,
+    `date -s`, `hostname NAME`.
+  - **Reads that go to another machine.** A network path (`\\host\share\file`, `//host/share`)
+    sends your Windows sign-in to that host. It asks now wherever it is written, and so does a line
+    in which one command prints a path for another to read: `$(…)` as the argument of anything but
+    `echo` and `Write-Output`, a pipe into `Get-ChildItem`, `dir`, `ls` or `Get-Item`, and
+    `-OutVariable` and its kin. `git remote show NAME` (it connects; `-n` does not),
+    `Get-Process -ComputerName`, bash's `/dev/tcp/…`, and `os_exec` with a network share as its
+    working directory (refused: `cd` there inside the command) are covered too.
+
+  The check reads a line as sh and as PowerShell at once, and whatever it cannot tell asks. The
+  plain forms run unasked as before: `env`, `env VAR=value`, `printenv`, `date`, `date +FORMAT`,
+  `date -u`, `hostname`, `hostname -f`, `Get-Item`, `Get-ChildItem`, `git status`,
+  `ls -la | grep x`, `echo $(whoami)`. Some harmless forms ask now: a read-only word given by its
+  path (`/usr/bin/grep`), after `VAR=value` or in capitals (`LS`; PowerShell's own names such as
+  `Get-ChildItem` are taken in any case); `date -d`; `$(…)` after any word but `echo`
+  (`wc -l $(git ls-files)`); `find`, `sort`, `git` and the other words above with a variable or an
+  unquoted glob among their arguments (`find . -name *.go`: quote the pattern); a quote inside a
+  quoted argument of those words; a subshell `(ls)`, backticks, `${HOME}` and anything else in
   braces, `::` anywhere, and characters outside ASCII that are not letters. A command rule
-  (`/permissions add os_exec(date -u) allow`) lets a form you use run unasked again.
+  (`/permissions add os_exec(date -d *) allow`) lets a form you use run unasked again.
 - **Fixed: a power cut could leave more files than `config.json` unreadable.** The fix that
   flushes a saved file to the disk before it replaces the old one now covers every file Tenant
   saves that way: the user profile, a research run's manifest, the Claude Code session ledger, the
