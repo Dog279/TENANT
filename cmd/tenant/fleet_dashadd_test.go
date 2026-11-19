@@ -2,15 +2,37 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"testing"
 
+	"tenant/internal/dashboard"
 	"tenant/internal/fleet"
 	"tenant/internal/logs/catalog"
 )
+
+// Add machine on a Tenant with no fleet, on a fleet with no address, and for a
+// name the fleet does not take: no code, and the first two say, in the page's
+// own words, the command that fixes it.
+func TestFleetDashEnrollRefusals(t *testing.T) {
+	l := newFleetLab(t)
+	d := newDashFleet(l.c, l.saved(), &l.stgMu)
+	var pe dashboard.PlainError
+	if _, err := d.Enroll("web1", false, "s"); !errors.As(err, &pe) || !strings.Contains(err.Error(), "tenant fleet init") {
+		t.Errorf("no fleet: %v", err)
+	}
+	l.must("init", "--listen", "127.0.0.1:0", "--address", "10.0.0.1:9777")
+	if _, err := d.Enroll("web 1", true, "s"); err == nil || errors.As(err, &pe) {
+		t.Errorf("a name that is not one: %v", err)
+	}
+	l.must("address", "remove", "10.0.0.1:9777")
+	if _, err := d.Enroll("web1", false, "s"); !errors.As(err, &pe) || !strings.Contains(err.Error(), "tenant fleet address add") {
+		t.Errorf("no address: %v", err)
+	}
+}
 
 // Add machine on the real dashboard of a real master (TEN-541): the API key
 // makes no code; a signed-in browser gets one in the answer, and only there;
