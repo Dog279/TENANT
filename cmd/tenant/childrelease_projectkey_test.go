@@ -53,7 +53,11 @@ func TestChildProjectKeyRefusals(t *testing.T) {
 		"no signature for a binary that carries a key": {pub1, withSig(sums, bundle, nil), true, "sent no project signature with the release"},
 		"neither signature nor bundle":                 {pub1, withSig(sums, nil, nil), false, "neither a project signature nor a signature bundle"},
 		// A good signature does not make a wrong archive name right.
-		"a good signature, another system's archive": {pub1, func() fleet.Update { p := withSig(sums, nil, good); p.Asset = "tenant_3.0.0_plan9_arm.tar.gz"; return p }(), true, "not " + asset},
+		"a good signature, another system's archive": {pub1, func() fleet.Update {
+			p := withSig(sums, nil, good)
+			p.Asset = "tenant_3.0.0_plan9_arm.tar.gz"
+			return p
+		}(), true, "not " + asset},
 	} {
 		t.Run(name, func(t *testing.T) {
 			u, dir := releaseChild(t)

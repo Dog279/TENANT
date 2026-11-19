@@ -90,7 +90,7 @@ type fakeRelease struct {
 	sums    string
 	assets  map[string][]byte // more assets of the release, by name (set before the run)
 
-	mu        sync.Mutex
+	mu         sync.Mutex
 	hubVersion string   // what /api/status reports
 	badSums    bool     // serve a checksums.txt that does not match
 	auth       []string // Authorization headers the release API saw

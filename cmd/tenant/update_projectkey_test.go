@@ -99,7 +99,9 @@ func TestUpdateProjectKey(t *testing.T) {
 				f.sums += strings.Repeat("0", 64) + "  tenant_9.9.9_plan9_x86_64.tar.gz\n" // still lists the archive rightly
 			}},
 		{name: "a signature by another key", keys: pub1 + "," + pub2, code: 1, said: "does not verify",
-			prep: func(_ *testing.T, f *fakeRelease) { f.assets[selfupdate.SignatureAsset] = projectSign(priv3, []byte(f.sums)) }},
+			prep: func(_ *testing.T, f *fakeRelease) {
+				f.assets[selfupdate.SignatureAsset] = projectSign(priv3, []byte(f.sums))
+			}},
 		{name: "a signature for another file", keys: pub1, code: 1, said: "does not verify",
 			prep: func(_ *testing.T, f *fakeRelease) {
 				f.assets[selfupdate.SignatureAsset] = projectSign(priv1, []byte("checksums of another release\n"))
@@ -112,11 +114,17 @@ func TestUpdateProjectKey(t *testing.T) {
 				f.assets[selfupdate.SignatureAsset] = sig
 			}},
 		{name: "an over-long signature", keys: pub1, code: 1, said: "checksums.txt.sig is larger than Tenant takes",
-			prep: func(_ *testing.T, f *fakeRelease) { f.assets[selfupdate.SignatureAsset] = bytes.Repeat([]byte("A"), 1<<16) }},
+			prep: func(_ *testing.T, f *fakeRelease) {
+				f.assets[selfupdate.SignatureAsset] = bytes.Repeat([]byte("A"), 1<<16)
+			}},
 		{name: "a key that does not read", keys: pub1 + ",", code: 1, said: "project key does not read",
-			prep: func(_ *testing.T, f *fakeRelease) { f.assets[selfupdate.SignatureAsset] = projectSign(priv1, []byte(f.sums)) }},
+			prep: func(_ *testing.T, f *fakeRelease) {
+				f.assets[selfupdate.SignatureAsset] = projectSign(priv1, []byte(f.sums))
+			}},
 		{name: "an over-long key list", keys: strings.Repeat(pub1, 4), code: 1, said: "project key does not read",
-			prep: func(_ *testing.T, f *fakeRelease) { f.assets[selfupdate.SignatureAsset] = projectSign(priv1, []byte(f.sums)) }},
+			prep: func(_ *testing.T, f *fakeRelease) {
+				f.assets[selfupdate.SignatureAsset] = projectSign(priv1, []byte(f.sums))
+			}},
 		{name: "a good signature and a bad cosign signature", keys: pub1, cosign: "bad", code: 1, said: "cosign verify-blob",
 			prep: func(_ *testing.T, f *fakeRelease) {
 				f.assets[selfupdate.SignatureAsset] = projectSign(priv1, []byte(f.sums))
@@ -125,10 +133,14 @@ func TestUpdateProjectKey(t *testing.T) {
 
 		{name: "signed with the only key, no cosign", keys: pub1,
 			said: "verified checksum and the project key's signature (the release carries no signature bundle for cosign)",
-			prep: func(_ *testing.T, f *fakeRelease) { f.assets[selfupdate.SignatureAsset] = projectSign(priv1, []byte(f.sums)) }},
+			prep: func(_ *testing.T, f *fakeRelease) {
+				f.assets[selfupdate.SignatureAsset] = projectSign(priv1, []byte(f.sums))
+			}},
 		{name: "signed with the second key of two", keys: pub1 + "," + pub2,
 			said: "verified checksum and the project key's signature",
-			prep: func(_ *testing.T, f *fakeRelease) { f.assets[selfupdate.SignatureAsset] = projectSign(priv2, []byte(f.sums)) }},
+			prep: func(_ *testing.T, f *fakeRelease) {
+				f.assets[selfupdate.SignatureAsset] = projectSign(priv2, []byte(f.sums))
+			}},
 		{name: "a bundle but no cosign on the machine", keys: pub1,
 			said: "verified checksum and the project key's signature (install cosign to verify the release workflow's signature as well)",
 			prep: func(t *testing.T, f *fakeRelease) {
