@@ -165,6 +165,47 @@ until it is uninstalled. A kept scheme can be given to a machine enrolled later:
 `tenant fleet enroll <name> --adopt <id>`. A new machine under an old name starts clean
 otherwise.
 
+## 5a. Updating a machine (TEN-533)
+
+```
+tenant fleet update web1                       # the latest release
+tenant fleet update web1 --version v1.4.0      # that release
+tenant fleet update --all                      # every confirmed machine, one after the other
+tenant fleet update web1 --version v1.3.0 --allow-older
+tenant fleet update old1 --arch arm64          # a machine too old to say its processor
+```
+
+The command asks the running Tenant that holds the fleet (through its dashboard, with the
+dashboard's token; `--hub ADDR` when the dashboard is not where `config.json` says), which has
+the links. That Tenant fetches the release for the machine's system and processor into
+`<data>/fleet-updates/`, verifies it as `tenant update` does, and sends it with its SHA-256.
+Each step is printed:
+
+```
+web1: fetching v1.4.0 for linux/amd64
+web1: fetched tenant_1.4.0_linux_x86_64.tar.gz (41.2 MB): verified checksum only (...)
+web1: sent 41.2 MB; the machine checked its SHA-256 and is applying it. Its background commands end at the restart
+web1: the new version reached the master in its trial run; the machine is putting it in place
+web1: back on the new version 1.4.0
+```
+
+or `web1: rolled back to "1.3.2": "<why, in the machine's words>"`, `web1: refused: …` (offline,
+not confirmed, an older version without `--allow-older`), or `web1: failed` with the reason.
+The exit is 0 only when every machine runs the version asked for.
+
+On the machine: the archive goes to `<dir>-data/update/<sha256>.part` (a dropped link resumes
+there), and nothing else is touched until it is whole and hashes right. The binary is unpacked
+beside the installed one (`.tenant-child-update/`) and run once with `version`. Then the child
+drops its link and its background commands, and runs the new binary as `child run --trial`;
+when that reaches the master (`child-update.json` step `proven`) it stops it, swaps the
+binaries (the old one stays as `tenant.prev`), and restarts into the new one: `exec` in place
+on Linux and macOS; on Windows the old process stays as a keeper of the new one, so the
+service manager and the logon task see no change. The new version marks the update done at its
+first hello; if it does not reach the master by the deadline in `child-update.json` it puts
+the old binary back itself. A trial that exits or does not reach the master within a minute is
+deleted, and the machine reconnects on the old version. `tenant child status` shows the last
+update, and an update in the middle.
+
 ## 6. When a link drops
 
 Nothing is pushed to you. A link that goes silent is given up on after two missed pings (30

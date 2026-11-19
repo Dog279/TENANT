@@ -46,6 +46,23 @@ Releases page.
   - Not in this part: a machine's memory (TEN-532); `tenant fleet update`, `tenant child rehome`,
     the dashboard's Fleet page and doctor checks (TEN-533). A picture a tool makes on a machine
     stays there (the result says so). `docs/fleet-runbook.md` has the walk-through.
+- **A fleet machine is updated over its link** (TEN-533). `tenant fleet update <name>` (or
+  `--all`, or Update on the machine's page of the dashboard) fetches the release for that
+  machine's system and processor, verifies it as `tenant update` verifies its own, and sends it
+  over the link with its SHA-256: the machine needs no way to the internet. The machine checks
+  the hash before it touches anything, runs the new version beside the old one until it reaches
+  the master, then swaps the binaries and restarts into it. A new version that exits, or does not
+  reach the master within a minute, is rolled back and the machine reconnects on the old one; a
+  machine stopped in the middle finishes or undoes the update at its next start. Background
+  commands on the machine end at the restart. An older version is sent only with
+  `--allow-older`, and an offline machine is refused (nothing is queued). The command prints each
+  step and how it ended; `tenant child status` on the machine shows the last update. The update
+  is allowed whatever link version the machine speaks.
+  - *Doctor* on a master checks each machine through the running Tenant: reachable, its version
+    against the master's, whether the master still serves its link version, and how its last
+    update went.
+  - The machine's hello now also says which processor it has (an older machine leaves it out;
+    `--arch` names it then).
 - **Fixed: on Windows, a Tenant with no console window opened one for every command it ran.** A
   Tenant started by the service manager has no console to share, so each command got a new
   console window. Such a Tenant now starts its commands with a console that has no window; one
