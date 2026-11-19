@@ -466,3 +466,33 @@ func TestResultAuditIsBounded(t *testing.T) {
 		t.Errorf("a result without a hash is sent as %s", got)
 	}
 }
+
+// pictureTools is a tool that hands the model pictures, as web_screenshot
+// and os_read_image do, and one that hands it none.
+type pictureTools struct{}
+
+func (pictureTools) All() []model.ToolSpec { return []model.ToolSpec{{Name: "shots"}, {Name: "plain"}} }
+
+func (pictureTools) Dispatch(ctx context.Context, call model.ToolCall) (string, bool, error) {
+	if call.Name == "shots" {
+		model.AttachImage(ctx, []byte("png"), "one.png")
+		model.AttachImage(ctx, []byte("png"), "two.png")
+	}
+	return "saved", false, nil
+}
+
+// A picture a tool makes on a machine is not sent: the link carries a call's
+// text and nothing else, and no model on the machine sees it. The result says
+// so, after the tool's own words, which read as if the picture had been shown.
+func TestGateSaysAPictureWasNotSent(t *testing.T) {
+	r := newGateRig(t, nil)
+	tools := r.g.Tools(pictureTools{})
+	text, failed, err := tools.Dispatch(context.Background(), model.ToolCall{ID: "c1", Name: "shots"})
+	const want = "saved\n[fleet: 2 picture(s) this tool made stayed on this machine: the link to its master carries text only, so the model has not seen them]"
+	if err != nil || failed || text != want {
+		t.Errorf("a tool that made two pictures answered %q (failed %v, %v), want %q", text, failed, err, want)
+	}
+	if text, _, _ := tools.Dispatch(context.Background(), model.ToolCall{ID: "c2", Name: "plain"}); text != "saved" {
+		t.Errorf("a tool that made no picture answered %q", text)
+	}
+}

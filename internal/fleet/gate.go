@@ -95,9 +95,29 @@ type gateKey struct{}
 
 // gatedCall collects what a call's tools asked for, for its audit record.
 type gatedCall struct {
-	mu    sync.Mutex
-	asked []AuditAsk
-	more  int
+	mu       sync.Mutex
+	asked    []AuditAsk
+	more     int
+	pictures int // images the tool handed to a model that is not here
+}
+
+func (c *gatedCall) picture() {
+	c.mu.Lock()
+	c.pictures++
+	c.mu.Unlock()
+}
+
+// unsent says, after a tool's own words, that the pictures it made did not
+// leave the machine. A tool hands a picture to the model beside its text
+// (model.AttachImage) and words its text as if the model then saw it; on a
+// child there is no model, and the link carries the text alone.
+func (c *gatedCall) unsent() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pictures == 0 {
+		return ""
+	}
+	return fmt.Sprintf("\n[fleet: %d picture(s) this tool made stayed on this machine: the link to its master carries text only, so the model has not seen them]", c.pictures)
 }
 
 func (c *gatedCall) add(a AuditAsk) {
@@ -197,13 +217,14 @@ func (s gated) Dispatch(ctx context.Context, call model.ToolCall) (string, bool,
 	default:
 		c := &gatedCall{}
 		var failed bool
-		text, failed = s.run(context.WithValue(ctx, gateKey{}, c), call)
+		tctx := model.WithImageSink(context.WithValue(ctx, gateKey{}, c), func([]byte, string) { c.picture() })
+		text, failed = s.run(tctx, call)
 		done.Outcome = AuditOK
 		if failed {
 			done.Outcome = AuditError
 		}
 		done.Asked, done.AskedMore = c.taken()
-		text += refusals(done.Asked)
+		text += refusals(done.Asked) + c.unsent()
 	}
 	done.ResultSHA256, done.ResultBytes = fingerprintOf([]byte(text)), len(text)
 	if hash, err := g.record(done); err == nil {
