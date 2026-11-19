@@ -201,40 +201,48 @@ func TestClientReadsTheMastersAnswer(t *testing.T) {
 // Connections that are not links yet have a fixed number of places; one more
 // waits its turn, and gets it when a place comes back.
 func TestHostileConnectionsWaitTheirTurn(t *testing.T) {
+	// The master's patience with a connection that says nothing is long here,
+	// so a place comes back when the test gives it back, and not by a clock
+	// the test would be racing.
 	h := newHostile(t, func(m *Manager) {
 		m.sem = make(chan struct{}, 2)
-		m.headerTime = 500 * time.Millisecond
+		m.headerTime = waitLong
 	})
 	hog := func() net.Conn {
 		c := must(net.Dial("tcp", h.addr))(t)
 		t.Cleanup(func() { _ = c.Close() })
 		return c
 	}
-	hog()
-	hog()
-	for deadline := time.Now().Add(waitLong); len(h.mgr.sem) != 2; time.Sleep(time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the two connections never took their places")
+	taken := func(n int) {
+		t.Helper()
+		for deadline := time.Now().Add(waitLong); len(h.mgr.sem) != n; time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%d places are taken, want %d", len(h.mgr.sem), n)
+			}
 		}
 	}
-	start := time.Now()
-	late := h.kid(t, "late", StateConfirmed).start()
-	late.await(LinkConnected)
-	if took := time.Since(start); took < 200*time.Millisecond {
-		t.Errorf("a third connection was served after %v, while both places were taken", took)
+	late := h.kid(t, "late", StateConfirmed)
+	first := hog()
+	hog()
+	taken(2)
+	// A third connection is not served while both places are taken, however
+	// long it waits.
+	late.start()
+	time.Sleep(300 * time.Millisecond)
+	if st := late.c.Status(); st.State == LinkConnected || len(h.mgr.sem) != 2 {
+		t.Fatalf("a third connection was served while both places were taken: the child is %q, %d places taken", st.State, len(h.mgr.sem))
 	}
+	h.intact(t) // the links there are, are not held up by it
+	// One of the two goes away: its place is the third's.
+	_ = first.Close()
+	late.await(LinkConnected)
 	h.awaitOnline(t, late.mach.ID, true)
 	h.intact(t)
-	// The master closes with connections waiting for a place: they are let go.
+	// The master closes with a connection waiting for a place: it is let go.
 	hog()
 	hog()
-	hog()
-	for deadline := time.Now().Add(waitLong); len(h.mgr.sem) != 2; time.Sleep(time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the places were not taken again")
-		}
-	}
-	time.Sleep(50 * time.Millisecond) // the third is in the listener's hands by now
+	taken(2)
+	time.Sleep(50 * time.Millisecond) // the one without a place is in the listener's hands by now
 	_ = h.mgr.Close()
 }
 

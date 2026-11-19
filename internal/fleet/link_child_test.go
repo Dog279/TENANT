@@ -203,32 +203,52 @@ func TestChildRefusesACallIDTwice(t *testing.T) {
 	}
 }
 
-// A call that loses its link is still held to its deadline, by the child.
+// What ends a tool call on the child, taken one cause at a time at the
+// child's handler: over a real link a short deadline, the master's cancel
+// and a dropped link arrive within milliseconds of each other and any of
+// them can be first. (TestLinkDroppedMidCall has the call that outlives its
+// link from end to end.)
 func TestChildEndsACallAtItsDeadlineWithoutTheLink(t *testing.T) {
 	r := newRig(t)
-	k := r.up(t, "box")
-	id := k.mach.ID
-	first := r.link(t, id)
-	done := make(chan error, 1)
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-		defer cancel()
-		_, err := r.mgr.Call(ctx, id, Call{Tool: "wait"})
-		done <- err
-	}()
-	callID := k.started().ID
-	start := time.Now()
-	k.kill()
-	if err := <-done; !errors.Is(err, ErrOutcomeUnknown) && !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("the call = %v", err)
+	k := r.kid(t, "box", StateConfirmed)
+	k.c.runCtx = context.Background()
+	call := func(l *childLink, reqCtx context.Context, callID string) (string, time.Duration) {
+		t.Helper()
+		start := time.Now()
+		raw, err := l.HandleRequest(reqCtx, methodToolsCall, json.RawMessage(`{"call_id":"`+callID+`","name":"wait","timeout_ms":100}`))
+		var res callResult
+		if err != nil || json.Unmarshal(raw, &res) != nil {
+			t.Fatalf("call %s = %s, %v", callID, raw, err)
+		}
+		return res.Text, time.Since(start)
 	}
-	r.awaitNewLink(t, id, first)
-	if _, err := r.mgr.Result(ctxFor(t), id, callID); !errors.Is(err, ErrCallRunning) {
-		t.Errorf("right after the drop the call is %v, want still running", err)
+	link := func() *childLink {
+		l := &childLink{c: k.c}
+		l.sess = mcp.NewSession(nowhere{}, l)
+		l.master.Store(LinkVersion)
+		return l
 	}
-	awaitResult(t, r, id, callID, "stopped: context deadline exceeded")
-	if took := time.Since(start); took < callGrace/2 || took > callGrace+5*time.Second {
-		t.Errorf("the child ended the call %v after the link dropped", took)
+
+	// The link is gone, and the request's context with it, as the session
+	// ends them: the session first. The tool runs on, and its own deadline,
+	// the call's plus the grace, is what ends it.
+	gone := link()
+	reqCtx, drop := context.WithCancel(context.Background())
+	_ = gone.sess.Close()
+	drop()
+	if text, took := call(gone, reqCtx, "linkgone"); text != "stopped: context deadline exceeded" || took < 100*time.Millisecond+callGrace {
+		t.Errorf("a call whose link is gone ended after %v with %q", took, text)
+	}
+	// The link is there and the request's context ends: the master gave the
+	// call up. That stops the tool at once.
+	reqCtx, drop = context.WithCancel(context.Background())
+	drop()
+	if text, _ := call(link(), reqCtx, "givenup"); text != "stopped: context canceled" {
+		t.Errorf("a call the master gave up ended with %q", text)
+	}
+	// Neither: the deadline alone.
+	if text, _ := call(link(), context.Background(), "deadline"); text != "stopped: context deadline exceeded" {
+		t.Errorf("a call left to its deadline ended with %q", text)
 	}
 }
 

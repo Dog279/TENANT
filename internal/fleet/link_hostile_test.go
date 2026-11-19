@@ -54,8 +54,7 @@ func (r *rig) dialRaw(t *testing.T, id Identity, answer func(c *rawChild, msg mc
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.dialed.Add(1)
-	conn := tls.Client(&counted{Conn: tcp, open: &r.dialed}, must(ChildTLS(id, r.id.Fingerprint))(t))
+	conn := tls.Client(newCounted(tcp, &r.dialed, nil), must(ChildTLS(id, r.id.Fingerprint))(t))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := conn.HandshakeContext(ctx); err != nil {
@@ -340,10 +339,21 @@ func TestHostileSlowBeforeTheUpgrade(t *testing.T) {
 	silent := must(net.Dial("tcp", h.addr))(t)
 	cut("no handshake", silent)
 
-	conn := must(tls.Dial("tcp", h.addr, must(ChildTLS(id, h.id.Fingerprint))(t)))(t)
-	if _, err := conn.Write([]byte("GET " + LinkPath + " HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n")); err != nil {
-		t.Fatal(err)
+	// The master's patience here is 300ms, and it applies to this test's own
+	// handshake too. On a machine too busy for that the master has cut the
+	// connection early, which is the thing under test: dial again, and do
+	// not mind a write that finds the connection already gone.
+	var conn *tls.Conn
+	for deadline := time.Now().Add(waitLong); conn == nil; {
+		c, err := tls.Dial("tcp", h.addr, must(ChildTLS(id, h.id.Fingerprint))(t))
+		if err != nil && time.Now().After(deadline) {
+			t.Fatal(err)
+		}
+		if err == nil {
+			conn = c
+		}
 	}
+	_, _ = conn.Write([]byte("GET " + LinkPath + " HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n"))
 	cut("half a request", conn)
 
 	// Many at once take no more than their places, and those come back.
@@ -369,7 +379,7 @@ func TestHostileSlowBeforeTheUpgrade(t *testing.T) {
 // that claims a version from the future is taken at its word, and judged by
 // what it then does.
 func TestHostileHello(t *testing.T) {
-	h := newHostile(t, func(m *Manager) { m.helloTime = 400 * time.Millisecond })
+	h := newHostile(t)
 	for _, tc := range []struct{ name, result string }{
 		{"a string for a version", `{"link":"1"}`},
 		{"version zero", `{"link":0}`},
@@ -384,6 +394,13 @@ func TestHostileHello(t *testing.T) {
 		{"silence", `-`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			h := h
+			if tc.result == "-" {
+				// The one case that waits for the hello's time to run out has
+				// a master of its own, which does not wait long. The others
+				// answer at once and are not held to that.
+				h = newHostile(t, func(m *Manager) { m.helloTime = 400 * time.Millisecond })
+			}
 			mach, id := h.add(t, "liar"+strconv.Itoa(len(must(h.store.Machines())(t))), StateConfirmed)
 			c, err := h.dialRaw(t, id, func(c *rawChild, msg mcp.Message) bool {
 				switch {
@@ -780,10 +797,13 @@ func TestHostileToolList(t *testing.T) {
 // A machine that dials again and again without ever finishing its hello
 // holds one connection that is not a link yet, not one per dial.
 func TestHostileManyConnectionsStuckInTheHello(t *testing.T) {
-	h := newHostile(t, func(m *Manager) { m.helloTime = 500 * time.Millisecond })
+	// The hello has its ordinary ten seconds, so that none runs out while the
+	// refusals are counted; TestHostileHello has the hello that times out.
+	h := newHostile(t)
 	mach, id := h.add(t, "bad", StateConfirmed)
 	mute := func(*rawChild, mcp.Message) bool { return true } // it answers nothing
-	if _, err := h.dialRaw(t, id, mute); err != nil {
+	stuck, err := h.dialRaw(t, id, mute)
+	if err != nil {
 		t.Fatal(err)
 	}
 	base := runtime.NumGoroutine()
@@ -794,12 +814,17 @@ func TestHostileManyConnectionsStuckInTheHello(t *testing.T) {
 			t.Fatalf("a second connection during the hello = %v, want 429", err)
 		}
 	}
-	if grew := runtime.NumGoroutine() - base; grew > 4 {
-		t.Errorf("20 refused connections left %d goroutines", grew)
+	for deadline := time.Now().Add(waitLong); runtime.NumGoroutine() > base+4; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Errorf("20 refused connections left %d goroutines", runtime.NumGoroutine()-base)
+			break
+		}
 	}
 	h.intact(t)
-	// When the hello it owes has run out of time, the machine can try again.
-	for deadline := time.Now().Add(waitLong); ; time.Sleep(20 * time.Millisecond) {
+	// The connection that owed the hello goes away: the machine's next try
+	// is taken.
+	_ = stuck.conn.Close()
+	for deadline := time.Now().Add(waitLong); ; time.Sleep(5 * time.Millisecond) {
 		if _, err := h.dialRaw(t, id, nil); err == nil {
 			break
 		} else if time.Now().After(deadline) {

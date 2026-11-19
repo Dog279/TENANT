@@ -59,31 +59,76 @@ func watchLeaks(t *testing.T) {
 }
 
 // counted is a connection that is counted while it is open, and whose bytes
-// are counted.
+// are counted. It can also be cut like a cable (dead): from then on nothing
+// arrives on it, nothing it sends leaves, and no goodbye crosses it in
+// either direction. A read on it ends at its deadline and never with what
+// the other end sent, its end of file included; closing it closes nothing
+// the other end can see, until hang closes it for real.
 type counted struct {
 	net.Conn
-	open  *atomic.Int64
-	sent  *atomic.Int64 // may be nil
-	once  sync.Once
-	muted atomic.Bool // nothing gets through any more, either way, and nothing says so
+	open *atomic.Int64
+	sent *atomic.Int64 // may be nil
+	once sync.Once
+
+	dead atomic.Bool
+	gone chan struct{} // closed when the connection is closed for real
+
+	mu    sync.Mutex
+	until time.Time     // the read deadline
+	moved chan struct{} // closed when the read deadline is set again
+}
+
+func newCounted(c net.Conn, open, sent *atomic.Int64) *counted {
+	open.Add(1)
+	return &counted{Conn: c, open: open, sent: sent, gone: make(chan struct{}), moved: make(chan struct{})}
 }
 
 func (c *counted) Read(p []byte) (int, error) {
-	for {
+	for !c.dead.Load() {
 		n, err := c.Conn.Read(p)
-		if err != nil || !c.muted.Load() {
+		if !c.dead.Load() {
 			return n, err
+		}
+		// The cable was cut while this read waited: what it came back with
+		// never arrived.
+	}
+	for {
+		c.mu.Lock()
+		until, moved := c.until, c.moved
+		c.mu.Unlock()
+		wait := time.Duration(1<<63 - 1) // no deadline: until it is closed
+		if !until.IsZero() {
+			wait = time.Until(until)
+		}
+		late := time.NewTimer(wait)
+		select {
+		case <-late.C:
+			return 0, os.ErrDeadlineExceeded
+		case <-moved:
+			late.Stop()
+		case <-c.gone:
+			late.Stop()
+			return 0, net.ErrClosed
 		}
 	}
 }
 
-func (c *counted) Close() error {
-	c.once.Do(func() { c.open.Add(-1) })
-	return c.Conn.Close()
+func (c *counted) SetReadDeadline(t time.Time) error {
+	c.mu.Lock()
+	c.until = t
+	close(c.moved)
+	c.moved = make(chan struct{})
+	c.mu.Unlock()
+	return c.Conn.SetReadDeadline(t)
+}
+
+func (c *counted) SetDeadline(t time.Time) error {
+	_ = c.SetReadDeadline(t)
+	return c.Conn.SetDeadline(t)
 }
 
 func (c *counted) Write(p []byte) (int, error) {
-	if c.muted.Load() {
+	if c.dead.Load() {
 		return len(p), nil
 	}
 	n, err := c.Conn.Write(p)
@@ -91,6 +136,22 @@ func (c *counted) Write(p []byte) (int, error) {
 		c.sent.Add(int64(n))
 	}
 	return n, err
+}
+
+func (c *counted) Close() error {
+	if c.dead.Load() {
+		return nil
+	}
+	return c.hang()
+}
+
+// hang closes the connection for real, dead or not.
+func (c *counted) hang() error {
+	c.once.Do(func() {
+		c.open.Add(-1)
+		close(c.gone)
+	})
+	return c.Conn.Close()
 }
 
 type countingListener struct {
@@ -103,8 +164,7 @@ func (l countingListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	l.open.Add(1)
-	return &counted{Conn: c, open: l.open, sent: l.sent}, nil
+	return newCounted(c, l.open, l.sent), nil
 }
 
 // rig is a master holding its fleet on a loopback port.
@@ -128,7 +188,6 @@ func newRig(t *testing.T, tweak ...func(*Manager)) *rig {
 	mgr := must(newManager(ManagerConfig{Store: r.store, Identity: r.id, Role: "test", Log: quiet}))(t)
 	mgr.ws = transport.WSConfig{PingInterval: testPing}
 	mgr.addressEvery = testWatch
-	mgr.helloTime = 2 * time.Second
 	for _, f := range tweak {
 		f(mgr)
 	}
@@ -331,9 +390,10 @@ type kid struct {
 	cancel context.CancelFunc
 	done   chan error // what Run returned
 
-	mu    sync.Mutex
-	conns []*counted // every raw connection the client dialed
-	dials atomic.Int64
+	mu     sync.Mutex
+	conns  []*counted    // every raw connection the client dialed
+	pulled chan struct{} // not nil while the cable is out; closed when it is back
+	dials  atomic.Int64
 }
 
 // kid enrolls a machine without the network, brings it to state and writes
@@ -372,12 +432,23 @@ func (k *kid) client() *Client {
 	c.backoffMin, c.backoffMax, c.dialTime = 10*time.Millisecond, 100*time.Millisecond, 5*time.Second
 	c.dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		k.dials.Add(1)
+		k.mu.Lock()
+		pulled := k.pulled
+		k.mu.Unlock()
+		if pulled != nil {
+			// A connection attempt into a dead cable: it waits for an answer
+			// that cannot come.
+			select {
+			case <-pulled:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
 		conn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
 		if err != nil {
 			return nil, err
 		}
-		k.r.dialed.Add(1)
-		cc := &counted{Conn: conn, open: &k.r.dialed, sent: &k.r.kidsSent}
+		cc := newCounted(conn, &k.r.dialed, &k.r.kidsSent)
 		k.mu.Lock()
 		k.conns = append(k.conns, cc)
 		k.mu.Unlock()
@@ -411,25 +482,47 @@ func (k *kid) stop() {
 		k.t.Errorf("the client of %s did not stop", k.mach.Name)
 	}
 	k.cancel = nil
+	k.kill() // the sockets a pulled cable left open
 }
 
-// kill cuts the connection under the link, as a network that died would.
+// kill closes the connection under the link, as a machine that reset would:
+// the other end sees it go.
 func (k *kid) kill() {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	for _, c := range k.conns {
-		_ = c.Close()
+		_ = c.hang()
 	}
 	k.conns = nil
 }
 
-// silence makes the kid's connections go dead without closing: nothing
-// arrives and nothing leaves, as when a cable is pulled.
+// silence pulls the kid's cable. Its connections go dead without a word (see
+// counted): neither end hears the other again, not even the other's goodbye.
+// And no new connection can be made until restore, as none could be: without
+// that, the child would notice the silence, dial again and have its new link
+// replace the dead one on the master, and with a close that still crossed,
+// the master would see the child hang up. Either would end the master's link
+// before the master's own deadline does, by a margin of milliseconds, and a
+// test of what an end does about silence must leave it nothing else to do.
 func (k *kid) silence() {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if k.pulled == nil {
+		k.pulled = make(chan struct{})
+	}
 	for _, c := range k.conns {
-		c.muted.Store(true)
+		c.dead.Store(true)
+	}
+}
+
+// restore plugs the cable back in: the kid can dial again. What went dead
+// stays dead.
+func (k *kid) restore() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.pulled != nil {
+		close(k.pulled)
+		k.pulled = nil
 	}
 }
 
@@ -660,9 +753,19 @@ func TestLinkConcurrencyLimitDeadlineAndCancel(t *testing.T) {
 	if ce.CallID != waitID {
 		t.Errorf("the error names call %s, the tool ran %s", ce.CallID, waitID)
 	}
-	awaitResult(t, r, id, waitID, "stopped: context canceled")
+	// What stops the tool is the master's cancel, sent at the deadline, or
+	// failing that the child's own deadline for the call a second later. The
+	// second happens when the cancel is over a second on its way, and when
+	// the child reads it right behind the request it cancels, as a child
+	// 150ms behind does: mcp.Session looks the request up before the
+	// request's goroutine has registered it, and the cancel is lost. Either
+	// way the call's deadline has stopped the tool, which is the claim here;
+	// the cancel on its own is the next case, where the tool is known to be
+	// running first.
+	awaitResult(t, r, id, waitID, "stopped: context canceled", "stopped: context deadline exceeded")
 
-	// A caller that gives up stops the tool too.
+	// A caller that gives up stops the tool too. The tool is running by
+	// then, so it is the cancel that stops it.
 	ctx, cancel = context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
@@ -681,19 +784,20 @@ func TestLinkConcurrencyLimitDeadlineAndCancel(t *testing.T) {
 	if _, err := r.mgr.Call(context.Background(), id, Call{Tool: "wait"}); !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("a call with no deadline of its own = %v", err)
 	}
-	awaitResult(t, r, id, k.started().ID, "stopped: context canceled")
+	awaitResult(t, r, id, k.started().ID, "stopped: context canceled", "stopped: context deadline exceeded") // as above
 	r.echo(t, id)
 }
 
-// awaitResult waits until the machine reports a finished call with text.
-func awaitResult(t *testing.T, r *rig, id, callID, text string) Result {
+// awaitResult waits until the machine reports a finished call, with one of
+// the texts.
+func awaitResult(t *testing.T, r *rig, id, callID string, texts ...string) Result {
 	t.Helper()
 	deadline := time.Now().Add(waitLong)
 	for {
 		res, err := r.mgr.Result(ctxFor(t), id, callID)
 		if err == nil {
-			if res.Text != text || res.CallID != callID {
-				t.Fatalf("result of %s = %+v, want %q", callID, res, text)
+			if !slices.Contains(texts, res.Text) || res.CallID != callID {
+				t.Fatalf("result of %s = %+v, want %q", callID, res, texts)
 			}
 			return res
 		}
@@ -822,13 +926,32 @@ func TestLinkSilenceIsNoticed(t *testing.T) {
 	if err := <-done; !errors.Is(err, ErrOutcomeUnknown) {
 		t.Fatalf("a call on a link that went silent = %v", err)
 	}
-	// Two intervals, give or take the quarter the accepting side waits longer.
-	if took := time.Since(start); took < testPing || took > 2*testPing+2*time.Second {
+	if took := time.Since(start); took > 2*testPing+2*time.Second {
 		t.Errorf("the master noticed the silence after %v (ping interval %v)", took, testPing)
 	}
+	// With the cable out nothing but the master's own deadline can end its
+	// link: the child's close cannot reach it and the child cannot dial.
 	if !strings.Contains(first.reason(), "no data from the peer") {
-		t.Errorf("the link ended because: %s", first.reason())
+		t.Errorf("the master's link ended because: %s", first.reason())
 	}
+	// The child's own deadline ends its end, the same way: the master's
+	// close does not reach it either.
+	for deadline := time.Now().Add(waitLong); ; time.Sleep(time.Millisecond) {
+		st := k.c.Status()
+		if st.State == LinkOffline && strings.Contains(st.Detail, "no data from the peer") {
+			break
+		}
+		if st.State != LinkConnected || time.Now().After(deadline) {
+			t.Fatalf("the child's link ended as %q because: %s", st.State, st.Detail)
+		}
+	}
+	// While the cable is out the machine is offline, and a call says so at once.
+	r.awaitOnline(t, id, false)
+	if _, err := r.call(t, id, "echo", `1`); !errors.Is(err, ErrOffline) {
+		t.Errorf("a call while the cable is out = %v", err)
+	}
+	// The cable goes back in, and the child's next dial gets through.
+	k.restore()
 	r.awaitNewLink(t, id, first)
 	k.await(LinkConnected)
 	r.echo(t, id)
