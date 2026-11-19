@@ -175,20 +175,23 @@ func checkFleetMachine(ctx context.Context, e *doctorEnv, m fleet.Machine, view 
 		notes = append(notes, "its last update did not go through: "+u.Lines[len(u.Lines)-1])
 		worse(statusWarn, "")
 	}
-	// The memory half (TEN-532): "memory in step" comes in as the API's memory
-	// field once fleetMemoryOf is supplied (fleet_dashctl.go); until then it
-	// is not_available and says nothing here. "Recovery key proven" is the
-	// fleet's, not a machine's: TEN-532 adds its own check beside these, from
-	// the proof `tenant fleet init` records.
+	// Memory in step: the API's memory field is the holder's last comparison
+	// with the machine (memoryStateIn). "Recovery key proven" is the fleet's,
+	// not a machine's: one recovery key seals every machine's copies, and
+	// checkFleetKeys reports the proof `tenant fleet init` recorded.
+	detail := strings.TrimSpace(am.MemoryDetail)
 	switch am.Memory {
-	case "behind":
-		notes = append(notes, "memory: behind "+strings.TrimSpace(am.MemoryDetail))
-		worse(statusWarn, "")
-	case "needs_recovery_key":
-		notes = append(notes, "memory: needs the recovery key "+strings.TrimSpace(am.MemoryDetail))
-		worse(statusFail, "")
-	case "in_step":
+	case memoryInStep:
 		notes = append(notes, "memory in step")
+	case memoryBehind:
+		notes = append(notes, "memory behind: "+detail)
+		worse(statusWarn, "")
+	case memoryNeedsKey:
+		notes = append(notes, "memory needs the recovery key: "+detail)
+		worse(statusFail, "tenant fleet recover "+m.Name+" (with the recovery identity of the fleet that made its copies)")
+	default:
+		notes = append(notes, "memory not known: "+firstNonEmpty(detail, "the running Tenant does not say"))
+		worse(statusWarn, "")
 	}
 	r.Detail = strings.Join(notes, "; ")
 	return r

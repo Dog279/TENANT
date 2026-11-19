@@ -24,6 +24,8 @@ type fakeFleet struct {
 	code  string // the six digits its pending machines show
 	err   error  // what every change fails with
 	calls []string
+	// identity is the last recovery identity Recover was handed.
+	identity string
 }
 
 func (f *fakeFleet) View() FleetView {
@@ -132,6 +134,20 @@ func (f *fakeFleet) Recopy(id, from string) error {
 		m.Drift, m.HasScheme, m.Perms = nil, true, fleetPerms("ask")
 	}
 	return err
+}
+
+func (f *fakeFleet) Recover(id, was string, identity []byte) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.identity = string(identity)
+	clear(identity)
+	if _, err := f.change("recover", id, was); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(f.identity) != "AGE-SECRET-KEY-1TEST" {
+		return "", PlainError("that is not a recovery identity")
+	}
+	return "generation 3 was read", nil
 }
 
 func (f *fakeFleet) Update(id, version, arch string, allowOlder bool) error {
@@ -1180,5 +1196,74 @@ func TestFleetUpdateStartsAndShows(t *testing.T) {
 	}
 	if page := get(t, s, "/fleet/"+fleetPending).Body.String(); strings.Contains(page, `action="/fleet/update"`) {
 		t.Error("a pending machine's page offers an update")
+	}
+}
+
+// postIdentity is the command line's POST /fleet/recover: the machine in
+// the URL, the recovery identity the whole body.
+func postIdentity(h http.Handler, query, body string, set func(*http.Request)) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(http.MethodPost, "/fleet/recover?"+query, strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/octet-stream")
+	if set != nil {
+		set(r)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	return rec
+}
+
+// The recovery identity reaches the control as the request's body, from a
+// signed-in browser or the API key, after the second click; never from a
+// form field, another site, or for a machine that is not the fleet's. What
+// the control says comes back as the flash.
+func TestFleetRecover(t *testing.T) {
+	f := fleetFake(3)
+	s := fleetServer(f)
+	h := s.served()
+	ok := "machine=" + fleetConfirmed + "&confirm=yes"
+	for _, tc := range []struct {
+		name, query, body string
+		set               func(*http.Request)
+		code              int
+		want              string
+	}{
+		{"signed out", ok, "AGE-SECRET-KEY-1TEST", func(r *http.Request) { here(r); r.Header.Del("Cookie") }, http.StatusUnauthorized, ""},
+		{"a wrong API key", ok, "AGE-SECRET-KEY-1TEST", bearer("nope"), http.StatusForbidden, ""},
+		{"another site", ok, "AGE-SECRET-KEY-1TEST", and(here, header("Origin", "http://evil.example")), http.StatusForbidden, ""},
+		{"without the second click", "machine=" + fleetConfirmed, "AGE-SECRET-KEY-1TEST", here, http.StatusPreconditionRequired, notConfirmed},
+		{"an unknown machine", "machine=m9999999999999999&confirm=yes", "AGE-SECRET-KEY-1TEST", here, http.StatusSeeOther, fleetGone},
+		{"no identity", ok, "", here, http.StatusSeeOther, "the recovery identity is the body"},
+		{"an identity too long to be one", ok, strings.Repeat("A", maxRecoveryIdentity+1), here, http.StatusSeeOther, "the recovery identity is the body"},
+	} {
+		before := f.called()
+		rec := postIdentity(h, tc.query, tc.body, tc.set)
+		_, msg, errMsg := fleetFlash(rec)
+		if rec.Code != tc.code || msg != "" || !strings.Contains(errMsg+rec.Body.String(), tc.want) {
+			t.Errorf("%s: %d, msg %q, err %q, want %d with %q", tc.name, rec.Code, msg, errMsg, tc.code, tc.want)
+		}
+		if got := f.called(); !slices.Equal(got, before) {
+			t.Errorf("%s reached the control: %q", tc.name, got[len(before):])
+		}
+	}
+	// As a form field it is not read: the body is the form, not an identity.
+	rec := sendForm(h, http.MethodPost, "/fleet/recover", url.Values{"machine": {fleetConfirmed}, "confirm": {"yes"}, "identity": {"AGE-SECRET-KEY-1TEST"}}, here)
+	if _, _, errMsg := fleetFlash(rec); !strings.Contains(errMsg, "the recovery identity is the body") || f.identity != "" {
+		t.Errorf("a form field: %d, err %q, the control got %q", rec.Code, errMsg, f.identity)
+	}
+	rec = postIdentity(h, ok+"&was=m00000000000000aa", "AGE-SECRET-KEY-1TEST\n", here)
+	if page, msg, errMsg := fleetFlash(rec); rec.Code != http.StatusSeeOther || page != "/fleet/"+fleetConfirmed || errMsg != "" || !strings.Contains(msg, "generation 3 was read") {
+		t.Fatalf("recover: %d %s msg %q err %q", rec.Code, page, msg, errMsg)
+	}
+	if got := f.called(); got[len(got)-1] != "recover|"+fleetConfirmed+"|m00000000000000aa" {
+		t.Errorf("the control was asked %q", got)
+	}
+	// The command line's way in, with the API key; a wrong identity is the
+	// control's refusal.
+	rec = postIdentity(h, ok, "AGE-SECRET-KEY-1WRONG", func(r *http.Request) {
+		r.RemoteAddr, r.Host = "127.0.0.1:50000", "127.0.0.1:9770"
+		bearer("s3cret")(r)
+	})
+	if _, _, errMsg := fleetFlash(rec); rec.Code != http.StatusSeeOther || !strings.Contains(errMsg, "not a recovery identity") {
+		t.Errorf("a wrong identity with the API key: %d, err %q", rec.Code, errMsg)
 	}
 }

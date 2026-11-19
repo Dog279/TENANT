@@ -247,6 +247,61 @@ func TestFleetInitMakesTheKeysOnce(t *testing.T) {
 	}
 }
 
+// A recovery key that was recorded and never proven (a fleet.json from before
+// the proof, or put right by hand) is doctor's warning, with the command that
+// proves it; init at a terminal then asks for the identity the operator kept,
+// records the proof only for the right one, and makes nothing new.
+func TestFleetRecoveryKeyNeverProven(t *testing.T) {
+	l := newFleetLab(t)
+	op := operator(nil)
+	withOperator(t, op.open)
+	l.must("init", "--listen", "127.0.0.1:0")
+	kept := identityOnScreen.FindString(op.shown())
+	store := fleet.Open(l.cfg)
+	rec, _, err := store.Recovery()
+	if err != nil || kept == "" {
+		t.Fatal(err)
+	}
+	if err := store.SetRecovery(rec, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	e := &doctorEnv{c: l.c}
+	r := checkFleetKeys(context.Background(), e)
+	if r.Status != statusWarn || !strings.Contains(r.Detail, "the recovery key was never proven") ||
+		r.Fix != "tenant fleet init, at a terminal: it asks for the recovery identity you kept and proves it" {
+		t.Fatalf("doctor on an unproven recovery key: %s %q fix %q", r.Status.tag(), r.Detail, r.Fix)
+	}
+	other, _, err := shadow.NewRecovery()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stranger string
+	_ = other.With(func(p []byte) error { stranger = string(p); return nil })
+	_ = other.Release()
+	said := notes(t)
+	asked := operator([]string{stranger, stranger, stranger})
+	withOperator(t, asked.open)
+	if _, err := l.run("init"); !errors.Is(err, errRecoveryNotSetUp) || !strings.Contains(said.String(), "still not proven") {
+		t.Fatalf("init given another identity: %v, %s", err, said)
+	}
+	if _, proven, _ := store.Recovery(); !proven.IsZero() {
+		t.Fatal("another identity was taken as the proof")
+	}
+	asked = operator([]string{stranger, kept})
+	withOperator(t, asked.open)
+	key := readRaw(t, fleet.KeyPath(l.cfg))
+	out := l.must("init")
+	if r2, proven, _ := store.Recovery(); r2 != rec || proven.IsZero() || !strings.Contains(out, "recovery key   proven") {
+		t.Fatalf("after the identity was given: %q %v\n%s", r2, proven, out)
+	}
+	if identityOnScreen.MatchString(asked.shown()) || !bytes.Equal(key, readRaw(t, fleet.KeyPath(l.cfg))) {
+		t.Fatal("proving the recovery key showed an identity or made a new key")
+	}
+	if r := checkFleetKeys(context.Background(), e); r.Status == statusWarn && strings.Contains(r.Detail, "never proven") || !strings.Contains(r.Detail, "the recovery key was proven") {
+		t.Fatalf("doctor after the proof: %s %q", r.Status.tag(), r.Detail)
+	}
+}
+
 // A fleet made before there was memory (an identity, no fleet key, no
 // recovery key) keeps working, and gets both at its next init.
 func TestFleetMadeBeforeMemory(t *testing.T) {

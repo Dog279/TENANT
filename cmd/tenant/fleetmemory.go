@@ -504,6 +504,89 @@ func (m *fleetMemory) take(ctx context.Context, id string, d shadow.Decision) ta
 	return takeAgain
 }
 
+// errNothingToRecover: the machine holds no intact copy under another key.
+var errNothingToRecover = errors.New("the machine holds no copy of its memory made under another fleet key: there is nothing for the recovery identity to read")
+
+// recoverWith is the operator bringing the recovery identity for machine id
+// (tenant fleet recover): the newest intact copy the machine holds under
+// another fleet key is fetched, read with the identity, and becomes this
+// machine's memory here (shadow.AdoptAs); it then goes to the machine at
+// once as a generation under this master's key. was is the id the machine
+// had when the copy was made ("" for id itself): a machine re-homed to a
+// master rebuilt from nothing has a new id. The machine's copies under the
+// old key stay where they are. identity is the caller's to release.
+func (m *fleetMemory) recoverWith(ctx context.Context, id, was string, identity *secrets.LockedBuffer) (string, error) {
+	k, err := shadow.ParseRecovery(identity)
+	if err != nil {
+		return "", errors.New("that is not a recovery identity (it starts AGE-SECRET-KEY-1)")
+	}
+	defer k.Close()
+	if was == "" {
+		was = id
+	}
+	st, err := m.shadows.State(id)
+	if err != nil {
+		return "", err
+	}
+	copies, err := m.mgr.MemoryList(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	// The machine's newest intact copy, a copy under another key first among
+	// equals (as "who wins" orders them): only when that one is under another
+	// key is there anything to read. An older copy under the old key, kept
+	// after a recovery, is never read over a newer one of this master's.
+	var pick *shadow.Copy
+	for i := range copies {
+		c := &copies[i]
+		if c.OK && (pick == nil || c.Gen > pick.Gen || c.Gen == pick.Gen && c.KeyID != st.KeyID) {
+			pick = c
+		}
+	}
+	if pick == nil || pick.KeyID == st.KeyID {
+		return "", errNothingToRecover
+	}
+	blob, err := m.mgr.MemoryGet(ctx, id, *pick)
+	if err != nil {
+		return "", fmt.Errorf("the machine's generation %d could not be fetched: %w", pick.Gen, err)
+	}
+	got, err := m.shadows.AdoptAs(ctx, id, was, *pick, blob, k)
+	switch {
+	case errors.Is(err, shadow.ErrNotRecovery):
+		return "", errors.New("that recovery identity does not open the machine's copy: it was made under another fleet, whose recovery identity is the one to bring")
+	case errors.Is(err, shadow.ErrDamaged) && was == id:
+		return "", fmt.Errorf("%w (a machine re-homed to this master had another id under its old one: `tenant child status` on it, and --was ID)", err)
+	case err != nil:
+		return "", err
+	}
+	if got.Reembed {
+		m.mu.Lock()
+		m.reembed[id] = true
+		m.mu.Unlock()
+	}
+	// Until the machine holds a generation under this key newer than its old
+	// copies, "who wins" goes on asking for the recovery key: send it now.
+	c, nb, err := m.shadows.Newest(id)
+	if err == nil {
+		err = m.mgr.MemoryPut(ctx, id, c, nb)
+	}
+	m.kick(id)
+	done := fmt.Sprintf("its generation %d, made under another fleet key, was read with the recovery identity and is generation %d under this master's key", pick.Gen, got.Gen)
+	if err != nil {
+		return done + "; it is not on the machine yet (" + err.Error() + "), and goes there at the next comparison", nil
+	}
+	return done + ", on both sides", nil
+}
+
+// fleetRecover is recoverWith on the process that holds the fleet.
+func fleetRecover(ctx context.Context, id, was string, identity *secrets.LockedBuffer) (string, error) {
+	mem, err := fleetMem()
+	if err != nil {
+		return "", err
+	}
+	return mem.recoverWith(ctx, id, was, identity)
+}
+
 // reembedIfOwed gives a rebuilt shadow its vectors back with the existing
 // re-embed functions, then writes it out.
 func (m *fleetMemory) reembedIfOwed(ctx context.Context, id string) {
@@ -866,7 +949,7 @@ func checkFleetKeys(_ context.Context, e *doctorEnv) checkResult {
 	case rec == "":
 		worse(statusWarn, "no recovery key: if the fleet key is lost, every machine's memory is lost with it", "tenant fleet init, at a terminal")
 	case proven.IsZero():
-		worse(statusWarn, "the recovery key was never proven: nothing shows its identity was saved", "")
+		worse(statusWarn, "the recovery key was never proven: nothing shows its identity was saved", "tenant fleet init, at a terminal: it asks for the recovery identity you kept and proves it")
 	default:
 		notes = append(notes, "the recovery key was proven "+fleetTime(proven))
 	}

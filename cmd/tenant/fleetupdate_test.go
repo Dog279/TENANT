@@ -713,7 +713,7 @@ func TestFleetDoctorChecks(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		rows := []map[string]any{
 			{"id": "m1", "online": true, "link": "online since x", "link_version": 1, "reported_by_the_machine": map[string]any{"version": fleetQuote("1.0.0")},
-				"memory": "not_available", "update": map[string]any{"stage": "rolled_back", "running": false, "lines": []string{`rolled back to "1.0.0": "it broke"`}}},
+				"memory": "not_available", "memory_detail": "known to the process that holds the fleet", "update": map[string]any{"stage": "rolled_back", "running": false, "lines": []string{`rolled back to "1.0.0": "it broke"`}}},
 			{"id": "m2", "online": false, "link": "offline, last seen 2026-11-19 08:00"},
 			{"id": "m3", "online": true, "link": "online", "link_version": 0, "reported_by_the_machine": map[string]any{"version": fleetQuote("2.0.0")}},
 			{"id": "m4", "online": true, "link": "online", "link_version": 1, "reported_by_the_machine": map[string]any{"version": fleetQuote("2.0.0")},
@@ -745,10 +745,10 @@ func TestFleetDoctorChecks(t *testing.T) {
 		status checkStatus
 		has    []string
 	}{
-		"behind":   {statusWarn, []string{"runs 1.0.0, behind this master's 2.0.0", "its last update did not go through"}},
+		"behind":   {statusWarn, []string{"runs 1.0.0, behind this master's 2.0.0", "its last update did not go through", "memory not known: known to the process that holds the fleet"}},
 		"gone":     {statusWarn, []string{"not reachable: offline, last seen"}},
 		"unserved": {statusFail, []string{"speaks link version 0"}}, // the one this master does not serve today
-		"keyless":  {statusFail, []string{"memory: needs the recovery key key b0b"}},
+		"keyless":  {statusFail, []string{"memory needs the recovery key: key b0b"}},
 		"same":     {statusOK, []string{"runs 2.0.0, as this master does", "memory in step"}},
 		"waits":    {statusWarn, []string{"waiting for confirmation"}},
 		"resting":  {statusSkip, []string{"paused"}},
@@ -762,8 +762,9 @@ func TestFleetDoctorChecks(t *testing.T) {
 			}
 		}
 	}
-	if got["behind"].Fix != "tenant fleet update behind" || got["unserved"].Fix != "tenant fleet update unserved" {
-		t.Errorf("the fixes: %q, %q", got["behind"].Fix, got["unserved"].Fix)
+	if got["behind"].Fix != "tenant fleet update behind" || got["unserved"].Fix != "tenant fleet update unserved" ||
+		!strings.HasPrefix(got["keyless"].Fix, "tenant fleet recover keyless ") {
+		t.Errorf("the fixes: %q, %q, %q", got["behind"].Fix, got["unserved"].Fix, got["keyless"].Fix)
 	}
 	// A Tenant that does not hold the fleet cannot say who is online.
 	held.set(false)

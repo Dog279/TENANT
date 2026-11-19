@@ -14,6 +14,7 @@ import (
 
 	"tenant/internal/fleet"
 	"tenant/internal/fleet/shadow"
+	"tenant/internal/secrets"
 )
 
 // The rest of "who wins" (fleetmemory_test.go has the harness), revoke,
@@ -326,5 +327,92 @@ func TestFleetMemoryAnOlderChild(t *testing.T) {
 	if res, err := fleetManager().Call(context.Background(), l.ch.id, fleet.Call{Tool: "os_exec",
 		Confirm: func(context.Context, string, string) bool { return true }}); err != nil || res.Text != "Linux" {
 		t.Fatalf("a call to the older child: %+v %v", res, err)
+	}
+}
+
+// The operator brings the recovery identity (tenant fleet recover): a
+// machine marked "needs recovery key" has its memory read from its copy
+// under the old key, which becomes its memory here and goes to the machine
+// as a generation under the new key; the old copies stay. Before that,
+// another identity, or none, reads nothing and changes nothing.
+func TestFleetRecoverWithTheRecoveryIdentity(t *testing.T) {
+	for name, rebuilt := range map[string]bool{"its key file replaced": false, "rebuilt from nothing": true} {
+		t.Run(name, func(t *testing.T) {
+			op := operator(nil)
+			withOperator(t, op.open)
+			l := newMemLab(t)
+			kept := identityOnScreen.FindString(op.shown())
+			if kept == "" {
+				t.Fatal("init showed no recovery identity")
+			}
+			l.note("web1 runs nginx")
+			l.mint()
+			l.compare(memoryInStep, "generation 1 on both sides")
+			onChild := l.childFiles()
+			l.reopen(func() {
+				if err := os.Remove(fleet.KeyPath(l.cfg)); err != nil {
+					t.Fatal(err)
+				}
+				if err := ensureFleetKey(l.cfg); err != nil {
+					t.Fatal(err)
+				}
+				if rebuilt {
+					if err := os.RemoveAll(fleetShadowDir(l.data)); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+			l.await(memoryNeedsKey, "another fleet key")
+			ctx := context.Background()
+			bring := func(identity, was string) (string, error) {
+				buf, err := secrets.NewLockedBuffer([]byte(identity))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer buf.Release()
+				return l.mem().recoverWith(ctx, l.ch.id, was, buf)
+			}
+			other, _, err := shadow.NewRecovery()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stranger string
+			_ = other.With(func(p []byte) error { stranger = string(p); return nil })
+			_ = other.Release()
+			for what, try := range map[string][2]string{
+				"another fleet's recovery identity": {stranger, ""},
+				"not an identity":                   {"age1notanidentity", ""},
+				"the right identity and another id": {kept, "m00000000000000cc"},
+			} {
+				if said, err := bring(try[0], try[1]); err == nil {
+					t.Fatalf("%s was taken: %s", what, said)
+				}
+				if got := l.childFiles(); !sameFiles(got, onChild) {
+					t.Fatalf("%s changed the machine's copies", what)
+				}
+				l.compare(memoryNeedsKey, "another fleet key")
+			}
+			said, err := bring(kept, "")
+			if err != nil || !strings.Contains(said, "read with the recovery identity") || !strings.Contains(said, "on both sides") {
+				t.Fatalf("recover: %q, %v", said, err)
+			}
+			l.await(memoryInStep, "on both sides")
+			if facts, _ := l.facts(); facts != "web1 runs nginx" {
+				t.Fatalf("the recovered memory holds %q", facts)
+			}
+			now := l.childFiles()
+			for name := range onChild {
+				if _, ok := now[name]; !ok {
+					t.Errorf("the old key's copy %s is gone from the machine", name)
+				}
+			}
+			if len(now) != len(onChild)+1 {
+				t.Fatalf("the machine keeps %d copies, had %d", len(now), len(onChild))
+			}
+			// Once is enough: the machine's newest copy is this master's now.
+			if _, err := bring(kept, ""); !errors.Is(err, errNothingToRecover) {
+				t.Fatalf("a second recover: %v", err)
+			}
+		})
 	}
 }
