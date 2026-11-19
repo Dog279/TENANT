@@ -25,8 +25,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mattn/go-isatty"
-
 	"tenant/internal/backup"
 	"tenant/internal/lifecycle"
 	"tenant/internal/logs/catalog"
@@ -260,7 +258,7 @@ func runUpdate(ctx context.Context, u *updateEnv, o updateOpts) error {
 	// stops and the running version stays. --yes answers the update's own
 	// question, not this one.
 	f, isFile := u.stdin.(*os.File)
-	atTerminal := !isFile || isatty.IsTerminal(f.Fd())
+	atTerminal := !isFile || fileIsTerminal(f) // a Git Bash window counts, as it does for serve
 	in := bufio.NewReader(u.stdin)
 	newReport, err := reportedProtection(smokeOut)
 	if err != nil {
