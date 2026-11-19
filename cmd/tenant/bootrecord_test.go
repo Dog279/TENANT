@@ -25,6 +25,12 @@ import (
 // TestMain doubles as the Tenant processes the boot-record tests start
 // (TEN-365, TEN-373): the test binary re-runs itself in a helper mode.
 func TestMain(m *testing.M) {
+	// A serve or a fleet child that a test runs in this binary starts its
+	// window's helper as this binary again (sessionend_windows.go). Without
+	// this it would run every test of the package instead.
+	if was, code := runSessionWatcher(); was {
+		os.Exit(code)
+	}
 	if mode := os.Getenv("TENANT_BOOT_HELPER"); mode != "" {
 		bootHelper(mode, os.Getenv("TENANT_BOOT_ROOT"))
 	}
