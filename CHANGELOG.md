@@ -68,6 +68,16 @@ Releases page.
   `(ls)`, backticks, `${HOME}` and anything else in braces, `::` anywhere, and characters outside
   ASCII that are not letters. A command rule
   (`/permissions add os_exec(date -d *) allow`) lets a form you use run unasked again.
+- **Security: `tenant service` and `tenant update` asked for your yes only at the start of a line
+  (TEN-534).** A command that stops, removes or replaces the Tenant an agent runs in is marked
+  dangerous, so it waits for your yes even when exec is allowed (TEN-498). The mark was put only
+  on a line that began with it: `cd /tmp; tenant update`, `sudo tenant service uninstall` and
+  `sh -c 'tenant update'` ran as ordinary commands. It is found now in any command of the line,
+  read as sh and as PowerShell, and behind `sudo`, `doas`, `env`, `nohup`, `exec`, `command`,
+  `time`, `nice`, `timeout`, `xargs`, `eval`, `iex`, `start`, `Start-Process`, and a shell's `-c`,
+  `/c` or `-Command`. Text stays text: `grep "tenant service" x.log` and `echo tenant update` are
+  not marked. This catches the plain spellings, not every one: a variable, an alias or a script
+  file still hides the command, and what holds then is the exec permission itself.
 - **Fixed: a power cut could leave more files than `config.json` unreadable.** The fix that
   flushes a saved file to the disk before it replaces the old one now covers every file Tenant
   saves that way: the user profile, a research run's manifest, the Claude Code session ledger, the
