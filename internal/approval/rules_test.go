@@ -140,6 +140,12 @@ func TestToolRules_CommandRules(t *testing.T) {
 		"brew install jq | tee log":   "", // an unmatched segment: no allow
 		"ls -la":                      "",
 		"echo $(rm x)":                "deny", // a subshell is a segment too
+		// TEN-534: PowerShell ends a statement at a lone carriage return, so
+		// what follows one is a command of its own: an allow for the first does
+		// not cover it, and a deny for it binds.
+		"brew install jq\rRemove-Item x": "",
+		"brew install jq\rrm -rf x":      "deny",
+		"brew install jq\r\nrm -rf x":    "deny",
 	} {
 		got, _, ok := r.LookupCommand(cmd)
 		if !ok {
