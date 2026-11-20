@@ -125,8 +125,11 @@ func validRulePattern(p string) error {
 }
 
 // cmdSegments mirrors osys's segmentSplit (the packages do not import each
-// other): where a compound command line's commands begin.
-var cmdSegments = regexp.MustCompile("&&|\\|\\||[;&|\n`(]|\\$\\(")
+// other): where a compound command line's commands begin. A carriage return
+// is one too (TEN-534): PowerShell ends a statement there, so without it an
+// allow rule for the first statement covered the second, and a deny rule for
+// the second never saw it.
+var cmdSegments = regexp.MustCompile("&&|\\|\\||[;&|\n\r`(]|\\$\\(")
 
 // segmentsOf is a command's segments, spaces folded, empty ones dropped.
 func segmentsOf(command string) []string {

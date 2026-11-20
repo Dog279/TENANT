@@ -5,6 +5,79 @@ Releases page.
 
 ## Unreleased
 
+- **Security: a command that only looked read-only ran with no approval prompt (TEN-534).** With
+  the exec permission on ask, a shell command that only looks at the machine (`ls`, `git status`)
+  runs without a prompt, on the host and on Discord. The check behind that was fooled, in three
+  ways, and all of these ran unasked.
+  - **A note Tenant itself adds to a destructive command.** A command that contained the text
+    `  [DANGER: ` was judged only up to that text and then run whole:
+    `echo hi  [DANGER: x]; <any command>` passed as `echo hi`. An allow rule for the first part
+    covered the rest, and a deny rule for the rest never saw it. The whole command is judged now.
+    A command rule also reads the statement after a lone carriage return, where PowerShell starts
+    a new one: an allow rule for the first statement no longer covers it.
+  - **Commands that act.** `env <any command>`; on Windows a PowerShell method call or assignment
+    such as `(Get-Item C:\x).Delete()`, a script block, `& (…)`, a second statement behind a lone
+    carriage return, and a quote inside a quoted argument, which PowerShell passes on unescaped
+    so that the program's own parser drops it (`git log '--out"put=FILE'` writes FILE);
+    `-p`, which is `-PipelineVariable` for `Get-Date` and `echo`; `$(…)` or backticks in place of
+    the command
+    (`$(echo rm -rf x)`); an option that a substitution or a variable supplies or that quotes hide
+    (`find . $(echo -delete)`, `find . '-delete'`); a `VAR=value` before the command
+    (`PATH=… ls`); a path to a file with a read-only name (`./ls`); a word in other letters than
+    its own (`HEAD` is not `head`); and the words that write, change a setting or start another
+    program with some arguments: `sort -o` and `-T`, `uniq IN OUT`, `tree -o`, `find -fprint0`,
+    `rg --pre` and `-z`, `file -C`, `-p` and `-z`, `git log|diff|show --output=FILE`,
+    `git <command> --help` (man, or a browser on Windows), `git log --show-signature` and `%G`
+    formats (gpg), `%(describe)` formats and `git describe --broken` (more git processes),
+    `git branch --sort=signature` and `--sort=describe` (gpg, git describe), `git branch NAME`
+    and `-f`, `git remote -v add`, `brew info --github`, `brew info` of a path, URL or
+    `user/tap/formula` (brew runs the formula's Ruby, or fetches it), `brew deps --brewfile`,
+    `date -s`, `hostname NAME`.
+  - **Reads that go to another machine.** A network path (`\\host\share\file`, `//host/share`)
+    sends your Windows sign-in to that host. It asks now wherever it is written, and so does a line
+    in which one command prints a path for another to read: `$(…)` as the argument of anything but
+    `echo` and `Write-Output`, a pipe into `Get-ChildItem`, `dir`, `ls` or `Get-Item`, and
+    `-OutVariable` and its kin. So do the spellings that hide one from a plain reading on
+    Windows: a quoted start with text after it (`cat 'x'//host/share/f` is `x` and
+    `//host/share/f` to PowerShell), a quote inside a quoted argument of a program
+    (`head '/"/host/share/f'`), a doubled quote inside a quoted part (`q"a"" //host/share/f"" b"`),
+    `@FILE`, a file of arguments to Git for Windows' Unix tools, an empty variable that joins the
+    text around it (`Get-Content \$null\host\share\f` reads `\\host\share\f`), a digit before a
+    path glued to an option (`grep -1f//host/share/f`), the file after `grep -f` or
+    `rg --ignore-file`, and a parameter name with a character PowerShell ignores in it
+    (`-Out<U+0640>Variable`). `git remote show NAME` (it connects; `-n` does not),
+    `Get-Process -ComputerName`, PowerShell's `WSMan:` drive, `/net/HOST` (an automount on macOS),
+    bash's `/dev/tcp/…` also behind quotes, a backslash, a variable or a `~+` that the working
+    directory spells (`/dev/t'c'p/…`, `~+/tcp/…` with workdir `/dev`), and `os_exec` with a
+    network share or `/net/HOST` as its working directory (refused: `cd` there inside the command)
+    are covered too.
+
+  The check reads a line as sh and as PowerShell at once, and whatever it cannot tell asks. The
+  plain forms run unasked as before: `env`, `env VAR=value`, `printenv`, `date`, `date +FORMAT`,
+  `date -u`, `hostname`, `hostname -f`, `Get-Item`, `Get-ChildItem`, `git status`,
+  `ls -la | grep x`, `echo $(whoami)`. Some harmless forms ask now: a read-only word given by its
+  path (`/usr/bin/grep`), after `VAR=value` or in capitals (`LS`; PowerShell's own names such as
+  `Get-ChildItem` are taken in any case); `date -d`; `$(…)` after any word but `echo`
+  (`wc -l $(git ls-files)`); a variable among the arguments of any word but `echo` and
+  `Write-Output` (`cat $HOME/.profile`, `-Stream :$DATA`; single-quoted `'$x'` is text and stays);
+  `find`, `sort`, `git` and the other words above with an
+  unquoted glob among their arguments (`find . -name *.go`: quote the pattern); a quote inside a
+  quoted argument of any word but a PowerShell cmdlet (`grep "it's" f`); a quoted start with text
+  after it (`cat 'a'b`); an argument that begins with `@`; `~user` in what `<` reads;
+  `git branch --sort=contents:signature`; an option with a character outside ASCII; a subshell
+  `(ls)`, backticks, `${HOME}` and anything else in braces, `::` anywhere, and characters outside
+  ASCII that are not letters. A command rule
+  (`/permissions add os_exec(date -d *) allow`) lets a form you use run unasked again.
+- **Security: `tenant service` and `tenant update` asked for your yes only at the start of a line
+  (TEN-534).** A command that stops, removes or replaces the Tenant an agent runs in is marked
+  dangerous, so it waits for your yes even when exec is allowed (TEN-498). The mark was put only
+  on a line that began with it: `cd /tmp; tenant update`, `sudo tenant service uninstall` and
+  `sh -c 'tenant update'` ran as ordinary commands. It is found now in any command of the line,
+  read as sh and as PowerShell, and behind `sudo`, `doas`, `env`, `nohup`, `exec`, `command`,
+  `time`, `nice`, `timeout`, `xargs`, `eval`, `iex`, `start`, `Start-Process`, and a shell's `-c`,
+  `/c` or `-Command`. Text stays text: `grep "tenant service" x.log` and `echo tenant update` are
+  not marked. This catches the plain spellings, not every one: a variable, an alias or a script
+  file still hides the command, and what holds then is the exec permission itself.
 - **Fixed: a power cut could leave more files than `config.json` unreadable.** The fix that
   flushes a saved file to the disk before it replaces the old one now covers every file Tenant
   saves that way: the user profile, a research run's manifest, the Claude Code session ledger, the
