@@ -53,6 +53,68 @@ on every drive it shares. The execution sandbox protects the host from a
 command the agent runs. It does not protect Tenant, or the engine, from the
 user's other processes.
 
+### Process protection
+
+Tenant's files are the account's to read, but its running process no longer
+is. At every start Tenant asks the operating system to refuse other programs
+of the same user access to its memory (TEN-535): on Linux the dumpable flag is
+turned off, which refuses `ptrace`, `/proc/<pid>/mem`, `/proc/<pid>/environ`,
+`process_vm_readv`, `pidfd_getfd` and `perf_event_open` and stops crash dumps;
+on Windows the access lists of the process and of every thread give the owner
+only the rights to end it, wait for it, read its basic details and query its
+information (for a thread: end it, wait for it, resume it, read its access
+list; every thread's list is read back and checked at start), the process's
+token can be read and
+copied by its owner but not changed, the console host is made to open the
+process again so that the handle it keeps carries those rights and no more,
+the window `tenant serve` needs is owned by a helper process that holds none
+of serve's secrets, and the program is excluded from Windows Error Reporting;
+on macOS a later debugger attach is denied and core files are off.
+
+This is one layer, and it is narrow. The command line stays readable on every
+system, and on macOS so does the environment the process started with. It does
+not stop an administrator or root, a kernel exploit, or a program that started
+Tenant itself and so held access to it from the first instant. On Windows two
+routes of that kind are open and known: the starter's handle can be copied out
+of the starter by another program of the same user for as long as the starter
+keeps it, and a program that is already running can open Tenant in the instant
+between its start and the controls. Put plainly, the Windows controls refuse a
+program that starts after Tenant has finished starting; a program already
+running when Tenant starts (and so one that ends Tenant and waits for it to be
+started again) can still get in, through the instant before the controls or
+through the full-access handle the console host holds until Tenant has joined
+its console again, and what it takes then keeps working; closing that takes
+Tenant being started already closed, which this version does not do. A program
+of the same user can also make the Windows Error Reporting exclusion fail at
+start (delete the value and deny writes to the key), so that Tenant asks at a
+terminal whether to go on without it or, as a hidden serve, refuses to start.
+A program of the same user can also end single threads of Tenant, which stops
+work and reads nothing, and read each thread's access list. Such a program
+could always read a protected Tenant's exit code, times, priority, counters,
+the paths of its modules and where its memory lies and how it is protected,
+and the right `taskkill /F` and `Stop-Process -Force` need to end it
+(`PROCESS_QUERY_INFORMATION`; plain `Stop-Process` and Python's `os.kill` ask
+for more and are still refused) adds which of its pages are resident and shared
+(the working set), its handles by number, kind and rights, its mitigation
+policy, and a walk of its threads that gives no more than opening each by id:
+nothing of its memory's content, no handle out of it, no thread redirected.
+When a control is not in force, every command that opens Tenant's data (every
+command that loads a secret or runs an agent turn among them; eval's smoke
+and ui subsets load neither) writes system event 2030 to the log book (`tenant logs`) at each
+start, with the command, the control and the reason; serve and the TUI also
+ask first. When the log book cannot take the event (its folder made
+unwritable, `logbook.db` not opening), the command says so on stderr and the
+record goes to the operating system's log instead. The log book itself is the
+user's file: a program of the same user can delete the events from it
+afterwards, and doctor's log-book checks do not notice. It does not
+protect the data: the dashboard token, the credentials file, memory, logs and
+run traces are plain files that a program of the same user can read, and such
+a program can also stop Tenant and run its own copy against them. The Linux
+and Windows controls were shown to refuse each access on a real machine; the
+macOS ones have not been run on a Mac. There is no run-time switch; a build
+made with `-tags debugattach` has no protection and says so in
+`tenant version`, `tenant doctor` and `tenant security audit`.
+
 ### Secrets and credentials
 
 - **API keys and tokens** are stored in
@@ -277,6 +339,13 @@ as a workaround for Chrome installation or permission problems. Run
 
 ## Security Document Changelog
 
+- 2026-11-18 (TEN-535): Process protection on Windows now covers the console
+  host's handle and code loaded through a window, and states what is still
+  open: the starter's handle, the instant before the controls, and ending
+  single threads.
+- 2026-11-18 (TEN-535): added Process protection. The running process is no
+  longer readable by the account's other programs on Linux and Windows; the
+  files on disk still are, and the trust statement above stands for them.
 - 2026-11-10: stated who is trusted (the local user account and its processes;
   the container sandbox protects the host from a command, not from them). The
   container sandbox's HOME is a tmpfs of the container's own, its image is

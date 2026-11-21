@@ -24,14 +24,14 @@ includes comments and blank lines. “Plugin capability packages” counts immed
 with `go run ./scripts/docfacts -write docs/ARCHITECTURE.md`; CI checks this
 block for drift.
 
-<!-- docfacts:generated:start; date=2026-11-19; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
+<!-- docfacts:generated:start; date=2026-11-21; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
-| Go packages | 102 |
-| Go files | 1,362 |
-| Test files | 655 |
-| Production Go LOC | 181,332 |
-| Test Go LOC | 131,847 |
+| Go packages | 103 |
+| Go files | 1,415 |
+| Test files | 689 |
+| Production Go LOC | 184,572 |
+| Test Go LOC | 139,091 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -126,7 +126,7 @@ generated from `internal/archtest/rules.go`, and
 <!-- archtest:rules -->
 | Package | May import | Note |
 |---|---|---|
-| every `internal/**` package | `internal/logs/event`, `internal/logs/catalog`, `internal/logs/capture` | on top of its own row: the event model, the built-in providers (the Security log's records among them) and child capture, so an event is written, and a child filed, where the action happens |
+| every `internal/**` package | `internal/logs/event`, `internal/logs/catalog`, `internal/logs/capture`, `internal/procprotect` | on top of its own row: the event model, the built-in providers (the Security log's records among them) and child capture, so an event is written, and a child filed, where the action happens; and procprotect, through which every command is started |
 | `cmd/**` | anything | the composition root and command adapters |
 | `scripts/**` | nothing in the module | build tools stand alone |
 | `reference/**` | `reference/**` | examples for tool builders; never tenant/internal |
@@ -136,6 +136,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/datalock` | nothing in the module | leaf |
 | `internal/httplimits` | nothing in the module | leaf |
 | `internal/version` | nothing in the module | leaf |
+| `internal/procprotect` | nothing in the module | leaf: asks the operating system to keep other programs out of the process |
 | `internal/selfupdate` | nothing in the module | leaf: finding, verifying and swapping in a release binary; tenant update sequences it |
 | `internal/runtrace` | nothing in the module | leaf |
 | `internal/cmdreg` | nothing in the module | leaf |

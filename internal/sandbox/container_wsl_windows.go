@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/windows"
+
+	"tenant/internal/procprotect"
 )
 
 // probeWSL reads the WSL release and kernel from `wsl --version`, whose output
@@ -22,7 +24,7 @@ func probeWSLOS(ctx context.Context) (wsl, kernel string) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, exe, "--version").Output()
+	out, err := procprotect.Output(exec.CommandContext(ctx, exe, "--version"))
 	if err != nil {
 		return "", ""
 	}

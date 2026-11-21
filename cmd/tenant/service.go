@@ -23,6 +23,9 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"tenant/internal/procprotect"
+	"tenant/internal/version"
 )
 
 // serviceSpec is everything a unit needs. Paths are absolute: a supervisor
@@ -38,7 +41,7 @@ type serviceSpec struct {
 // The only way out to launchctl, systemctl, loginctl, schtasks and sc; tests
 // swap in a recorder, the way holdDataDir and promptPassphrase are swapped.
 var runCmd = func(ctx context.Context, name string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	out, err := procprotect.CombinedOutput(exec.CommandContext(ctx, name, args...))
 	return string(out), err
 }
 
@@ -81,6 +84,15 @@ func cmdService(ctx context.Context, args []string) error {
 	spec, err := newServiceSpec(c, *system || verb != "install" && actsOnSystem(ctx))
 	if err != nil {
 		return err
+	}
+	// A process protection this system cannot apply is asked about here, at
+	// the terminal the command was typed in: the service has nobody to ask,
+	// and does not start until someone has said yes (TEN-535).
+	if verb == "start" || verb == "restart" || verb == "install" && !*print {
+		in, out, interactive := ackConsole()
+		if err := acknowledgeProtection(c.cfgDir, c.agent, protection, version.Version, in, out, interactive); err != nil {
+			return err
+		}
 	}
 	base := attachBaseURL("", c.lc)
 	token, _ := dashboardClientToken(c.cfgDir, c.lc, true) // "" when none yet; the hub then just isn't reachable
@@ -199,6 +211,14 @@ func actsOnSystem(ctx context.Context) bool {
 // installService installs and starts the unit and says where it went; setup
 // calls it after a successful interactive run.
 func installService(ctx context.Context, spec serviceSpec) error {
+	// macOS: the binary the service runs gets the hardened-runtime flag
+	// first (codesign.go). A failure is said, and the binary stays as it
+	// was: what it can apply at its start decides whether it runs.
+	if signsBinaries {
+		if err := installHardened(ctx, spec.Exe); err != nil {
+			fmt.Println(unsignedNote(spec.Exe, err)) // stdout, as this command's other notes
+		}
+	}
 	if err := spec.install(ctx); err != nil {
 		return err
 	}

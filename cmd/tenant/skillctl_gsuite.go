@@ -25,6 +25,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"tenant/internal/plugins/gsuite"
+	"tenant/internal/procprotect"
 )
 
 // gsuiteSkillKind builds the catalog entry. Constructed by init in
@@ -451,7 +452,7 @@ func gsuiteAuthNoteFor(value, cfgDir string) (string, bool) {
 		// succeeds, the operator is good to go.
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		if _, err := exec.CommandContext(ctx, "gcloud", "auth", "application-default", "print-access-token").Output(); err == nil {
+		if _, err := procprotect.Output(exec.CommandContext(ctx, "gcloud", "auth", "application-default", "print-access-token")); err == nil { // NOSONAR: gcloud is the user's own install, found on PATH by design
 			return "✓ gcloud ADC already set up — proceeding to probe.", false
 		}
 		// ADC not done. Print the exact command — non-blocking (the
@@ -522,12 +523,11 @@ func startBrowser(rawURL string) error {
 		cmd = exec.Command("xdg-open", rawURL)
 	}
 	breakAway(cmd) // the user's browser outlives Tenant (TEN-401)
-	if err := cmd.Start(); err == nil || cmd.SysProcAttr == nil {
+	if err := procprotect.Start(cmd); err == nil || cmd.SysProcAttr == nil {
 		return err // detached; don't wait
 	}
 	// An outer job that forbids breakaway refuses the flag; open it anyway.
-	cmd = exec.Command(cmd.Path, cmd.Args[1:]...)
-	return cmd.Start()
+	return procprotect.Start(exec.Command(cmd.Path, cmd.Args[1:]...))
 }
 
 // adaptGSuiteForCfgDir mutates the gsuite catalog entry so it picks up

@@ -24,6 +24,7 @@ var strayAllowed = map[string]int{
 	"cmd/tenant/gstackseeds.go":     2,
 	"cmd/tenant/main.go":            2,
 	"cmd/tenant/mcpctl.go":          5,
+	"cmd/tenant/protectiongate.go":  2, // logUnprotected's line (one-shot commands only), and unrecorded's, for a record the log book could not take: serve and the TUI reach it only then, before the TUI draws
 	"cmd/tenant/modelctl.go":        1,
 	"cmd/tenant/peerctl.go":         16,
 	"cmd/tenant/research.go":        4,

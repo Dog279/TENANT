@@ -78,18 +78,24 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		return err
 	}
 	serveStopBudget = *stopBudget
-	if *hidden {
-		hideConsoleWindow()
-	}
-	// Windows tells a program in a user's session about a logoff or a
-	// shutdown through a window (sessionend_windows.go), and `tenant service
-	// stop` asks the same window. main says when serve
-	// has returned (sessionEndFinished), after every deferred close here:
-	// Windows may end the process once it hears that.
-	if err := c.resolve(); err != nil {
+	if err := c.resolveDirs(); err != nil {
 		return err
 	}
-	sessionEnding, sessionErr := watchSessionEnd(c.dataDir)
+	// Windows tells a program in a user's session about a logoff or a
+	// shutdown through a window, and `tenant service stop` asks the same
+	// window. A helper process owns it, and hides the console for --hidden
+	// (sessionend_windows.go). main says when serve has returned
+	// (sessionEndFinished), after every deferred close here: Windows may end
+	// the process once it hears that.
+	sessionEnding, sessionErr := watchSessionEnd(c.dataDir, *hidden)
+	// A process protection that could not be applied is acknowledged before
+	// anything else is loaded: the config, a secret, a store (TEN-535).
+	if err := startGate(ctx, c, "serve", !*hidden); err != nil {
+		return err
+	}
+	if err := c.resolveConfig(); err != nil {
+		return err
+	}
 	applyPluginConfig(c, pf)
 	expandPluginPaths(pf)
 	// Semantic memory is a core pillar (TEN-254): a 24/7 hub running amnesiac is
@@ -160,6 +166,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	life := lifecycle.New(log)
 	defer life.Shutdown()
 	run := beginRun(ctx, "serve") // the system log's start-up and stop (TEN-383)
+	warnSecretEnvironment(ctx, c.lc)
 	defer run.failed(&err)
 	// The log book's final flush, then the boot record and crash capture
 	// (TEN-373): the first Release steps registered, so they run last.
@@ -171,6 +178,8 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	// reconnect monitor) logs its line itself.
 	sysCh := make(chan string, 64)
 	pushSys := func(s string) { feedLine(hub, sysCh, "system", s) }
+	// Every start that goes ahead without a process protection says so (TEN-535).
+	warnUnprotected(ctx, c, hub, sysCh)
 	signInNotice = pushSys // a sign-in URL reaches the operator through the feed
 	hub.OnAlert(pushSys)   // logbook.db failing or back: a banner line in the feed
 	// Status feed → stdout (the supervisor's log). A daemon's setup/health/

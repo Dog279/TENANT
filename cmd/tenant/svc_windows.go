@@ -14,10 +14,11 @@ import (
 	"context"
 	"errors"
 	"os"
-	"syscall"
 	"time"
 
 	"golang.org/x/sys/windows/svc"
+
+	"tenant/internal/procprotect"
 )
 
 // runWindowsService runs serve under the SCM when that is who started this
@@ -33,8 +34,11 @@ func runWindowsService() bool {
 			return errors.New("the service's command line must be `tenant serve …`")
 		}
 		holdDataDir = lockDataDirForProcess
+		runningCommand = "serve"
 		killChildrenOnExit()
-		return cmdServe(ctx, os.Args[2:])
+		var err error
+		procprotect.Ordinary(func() { err = cmdServe(ctx, os.Args[2:]) }) // as main runs a command
+		return err
 	}}
 	if err := svc.Run("Tenant", h); err != nil {
 		os.Exit(1)
@@ -83,16 +87,5 @@ func (t *tenantService) Execute(_ []string, r <-chan svc.ChangeRequest, s chan<-
 				return false, 0
 			}
 		}
-	}
-}
-
-// hideConsoleWindow is serve's --hidden: the logon task's console window
-// goes away. Calling into user32.dll has a cost: Windows no longer sends
-// this process a logoff or a shutdown as a console event. They arrive at
-// serve's own window instead (sessionend_windows.go).
-func hideConsoleWindow() {
-	hwnd, _, _ := syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleWindow").Call()
-	if hwnd != 0 {
-		_, _, _ = syscall.NewLazyDLL("user32.dll").NewProc("ShowWindow").Call(hwnd, 0) // SW_HIDE
 	}
 }

@@ -34,6 +34,7 @@ import (
 
 	"tenant/internal/lifecycle"
 	"tenant/internal/logs/event"
+	"tenant/internal/procprotect"
 	"tenant/internal/runtrace"
 )
 
@@ -241,7 +242,7 @@ func (c *Child) Run(cmd *exec.Cmd) error {
 		}
 		cmd.Env = slices.Concat(cmd.Env, env)
 	}
-	if err := cmd.Start(); err != nil {
+	if err := procprotect.Start(cmd); err != nil {
 		c.Exited(err)
 		return err
 	}

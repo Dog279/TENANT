@@ -5,6 +5,155 @@ Releases page.
 
 ## Unreleased
 
+- **Process protection: other programs running as you are kept out of a running Tenant.** Until
+  now a program running as the same user (malware, a tool, a command the agent was talked into
+  running) could read Tenant's memory, where its keys are while it runs. Tenant now asks the
+  operating system to refuse that, first thing at every start, for every command (TEN-535). What
+  that amounts to on each system, no wider than it is:
+  - **Linux:** `ptrace` (a debugger), `/proc/<pid>/mem`, `/proc/<pid>/environ`,
+    `process_vm_readv`, `pidfd_getfd` and `perf_event_open` are refused, and a crash leaves no
+    memory dump, in a file or with a crash collector. The command line and `/proc/<pid>/status`
+    stay readable. Run on WSL2, kernel 6.18.
+  - **Windows:** reading the memory, writing a dump (Task Manager's "Create dump file" now says
+    access is denied), attaching a debugger, and reading, suspending or redirecting any of its
+    threads are refused, and so is rewriting the access list that says so. A program running as
+    you can still end Tenant, and can end, wait for and resume each of its threads: ending
+    threads stops work and reads nothing. Task Manager still lists Tenant (its End task
+    was not tested), and `taskkill /F`, PowerShell's `Stop-Process -Force` and Node's
+    `process.kill` end it, which need the right to query the process's information; plain
+    `Stop-Process` and Python's `os.kill` ask for more and are refused. A program running as
+    you could always read Tenant's exit code, times, priority,
+    counters, module paths and where its memory lies and how it is protected, and that right
+    adds which of its pages are resident and shared (the working set), its handles by number,
+    kind and rights, its mitigation policy, and a walk of its threads that gives no more than
+    opening each by id: nothing of its memory's content, no handle out of it, no thread
+    redirected. A program running as you can also read each thread's access list, which Tenant
+    reads back itself at start: it opens every thread the system lists, by its id, compares its
+    list with the one it set, and a thread that is not as set, or does not let Tenant open it,
+    turns the control off (ending other threads does not hide it); so do more than 512 threads
+    at start. `tenant doctor` reads every thread's list again when it asks a running Tenant. The
+    command line, the program's path and the account stay readable. Tenant also puts its file
+    name on your Windows Error Reporting exclusion list. Run on Windows 11, not elevated; an
+    actual crash dump by Windows Error Reporting was not attempted.
+
+    Two other ways in are closed. The console host (`conhost.exe`) opens every console program
+    with full access when the program starts, and any program running as you can copy that
+    handle; so Tenant leaves its console and joins it again once its access list is set, and the
+    handle the host then holds carries the rights above and no more. When Tenant is alone
+    on its console, a helper (`tenant __console-anchor`) holds the console open for that
+    instant. The helper is born with Tenant's closed access list, so no other program can
+    suspend it; if it is ended, or the console cannot be joined again, Tenant leaves its console
+    for good and asks nothing. And a window lets any program running as you load code into the process that owns
+    it; the window through which Windows tells `tenant serve` about a logoff or a shutdown is
+    now owned by a helper process (`tenant __session-watch`, started by serve with none of
+    serve's environment), so Task Manager shows a second, small `tenant.exe` under serve.
+    Neither opens a window: a command Tenant starts runs on Tenant's own console, hidden or
+    not, and a Tenant that has no console (the service, or one another program started
+    detached) starts its commands and its helper with no console window at all, where Windows
+    would otherwise open one on your desktop for each.
+
+    Two ways in are not closed in this release. Whoever started Tenant holds a handle to it
+    from before these controls, with full access, for as long as it keeps it, and a program
+    running as you can copy that handle out of the starter (a shell that waits for `tenant
+    serve` is one such starter). And a program that is already running can open Tenant in the
+    instant between its start and these controls.
+
+    Put plainly: the Windows controls refuse a program that starts after Tenant has finished
+    starting. A program already running when Tenant starts (and so one that ends Tenant and
+    waits for it to be started again) can still get in, through the instant before the controls
+    or through the full-access handle the console host holds until Tenant has joined its console
+    again, and what it takes then keeps working; closing that takes Tenant being started already
+    closed, which this version does not do. A program running as you can also make the Windows
+    Error Reporting exclusion fail at start (delete the value and deny writes to the key), so that
+    Tenant asks at a terminal whether to go on without it or, as a hidden serve, refuses to start.
+  - **macOS:** Tenant denies a later debugger attach and turns core files off. This was compiled
+    and not yet run on a Mac, and what the call stops on its own is not measured, so doctor
+    reports it as "attach denied, not verified". The stronger control is the hardened-runtime
+    flag on the installed binary, which makes macOS refuse a debugger outright. The install
+    script, `tenant service install` and `tenant update` now put it there: they sign a copy of
+    the binary on your machine (`codesign --force --sign - --options runtime`, no entitlements),
+    check the flag on the copy, and only then move it into place. If signing fails, what was
+    installed stays as it was and the command says so. Doctor reports the flag and the kind of
+    signature, and the audit raises a release binary that lacks it. The signing step has not
+    yet run on a Mac either: it is tested against a stand-in for `codesign`. The command line
+    and the environment Tenant started with stay readable to your other programs, so a key set
+    in an environment variable is reported: a warning in the system log at start, and a finding
+    in `tenant security audit`. Save keys with `/configure <plugin>` or the dashboard's keys
+    page.
+
+  This is one layer. It protects the running process, not the files on disk, which a program
+  running as you can still read; and it does not stop an administrator or root, a program that
+  starts Tenant itself, or one that gets in during the instant between Tenant's start and these
+  controls. `tenant doctor` has a new "process protection" check that shows each control as on
+  or off, what the system says about itself (`kernel.yama.ptrace_scope`, whether the process is
+  elevated, System Integrity Protection and FileVault), what stays readable, and what a program
+  running as you can still do; `tenant security audit` raises a finding when a control is off.
+
+  When a Tenant is running, doctor reports that process and not its own: it asks it over the
+  dashboard's `/api/status`, and the first line names the process. The answer is read at that
+  moment where the system lets a process read its own state again, because some controls can be
+  undone from outside while Tenant runs: the Windows Error Reporting exclusion is a registry
+  value of yours, and on Linux `prlimit` raises the core limit of a process of the same user.
+  Such a control shows as OFF, with what was found, and a restart applies it again. The
+  exclusion is kept by file name and doctor applies the controls to itself at its start like
+  every command, so on Windows it puts a removed exclusion back before it asks; it then says
+  "OFF until this doctor started" rather than report it on. What cannot
+  be read again is marked "as it was when Tenant started": the access lists of the threads that
+  exist and the console host's handle on Windows, the attach denial on macOS. With no Tenant
+  running, doctor says that what it shows is what a start would get.
+
+  There is no switch to turn it off: a program running as you could restart Tenant with it set.
+  To attach a debugger, build with `-tags debugattach`; `tenant version`, doctor and the audit
+  say when a build was made that way. With `GOTRACEBACK=crash` (or `wer` on Windows) the Go
+  runtime asks for a memory dump at a crash, which Tenant cannot lower from inside; doctor points
+  it out.
+
+  **When a protection cannot be applied, a person has to say so.** `tenant tui` and `tenant
+  serve` read what the system refused before they load anything else. At a terminal they print
+  which protection is missing and what that leaves open, and ask `Continue without it? [y/N]`;
+  anything but yes exits. With no terminal (the service, a scheduled start) Tenant does not
+  start, and the reason is in its log (system 3030) and in the system's own log (the
+  Application event log on Windows, the journal or syslog elsewhere), unless that control
+  failing for that reason in that version was acknowledged before. A yes is recorded in
+  `settings.<agent>.json` under `protection_acknowledged`: the control, the reason, the version
+  and the time. A different control, a different reason or a new version asks again. Every start
+  that goes ahead on an acknowledgement says so (system 2030, and a line in the status feed).
+  Every other command that opens Tenant's data is not asked, but leaves the same record at
+  every start it makes without a control: system 2030 in the log book, with the command, the
+  control and the reason, and a line on stderr at a terminal; every command that loads a secret
+  or runs an agent turn is among them. `help`, `version`, `completion`, a plain `doctor` or
+  `security audit`, and `eval --subset smoke` or `ui` (no key, no model) write nothing. When the
+  log book cannot take the record (its folder made unwritable, `logbook.db` not opening), the
+  command says so on stderr, terminal or not, and the record goes to the system's own log. The
+  log book is your file, so a program running as you can still delete a record from it
+  afterwards without doctor noticing; only the failure path's copy in the Windows Application
+  event log is out of its reach.
+
+  `tenant service install`, `start` and `restart`, and `tenant setup` when it installs the
+  service, ask first, at the terminal you typed them in, because the service has nobody to ask.
+  `tenant update` asks about the new version before it changes anything: it runs the new binary,
+  reads what that binary could not apply here (`tenant version --protection` prints it), and
+  with nobody at a terminal it stops there and the running version stays. `--yes` does not
+  answer this question. Doctor and the audit show what is off and when it was acknowledged. No
+  other command asks, and a `-tags debugattach` build is never asked about.
+
+  For people working on the code: on Windows the protection changes a default that every object
+  the process creates inherits, so a command must be started through `internal/procprotect`
+  (`Start`, `Run`, `Output`, `CombinedOutput`, or `Child` with the call inside `Ordinary`). A
+  command started any other way fails with "pipe: Access is denied" for a user who is not an
+  administrator. A test in `internal/archtest` holds the source to it. The same default would
+  land on a file or a folder made where nothing is inherited from the folder above (one set up
+  with `icacls /inheritance:r`, say), and its owner could then not open it. So a command and a
+  tool call run inside `procprotect.Ordinary`, `internal/fsperm` makes its files and folders
+  inside it, and a directory `fsperm.MkdirAll` makes itself is made to pass its permissions on
+  to what is made in it. A directory that was there already is never changed: making its
+  entries pass on would hand them to every file already in it. What is left: a file made with
+  the plain `os` calls on another goroutine, in a folder that Tenant did not make and that
+  passes nothing on.
+  Make such a file through `fsperm`, or inside `Ordinary`. The acceptance tests of
+  the acknowledgement run a `tenant` built with `-tags procprotecttest`, in which the environment
+  can say that a control cannot be applied; `tenant version` announces such a build, and no
+  release is built with the tag.
 - **Security: a command that only looked read-only ran with no approval prompt (TEN-534).** With
   the exec permission on ask, a shell command that only looks at the machine (`ls`, `git status`)
   runs without a prompt, on the host and on Discord. The check behind that was fooled, in three

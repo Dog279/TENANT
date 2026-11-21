@@ -25,12 +25,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mattn/go-isatty"
-
 	"tenant/internal/backup"
 	"tenant/internal/lifecycle"
 	"tenant/internal/logs/catalog"
 	"tenant/internal/privacy"
+	"tenant/internal/procprotect"
 	"tenant/internal/selfupdate"
 	"tenant/internal/version"
 )
@@ -238,19 +237,49 @@ func runUpdate(ctx context.Context, u *updateEnv, o updateOpts) error {
 	if err := selfupdate.ExtractBinary(archive, staged, member); err != nil {
 		return err
 	}
+	// macOS: the staged binary is the copy that gets the hardened-runtime
+	// flag (codesign.go), before it runs for the first time and before it is
+	// moved into place. If it cannot be signed, nothing has changed.
+	if signsBinaries {
+		if err := signHardened(ctx, staged); err != nil {
+			return fmt.Errorf("not updated; %s keeps running: the new binary could not be signed with the hardened runtime: %w", version.Version, err)
+		}
+	}
 	smoke, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	if out, err := exec.CommandContext(smoke, staged, "version").CombinedOutput(); err != nil || !strings.Contains(string(out), newV) {
-		return fmt.Errorf("the new binary failed its smoke test (%s version: %v): %s", member, err, strings.TrimSpace(string(out)))
+	smokeOut, err := procprotect.CombinedOutput(exec.CommandContext(smoke, staged, "version", "--protection"))
+	if err != nil || !strings.Contains(string(smokeOut), newV) {
+		return fmt.Errorf("the new binary failed its smoke test (%s version: %v): %s", member, err, strings.TrimSpace(string(smokeOut)))
+	}
+	// 5b. The same run is the new binary's process protection on this system
+	// (TEN-535). A new version asks again about a control it cannot apply,
+	// and the service it runs as has nobody to ask: so it is asked here, at
+	// this terminal, while nothing has changed. With no terminal the update
+	// stops and the running version stays. --yes answers the update's own
+	// question, not this one.
+	f, isFile := u.stdin.(*os.File)
+	atTerminal := !isFile || fileIsTerminal(f) // a Git Bash window counts, as it does for serve
+	in := bufio.NewReader(u.stdin)
+	newReport, err := reportedProtection(smokeOut)
+	if err != nil {
+		return exitError{2, fmt.Sprintf("not updated; %s keeps running: %v", version.Version, err)}
+	}
+	if err := acknowledgeProtection(u.c.cfgDir, u.c.agent, newReport, newV, in, u.out, atTerminal); err != nil {
+		var refused *protectionRefused
+		if errors.As(err, &refused) && !refused.declined {
+			return exitError{2, fmt.Sprintf("not updated; %s keeps running. On this system %s cannot apply a process protection, and there is no terminal here to acknowledge that at: %s. Run `tenant update` at a terminal",
+				version.Version, newV, describeControls(refused.missing))}
+		}
+		return exitError{2, fmt.Sprintf("not updated; %s keeps running: %v", version.Version, err)}
 	}
 	// 6. Confirm. Without a terminal there is nobody to ask: --yes.
 	backupPath := preUpdateBackupPath(u.c.dataDir, version.Version)
 	if !o.yes {
-		if f, ok := u.stdin.(*os.File); ok && !isatty.IsTerminal(f.Fd()) {
+		if !atTerminal {
 			return exitError{2, "no terminal to confirm on; pass --yes"}
 		}
 		fmt.Fprintf(u.out, "Update %s -> %s? A backup goes to %s. [y/N] ", version.Version, newV, backupPath)
-		ans, _ := bufio.NewReader(u.stdin).ReadString('\n')
+		ans, _ := in.ReadString('\n')
 		if a := strings.ToLower(strings.TrimSpace(ans)); a != "y" && a != "yes" {
 			return exitError{2, "not confirmed"}
 		}

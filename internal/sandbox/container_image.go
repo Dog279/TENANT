@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"tenant/internal/procprotect"
 )
 
 // baseImageRef pins the Debian base by its index digest, so every platform
@@ -59,7 +61,7 @@ func BuildImage(ctx context.Context, cli, tag string, progress func(string)) (st
 		c.Stdout = &out
 		c.Stderr = &out
 	}
-	if err := c.Run(); err != nil {
+	if err := procprotect.Run(c); err != nil {
 		return "", fmt.Errorf("build %s: %w: %s", tag, err, oneLine(out.String()))
 	}
 	return imageID(ctx, cli, tag)
@@ -83,7 +85,7 @@ func VerifyImage(ctx context.Context, cli, tag string) (id string, err error) {
 }
 
 func imageID(ctx context.Context, cli, tag string) (string, error) {
-	out, err := exec.CommandContext(ctx, cli, "image", "inspect", "--format", "{{.Id}}", tag).Output()
+	out, err := procprotect.Output(exec.CommandContext(ctx, cli, "image", "inspect", "--format", "{{.Id}}", tag))
 	if err != nil {
 		return "", err
 	}

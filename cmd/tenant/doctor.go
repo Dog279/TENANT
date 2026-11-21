@@ -178,6 +178,8 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		// because other checks read e.lc.
 		{"launch config", checkLaunchConfig},
 		{"secret storage protection", checkSecretProtection},
+		// TEN-535: what the operating system was asked to refuse other programs.
+		{"process protection", checkProcessProtection},
 		// credentials.json schema + every keyed provider has a resolvable
 		// secret (env-var present OR stored in creds).
 		{"credentials", checkCredentials},
@@ -1474,51 +1476,14 @@ const serveStuckTurnSecs = 300
 // fault (and a *configured but down* dashboard is already WARNed by
 // checkDashboard, so this never double-reports).
 func checkServe(ctx context.Context, e *doctorEnv) checkResult {
-	if e.lc == nil {
-		return checkResult{Status: statusSkip, Detail: "no launch config"}
-	}
-	dc := e.lc.Dashboard
-	if !dc.IsEnabled() && dc.Addr == "" {
-		return checkResult{Status: statusSkip, Detail: "dashboard disabled — no hub to probe"}
-	}
-	addr := dc.Addr
-	if addr == "" {
-		addr = "127.0.0.1:9770"
-	}
-	scheme := "http"
-	if dc.TLSCert != "" {
-		scheme = "https"
-	}
-	// A default install keeps the token in its file, not in dashboard.auth.
-	tok, err := dashboardClientToken(e.c.cfgDir, e.lc, e.c.auditOnly)
-	if err != nil {
-		return checkResult{Status: statusWarn, Detail: "cannot read the dashboard token: " + err.Error()}
-	}
-	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	req, _ := http.NewRequestWithContext(probeCtx, http.MethodGet, fmt.Sprintf("%s://%s/api/status", scheme, addr), nil)
-	if tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
-	}
-	httpc := e.httpc
-	if httpc == nil {
-		httpc = http.DefaultClient
-	}
-	resp, err := httpc.Do(req)
-	if err != nil {
-		return checkResult{Status: statusSkip, Detail: "no hub reachable at " + addr + " (not running)"}
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return checkResult{Status: statusSkip, Detail: fmt.Sprintf("/api/status returned HTTP %d", resp.StatusCode)}
-	}
 	var st struct {
 		TurnActive       bool `json:"turn_active"`
 		TurnAgeSecs      int  `json:"turn_age_secs"`
 		PendingApprovals int  `json:"pending_approvals"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
-		return checkResult{Status: statusWarn, Detail: "hub up but /api/status was unparseable: " + err.Error()}
+	addr, scheme, none := askHub(ctx, e, &st)
+	if none != nil {
+		return *none
 	}
 	if st.PendingApprovals > 0 {
 		return checkResult{Status: statusWarn,
@@ -1535,6 +1500,55 @@ func checkServe(ctx context.Context, e *doctorEnv) checkResult {
 		state = fmt.Sprintf("turn active %ds", st.TurnAgeSecs)
 	}
 	return checkResult{Status: statusOK, Detail: fmt.Sprintf("hub healthy at %s (%s, 0 pending approvals)", addr, state)}
+}
+
+// askHub asks the Tenant running at the configured dashboard address for its
+// /api/status, into st. none says why there was nothing to read: no hub is
+// configured, none answers (a daemon that is not running is not a fault), or
+// its answer could not be used.
+func askHub(ctx context.Context, e *doctorEnv, st any) (addr, scheme string, none *checkResult) {
+	if e.lc == nil {
+		return "", "", &checkResult{Status: statusSkip, Detail: "no launch config"}
+	}
+	dc := e.lc.Dashboard
+	if !dc.IsEnabled() && dc.Addr == "" {
+		return "", "", &checkResult{Status: statusSkip, Detail: "dashboard disabled — no hub to probe"}
+	}
+	addr = dc.Addr
+	if addr == "" {
+		addr = "127.0.0.1:9770"
+	}
+	scheme = "http"
+	if dc.TLSCert != "" {
+		scheme = "https"
+	}
+	// A default install keeps the token in its file, not in dashboard.auth.
+	tok, err := dashboardClientToken(e.c.cfgDir, e.lc, e.c.auditOnly)
+	if err != nil {
+		return addr, scheme, &checkResult{Status: statusWarn, Detail: "cannot read the dashboard token: " + err.Error()}
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(probeCtx, http.MethodGet, fmt.Sprintf("%s://%s/api/status", scheme, addr), nil)
+	if tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+	httpc := e.httpc
+	if httpc == nil {
+		httpc = http.DefaultClient
+	}
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return addr, scheme, &checkResult{Status: statusSkip, Detail: "no hub reachable at " + addr + " (not running)"}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return addr, scheme, &checkResult{Status: statusSkip, Detail: fmt.Sprintf("/api/status returned HTTP %d", resp.StatusCode)}
+	}
+	if err := json.NewDecoder(resp.Body).Decode(st); err != nil {
+		return addr, scheme, &checkResult{Status: statusWarn, Detail: "hub up but /api/status was unparseable: " + err.Error()}
+	}
+	return addr, scheme, nil
 }
 
 // isLoopbackAddr reports whether host names the local machine. Mirrors

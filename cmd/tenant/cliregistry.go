@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -82,8 +84,12 @@ func cliCommands() []*cliCommand {
 				{Syntax: "help all", Desc: "every command, by section"},
 				{Syntax: "help <command>", Desc: "one command's usage; `tenant <command> --help` lists its flags"},
 			}},
-		{Names: []string{"version", "-v", "--version"}, Section: "start", Run: cmdVersion,
-			Summary: "print the version and build provenance"},
+		{Names: []string{"version", "-v", "--version"}, Section: "start", Run: cmdVersion, Flags: []string{"--protection"},
+			Summary: "print the version and build provenance",
+			Rows: []cmdreg.Row{
+				{Syntax: "version", Desc: "the version and build provenance; a build made with -tags debugattach says so"},
+				{Syntax: "version --protection", Desc: "also this process's protection report, as one line of JSON (tenant update reads it from the new binary)"},
+			}},
 		{Names: []string{"update"}, Section: "start", Run: cmdUpdate, Flags: []string{"--check", "--version", "--yes", "--now", "--force", "--rollback"},
 			Summary: "install the latest release: verify, back up, swap the binary, restart, confirm; --check only looks",
 			Rows: []cmdreg.Row{
@@ -301,8 +307,28 @@ func cliRegistry() *cmdreg.Registry[cliRun] {
 	return cliReg
 }
 
-func cmdVersion(context.Context, []string) error {
+// debugAttachNote is what `tenant version` and doctor say about a build made
+// with -tags debugattach (TEN-535).
+const debugAttachNote = "built with -tags debugattach: process protection is compiled out, so a debugger, or any other program of this user, can read this process"
+
+func cmdVersion(_ context.Context, args []string) error {
 	fmt.Printf("tenant %s — speaks MCP %s (Go)\n", version.String(), mcp.ProtocolVersion)
+	if protection.Disabled {
+		fmt.Println(debugAttachNote)
+	}
+	if testBuildNote != "" {
+		fmt.Println(testBuildNote)
+	}
+	// --protection: what this process could and could not apply, on one
+	// line. `tenant update` runs the new binary this way before it installs
+	// it, and asks about what that binary could not apply (update.go).
+	if slices.Contains(args, "--protection") {
+		b, err := json.Marshal(protection)
+		if err != nil {
+			return err
+		}
+		fmt.Println(protectionLinePrefix + string(b))
+	}
 	return nil
 }
 

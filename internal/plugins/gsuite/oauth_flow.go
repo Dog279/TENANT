@@ -34,6 +34,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"tenant/internal/httplimits"
+	"tenant/internal/procprotect"
 )
 
 // OAuthClientFile is the shape of the OAuth Client credentials JSON
@@ -237,7 +238,7 @@ func openBrowserDefault(rawURL string) error {
 	default:
 		cmd = exec.Command("xdg-open", rawURL)
 	}
-	return cmd.Start()
+	return procprotect.Start(cmd)
 }
 
 const defaultSuccessHTML = `<!DOCTYPE html>

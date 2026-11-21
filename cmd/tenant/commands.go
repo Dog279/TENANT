@@ -1777,6 +1777,15 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if err := c.resolveDirs(); err != nil {
+		return err
+	}
+	// A process protection that could not be applied is acknowledged before
+	// anything else is loaded: the setup wizard's keys, the config, a secret,
+	// a store (TEN-535).
+	if err := startGate(ctx, c, "tui", true); err != nil {
+		return err
+	}
 	if _, err := maybeOfferSetup(ctx, c); err != nil {
 		return err
 	}
@@ -1807,6 +1816,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	life := lifecycle.New(log)
 	defer life.Shutdown()
 	run := beginRun(ctx, "tui") // the system log's start-up and stop (TEN-383)
+	warnSecretEnvironment(ctx, c.lc)
 	defer run.failed(&err)
 	// The log book's final flush, then the boot record and crash capture
 	// (TEN-373): the first Release steps registered, so they run last.
@@ -1818,6 +1828,8 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	sysCh := make(chan string, 64)
 	pushTo := func(source, s string) { feedLine(hub, sysCh, source, s) }
 	pushSys := func(s string) { pushTo("system", s) }
+	// Every start that goes ahead without a process protection says so (TEN-535).
+	warnUnprotected(ctx, c, hub, sysCh)
 	signInNotice = pushSys // a sign-in URL must not draw over the TUI
 	hub.OnAlert(pushSys)   // logbook.db failing or back: a banner line in the feed
 	if herr != nil {

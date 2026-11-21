@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"sync"
 	"sync/atomic"
+
+	"tenant/internal/procprotect"
 )
 
 // DefaultMaxFrameSize caps a single inbound frame. Override per
@@ -57,7 +59,13 @@ func NewStdioStreams(r io.ReadCloser, w io.WriteCloser, opts ...StdioOption) *St
 // The caller MUST eventually call Close to reap the child. cmd.Stderr
 // is wired to os.Stderr by default for observability — override before
 // calling if you need to capture it.
-func NewStdioProcess(cmd *exec.Cmd, opts ...StdioOption) (*Stdio, error) {
+func NewStdioProcess(cmd *exec.Cmd, opts ...StdioOption) (s *Stdio, err error) {
+	procprotect.Child(cmd)
+	procprotect.Ordinary(func() { s, err = newStdioProcess(cmd, opts...) }) // its pipes are made here
+	return s, err
+}
+
+func newStdioProcess(cmd *exec.Cmd, opts ...StdioOption) (*Stdio, error) {
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

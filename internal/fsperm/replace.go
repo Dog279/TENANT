@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"tenant/internal/procprotect"
 )
 
 // Replace puts data at path as a private file without ever leaving a torn or
@@ -34,7 +36,9 @@ func ReplaceWithMode(path string, data []byte, mode os.FileMode) error {
 
 func replace(path string, data []byte, mode os.FileMode, private bool) error {
 	dir, base := filepath.Dir(path), filepath.Base(path)
-	f, err := os.CreateTemp(dir, base+".*.tmp")
+	var f *os.File
+	var err error
+	procprotect.Ordinary(func() { f, err = os.CreateTemp(dir, base+".*.tmp") })
 	if err != nil {
 		return err
 	}
