@@ -70,7 +70,7 @@ const (
 //	    token with all three (TOKEN_READ) to see what kind of program it is,
 //	    and one it cannot read it treats as a sandboxed app, which may not
 //	    type into its own console or read its screen back.
-const tokenSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x2000a;;;OW)"
+const tokenSDDL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x2000a;;;OW)" // NOSONAR: an access list in SDDL, not a secret
 
 var (
 	procNtOpenThread  = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtOpenThread")
