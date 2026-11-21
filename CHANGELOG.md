@@ -282,8 +282,12 @@ Releases page.
     and from the memory kept aside, sends the machine a new copy and tells it to delete its older
     ones, also once a machine that was offline is back, and applies it again to a memory rebuilt
     from a copy made before it. Copies a machine keeps under an earlier fleet key are not deleted;
-    you are told. Retention pruning does not reach the machines' memory.
-- **A fleet machine verifies an update's release itself** (TEN-533, decision A71). `tenant fleet
+    you are told. Retention pruning does not reach the machines' memory. The request, which
+    names what is forgotten, is kept sealed until every machine still in the fleet has had it,
+    has dropped its older copies and keeps none under another key; then it is deleted. A copy
+    older than the forget that comes back after that, from a backup of a machine's own disk, is
+    not purged, and a memory rebuilt from it holds what was forgotten again.
+- **A fleet machine verifies an update's release itself** (TEN-533). `tenant fleet
   update` now sends the release's checksums and signature bundle with the archive, before any of
   it; a machine checks, offline, that the signature is the release workflow's of the repository
   its own binary was built from, that the checksums list the archive with the hash it was sent,
@@ -295,11 +299,6 @@ Releases page.
   `tenant child updates master`) makes a machine take its master's hash instead, to run a build
   of your own; it is set only on the machine, kept by rehome, shown by `tenant child status`, and
   recorded in the audit log. `tenant fleet update` says which rule each machine applied.
-    you are told. Retention pruning does not reach the machines' memory. The request, which
-    names what is forgotten, is kept sealed until every machine still in the fleet has had it,
-    has dropped its older copies and keeps none under another key; then it is deleted. A copy
-    older than the forget that comes back after that, from a backup of a machine's own disk, is
-    not purged, and a memory rebuilt from it holds what was forgotten again.
 - **A fleet survives losing its master** (TEN-533). `tenant child rehome`, run on a machine with
   its child stopped, gives it another master: a master restored from a plain backup or rebuilt
   from nothing. It takes a code from the new master's `tenant fleet enroll` as `child install`
