@@ -212,6 +212,7 @@ func TestChildReleaseRuleRefusals(t *testing.T) {
 // A default child, end to end in this process: a genuine release of a
 // Tenant that runs here is verified, taken, and staged.
 func TestChildReleaseRuleStagesAGenuineRelease(t *testing.T) {
+	noSigning(t) // not about the macOS signing step (see noSigning)
 	if testing.Short() {
 		t.Skip("runs a build of this test binary")
 	}

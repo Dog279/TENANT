@@ -75,6 +75,7 @@ type errorString string
 func (e errorString) Error() string { return string(e) }
 
 func TestUpdateProjectKey(t *testing.T) {
+	noSigning(t) // not about the macOS signing step (see noSigning)
 	bin := buildFakeBin(t)
 	archive := releaseArchive(t, bin)
 	t.Setenv("TENANT_FAKE_VERSION", "9.9.9")

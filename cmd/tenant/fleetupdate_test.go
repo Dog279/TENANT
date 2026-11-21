@@ -134,6 +134,7 @@ func noStage(t *testing.T, u *childUpdater, what string) {
 // touched before then; an archive that is whole and checked is still refused
 // when it is not a Tenant that runs here and says the version it was sent as.
 func TestChildUpdateRefusals(t *testing.T) {
+	noSigning(t) // not about the macOS signing step (see noSigning)
 	ctx := context.Background()
 	member, other := exeName(), "tenant"
 	if runtime.GOOS != "windows" {
