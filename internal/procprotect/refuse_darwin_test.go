@@ -1,19 +1,53 @@
 package procprotect
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
-	"os/signal"
+	"os/exec"
 	"runtime"
-	"syscall"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
 
-// NOT RUN ON A MAC YET (TEN-535): this file is compiled and vetted from
-// Windows, and nothing in it has been observed. What the table shows on real
-// hardware is to be recorded as it is found.
+// Run on a Mac only by CI so far (TEN-535): this file is written and vetted
+// from Windows. The first run there (macOS on arm64, 2026-11-21) showed one
+// thing: an attach to a process that called Protect ends the attaching
+// process with SIGSEGV. What else the table shows on real hardware is to be
+// recorded as it is found.
+
+// envTracee names the process a "ptrace" helper attaches to.
+const envTracee = "PROCPROTECT_TRACEE"
+
+// The attach itself is made by a process of its own (see attempts): this
+// test binary started with PROCPROTECT_HELPER=ptrace. It says "attached" or
+// "refused: <why>" and ends; ended by the kernel, it says neither.
+func init() {
+	if os.Getenv(envHelper) != "ptrace" {
+		return
+	}
+	pid, err := strconv.Atoi(os.Getenv(envTracee))
+	if err != nil {
+		fmt.Println("refused:", err)
+		os.Exit(0)
+	}
+	runtime.LockOSThread() // a tracer is one thread
+	if err := unix.PtraceAttach(pid); err != nil {
+		fmt.Println("refused:", err)
+		os.Exit(0)
+	}
+	fmt.Println("attached")
+	var ws unix.WaitStatus
+	_, _ = unix.Wait4(pid, &ws, 0, nil)
+	_ = unix.PtraceDetach(pid)
+	os.Exit(0)
+}
 
 var controlIDs = []string{"darwin.deny-attach", "darwin.core-limit"}
 
@@ -43,16 +77,29 @@ var attempts = []attempt{
 	// Developer mode on: the table then says it shows nothing here.
 	{"ptrace attach (PT_ATTACH; stands in for lldb -p)", func(v victimInfo) (string, error) {
 		// The kernel answers an attach to a process that denied it by
-		// sending the tracer SIGSEGV. Taken here, it does not end this one.
-		signal.Notify(make(chan os.Signal, 1), syscall.SIGSEGV)
-		runtime.LockOSThread() // a tracer is one thread
-		defer runtime.UnlockOSThread()
-		if err := unix.PtraceAttach(v.PID); err != nil {
-			return "", err
+		// sending the tracer SIGSEGV, and the Go runtime ends a process the
+		// kernel sends one to: signal.Notify does not take it (seen on CI's
+		// Mac: "SIGSEGV: segmentation violation" inside ptrace, exit status
+		// 2). So the attach is made by a process of its own, and that
+		// process ending on the signal is the refusal.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		c := exec.CommandContext(ctx, os.Args[0])
+		c.Env = append(os.Environ(), envHelper+"=ptrace", envTracee+"="+strconv.Itoa(v.PID))
+		out, err := CombinedOutput(c)
+		said := strings.TrimSpace(string(out))
+		switch {
+		case strings.HasPrefix(said, "attached"):
+			return "attached", nil
+		case err == nil && strings.HasPrefix(said, "refused: "):
+			return "", errors.New(strings.TrimPrefix(said, "refused: "))
+		case bytes.Contains(out, []byte("SIGSEGV")):
+			return "", errors.New("the tracer was sent SIGSEGV, the kernel's answer to an attach that was denied")
 		}
-		var ws unix.WaitStatus
-		_, _ = unix.Wait4(v.PID, &ws, 0, nil)
-		return "attached", unix.PtraceDetach(v.PID)
+		if len(said) > 200 {
+			said = said[:200]
+		}
+		return "", fmt.Errorf("the tracer ended another way: %v: %s", err, said)
 	}},
 }
 

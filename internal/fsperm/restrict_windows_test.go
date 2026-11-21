@@ -41,6 +41,18 @@ func userSID(t *testing.T) string {
 	return user.User.Sid.String()
 }
 
+// makerSID is who Windows gives full access to a new object in a folder that
+// passes nothing on, as an access list prints it: the user, or the
+// Administrators group ("BA") when the process is elevated. CI's Windows
+// runner is elevated, and what it makes there carries no entry for the user.
+func makerSID(t *testing.T) string {
+	t.Helper()
+	if windows.GetCurrentProcessToken().IsElevated() {
+		return "BA"
+	}
+	return userSID(t)
+}
+
 // A folder that was there before is not Tenant's to change, whatever is
 // wrong with it. Round three of TEN-535: a user's folder with "owner: full"
 // and "Everyone: read", both for this folder only, was handed to Tenant as
@@ -112,8 +124,9 @@ func TestMkdirAllMakesItsOwnDirectoryPassPermissionsOn(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := daclOf(t, dir)
-	if !strings.Contains(got, "(A;OICI;FA;;;"+sid+")") || strings.Contains(got, ";WD)") {
-		t.Errorf("the directory MkdirAll made: %s; want the entries it was born with, the user's among them, inherited from now on, and nothing of the folder above", got)
+	maker := makerSID(t)
+	if !strings.Contains(got, "(A;OICI;FA;;;"+maker+")") || strings.Contains(got, ";WD)") {
+		t.Errorf("the directory MkdirAll made: %s; want the entries it was born with, its maker's (%s) among them, inherited from now on, and nothing of the folder above", got, maker)
 	}
 	for _, entry := range strings.Split(strings.Trim(got[strings.Index(got, "("):], "()"), ")(") {
 		if !strings.HasPrefix(entry, "A;OICI;") {
@@ -127,7 +140,7 @@ func TestMkdirAllMakesItsOwnDirectoryPassPermissionsOn(t *testing.T) {
 	if err := os.WriteFile(fresh, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if f := daclOf(t, fresh); !strings.Contains(f, "(A;ID;FA;;;"+sid+")") || strings.Contains(f, ";WD)") {
+	if f := daclOf(t, fresh); !strings.Contains(f, "(A;ID;FA;;;"+maker+")") || strings.Contains(f, ";WD)") {
 		t.Errorf("a file made below it: %s; want what the directory passes on, and nothing of the folder above", f)
 	}
 	// A second call, and a directory that inherits like any other: unchanged.
