@@ -452,7 +452,7 @@ func gsuiteAuthNoteFor(value, cfgDir string) (string, bool) {
 		// succeeds, the operator is good to go.
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		if _, err := procprotect.Output(exec.CommandContext(ctx, "gcloud", "auth", "application-default", "print-access-token")); err == nil {
+		if _, err := procprotect.Output(exec.CommandContext(ctx, "gcloud", "auth", "application-default", "print-access-token")); err == nil { // NOSONAR: gcloud is the user's own install, found on PATH by design
 			return "✓ gcloud ADC already set up — proceeding to probe.", false
 		}
 		// ADC not done. Print the exact command — non-blocking (the
