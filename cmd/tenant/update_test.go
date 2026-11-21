@@ -192,9 +192,22 @@ func exitCodeOf(err error) int {
 	return 0
 }
 
+// noSigning turns the macOS signing step off for a test that is not about
+// it. On a Mac the update would otherwise run codesign through the tests'
+// stand-in for the service manager, which refuses every command ("codesign
+// --sign: no service manager under test", first seen on CI's macOS runner).
+// TestUpdateSignsTheNewBinaryFirst is the test of that step.
+func noSigning(t *testing.T) {
+	t.Helper()
+	prev := signsBinaries
+	signsBinaries = false
+	t.Cleanup(func() { signsBinaries = prev })
+}
+
 // The flow against a fake release and hub: what each outcome leaves on
 // disk, prints, and asks of the service.
 func TestUpdateFlow(t *testing.T) {
+	noSigning(t)
 	bin := buildFakeBin(t)
 	archive := releaseArchive(t, bin)
 	t.Setenv("TENANT_FAKE_VERSION", "9.9.9")
@@ -443,6 +456,7 @@ func TestUpdateLive(t *testing.T) {
 // yes is recorded for the new version. With no terminal the update stops and
 // the running version stays. --yes answers the update's own question only.
 func TestUpdateAsksAboutTheNewBinarysProtection(t *testing.T) {
+	noSigning(t)
 	bin := buildFakeBin(t)
 	archive := releaseArchive(t, bin)
 	t.Setenv("TENANT_FAKE_VERSION", "9.9.9")
