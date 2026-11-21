@@ -323,6 +323,9 @@ Releases page.
   in a terminal, or with the logon task's hidden console, shares it as before.
 - **Fixed: an MCP request cancelled the moment it was sent could run to the end.** A request is
   now registered as it is read; one cancelled before its handler starts is not run.
+- **Fixed: a local MCP server could be left running after its tools were closed.** A server whose
+  start was still under way at that moment went on to start afterwards and was never stopped.
+  Closing now cancels a start that is under way and waits for it.
 - **Security: a command that only looked read-only ran with no approval prompt (TEN-534).** With
   the exec permission on ask, a shell command that only looks at the machine (`ls`, `git status`)
   runs without a prompt, on the host and on Discord. The check behind that was fooled, in three
