@@ -1436,7 +1436,7 @@ reads the newest copy under another key with `shadow.Store.AdoptAs` (which
 accepts a copy naming the machine's old id only under a recovery identity)
 and pushes the result as a generation under the new key.
 
-**Whose word an update is taken on** (decision A71). `fleet.Update` carries the release's
+**Whose word an update is taken on.** `fleet.Update` carries the release's
 `Asset`, `Checksums` and `Bundle` on the opening piece of each send (`sendPieces`). A child on
 the default rule (`child.json` `updates` empty or `release`) runs `childUpdater.verifyRelease`
 before it takes a byte: the asset name for its own target, `cosign verify-blob --offline`

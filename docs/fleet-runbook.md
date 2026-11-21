@@ -252,7 +252,7 @@ or `web1: rolled back to "1.3.2": "<why, in the machine's words>"`, `web1: refus
 not confirmed, an older version without `--allow-older`), or `web1: failed` with the reason.
 The exit is 0 only when every machine runs the version asked for.
 
-**Whose word the machine takes (decision A71).** By default a machine installs only a release
+**Whose word the machine takes.** By default a machine installs only a release
 it verified itself: with the archive the master sends the release's `checksums.txt` and its
 signature bundle, on the first message of the transfer, before any of the archive. The machine,
 with no network, checks the archive's name against its own system, processor and the version
