@@ -235,6 +235,13 @@ func sortSpills(t *testing.T, db *sql.DB) (during []string) {
 }
 
 func TestMemDB_SQLiteKeepsItsWorkingFilesInRAM(t *testing.T) {
+	if raceEnabled {
+		// Sorts and temporary tables of 30,000 rows in a SQLite that is itself
+		// Go code: about seventy times slower under the race detector (3 s
+		// becomes 4 minutes on four cores, and on CI's runner the package
+		// ran past its ten), and nothing here runs beside anything else.
+		t.Skip("minutes of single-threaded SQLite under the race detector; run without -race")
+	}
 	ctx := context.Background()
 	tmp := t.TempDir()
 	for _, k := range []string{"TMP", "TEMP", "TMPDIR", "SQLITE_TMPDIR"} {
