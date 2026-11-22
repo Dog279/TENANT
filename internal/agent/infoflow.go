@@ -75,9 +75,16 @@ func (t *infoFlowTracker) adopt(results []sensitiveFlowResult) {
 }
 
 func (t *infoFlowTracker) match(args json.RawMessage) (model.InfoFlowLabel, bool) {
-	matched := t.quoting(outboundArgumentForms(args), true)
+	matched := t.quoting(outboundArgumentForms(args))
 	if len(matched) == 0 {
 		return model.InfoFlowLabel{}, false
+	}
+	// One approval speaks for the whole call, so it names the strictest thing
+	// the call quotes: a vault secret over whatever was read after it.
+	for _, m := range matched {
+		if m.label.Provenance == model.ProvenanceVault {
+			return m.label, true
+		}
 	}
 	return matched[0].label, true
 }
@@ -85,7 +92,7 @@ func (t *infoFlowTracker) match(args json.RawMessage) (model.InfoFlowLabel, bool
 // quotedByArgs returns every recorded sensitive result a tool call's
 // arguments quote, newest first.
 func (t *infoFlowTracker) quotedByArgs(args json.RawMessage) []sensitiveFlowResult {
-	return t.quoting(outboundArgumentForms(args), false)
+	return t.quoting(outboundArgumentForms(args))
 }
 
 // quotedByText returns every recorded sensitive result text quotes, newest
@@ -93,10 +100,10 @@ func (t *infoFlowTracker) quotedByArgs(args json.RawMessage) []sensitiveFlowResu
 func (t *infoFlowTracker) quotedByText(text string) []sensitiveFlowResult {
 	var forms flowForms
 	forms.add(text)
-	return t.quoting(forms.out, false)
+	return t.quoting(forms.out)
 }
 
-func (t *infoFlowTracker) quoting(forms []string, firstOnly bool) []sensitiveFlowResult {
+func (t *infoFlowTracker) quoting(forms []string) []sensitiveFlowResult {
 	if len(forms) == 0 {
 		return nil
 	}
@@ -106,9 +113,6 @@ func (t *infoFlowTracker) quoting(forms []string, firstOnly bool) []sensitiveFlo
 	for i := len(t.recent) - 1; i >= 0; i-- {
 		if quotesAny(t.recent[i].fragments, forms) {
 			out = append(out, t.recent[i])
-			if firstOnly {
-				break
-			}
 		}
 	}
 	return out

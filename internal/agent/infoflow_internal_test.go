@@ -31,6 +31,25 @@ func TestInfoFlowTracker_MatchesLateAndShortSensitiveValues(t *testing.T) {
 	})
 }
 
+// One approval speaks for a whole outbound call. A call that quotes a vault
+// secret and something read after it must be judged as carrying the secret,
+// or the later read would hide it from the unattended approver.
+func TestInfoFlowTracker_MatchNamesAVaultSecretOverALaterRead(t *testing.T) {
+	tracker := newInfoFlowTracker()
+	secret, note := "VAULT_SENTINEL_4c1e9b7a", "WIKI_SENTINEL_77d20e5f"
+	tracker.record([]model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceVault}}, secret)
+	tracker.record([]model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceWiki}}, note)
+
+	both, _ := json.Marshal(map[string]any{"content": note + " and the key is " + secret})
+	if label, ok := tracker.match(both); !ok || label.Provenance != model.ProvenanceVault {
+		t.Fatalf("a call quoting both was judged as %q (matched %v), want vault", label.Provenance, ok)
+	}
+	onlyNote, _ := json.Marshal(map[string]any{"content": note})
+	if label, ok := tracker.match(onlyNote); !ok || label.Provenance != model.ProvenanceWiki {
+		t.Fatalf("a call quoting only the note was judged as %q (matched %v), want wiki", label.Provenance, ok)
+	}
+}
+
 // TEN-336: one malformed escape used to make both unescapers fail, so the
 // whole form was dropped and an otherwise encoded secret went out unmatched.
 func TestPercentDecodeKeepsMalformedEscapes(t *testing.T) {
