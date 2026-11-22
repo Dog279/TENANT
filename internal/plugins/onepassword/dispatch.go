@@ -64,7 +64,7 @@ func NewDispatcher(be Backend, policy Policy) *Dispatcher {
 
 const notConfigured = "1Password is not configured - run `/configure onepassword` (a service account token) and `/enable onepassword`"
 
-var sensitive = []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceService}}
+var sensitive = []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceVault}}
 
 func (d *Dispatcher) Tools() []model.ToolSpec {
 	obj := func(props string, req ...string) json.RawMessage {

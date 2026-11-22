@@ -682,6 +682,9 @@ Releases page.
   and always asks. A `vaults` setting fences the agent to named vaults on top of the account's
   own scope. `tenant onepassword whoami|vaults|items <vault>` is the read-only one-shot;
   doctor checks the CLI and the token.
+  A 1Password secret carries its own provenance, `vault`, and an unattended run may type it
+  into a web form or a command line but never quote it into a message, a post, a mail, a
+  search, a URL, a remote service or a helper's task: the unattended approver refuses that.
 - **`request_timeout` on a provider.** `providers.<name>.request_timeout` (a Go duration such as
   `"90s"`) bounds one request to that endpoint, chat, tokenize or embed. A request that hits it
   fails as endpoint-down, so fallbacks and health gating move on instead of the turn hanging on a
