@@ -117,15 +117,17 @@ func TestFleetE2EProcess(t *testing.T) {
 	// No helper reaches this computer's service manager, whatever it runs.
 	runCmd = func(_ context.Context, name string, a ...string) (string, error) {
 		if spec.Scratch == "" {
-			return "", nil
+			return notLoaded(name, a)
 		}
 		f, err := os.OpenFile(filepath.Join(spec.Scratch, "service-manager.log"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 		if err != nil {
 			return "", err
 		}
 		defer f.Close()
-		_, err = fmt.Fprintln(f, strings.Join(append([]string{name}, a...), " "))
-		return "", err
+		if _, err = fmt.Fprintln(f, strings.Join(append([]string{name}, a...), " ")); err != nil {
+			return "", err
+		}
+		return notLoaded(name, a)
 	}
 	if spec.Scratch != "" {
 		_ = os.MkdirAll(spec.Scratch, 0o700)

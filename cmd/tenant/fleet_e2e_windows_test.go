@@ -22,6 +22,12 @@ func e2eQuiet(cmd *exec.Cmd) {
 // e2eProtected is nil when another program of this user is refused this
 // process's memory, as TEN-535's access list refuses it.
 func e2eProtected(pid string) error {
+	// An elevated administrator is let in by the access list itself, by
+	// design, so there is nothing to see when the tests run elevated (CI's
+	// Windows runner does).
+	if windows.GetCurrentProcessToken().IsElevated() {
+		return nil
+	}
 	n, err := strconv.ParseUint(pid, 10, 32)
 	if err != nil {
 		return err

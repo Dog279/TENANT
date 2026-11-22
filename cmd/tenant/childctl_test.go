@@ -1285,8 +1285,10 @@ func TestChildHelperProcess(t *testing.T) {
 				return "", err
 			}
 			defer f.Close()
-			_, err = fmt.Fprintln(f, strings.Join(append([]string{name}, a...), " "))
-			return "", err
+			if _, err = fmt.Fprintln(f, strings.Join(append([]string{name}, a...), " ")); err != nil {
+				return "", err
+			}
+			return notLoaded(name, a)
 		}
 	}
 	childHelperSeams()
