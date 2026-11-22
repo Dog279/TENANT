@@ -71,14 +71,18 @@ func Classify(command string) (dangerous bool, reason string) {
 		}
 	}
 	if selfCommand(c, 0) {
-		return true, "tenant service/update (changes how Tenant itself runs)"
+		return true, "tenant service/update/child/fleet (changes how Tenant itself runs, or what it may do on its fleet)"
 	}
 	return destructiveTarget(c)
 }
 
 // selfVerbs are the subcommands of tenant that stop, remove or replace the
 // Tenant an agent runs in (TEN-498): the operator must say yes to them.
-var selfVerbs = map[string]bool{"service": true, "update": true}
+// TEN-531: the same for the fleet child a machine runs (`tenant child pause`,
+// `resume`, `uninstall` are the operator's on that machine) and for the
+// master's `tenant fleet …`, which sets what the agent may do on every
+// machine of the fleet (permissions, relay, revoke, enroll).
+var selfVerbs = map[string]bool{"service": true, "update": true, "child": true, "fleet": true}
 
 // selfLaunchers run the command that follows their options, VAR=x and
 // numbers or durations (nice -n 10, timeout 30s: no program is named 5 or

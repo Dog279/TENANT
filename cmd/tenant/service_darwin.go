@@ -7,6 +7,9 @@ package main
 // launchd's default grace is system-defined (man launchd.plist) and serve's
 // teardown gets 90. launchd keeps the plist it loaded, so a reinstall unloads
 // first; a stop unloads and keeps the file, so start can load it again.
+//
+// A fleet child installed with --system (TEN-531) is a LaunchDaemon instead:
+// in /Library/LaunchDaemons, in the system domain, started at boot as root.
 
 import (
 	"context"
@@ -28,6 +31,12 @@ const launchdPlist = `<?xml version="1.0" encoding="UTF-8"?>
   <key>ProgramArguments</key>
   <array>
     <string>{{xml .Exe}}</string>
+{{- if .Child}}
+    <string>child</string>
+    <string>run</string>
+    <string>--dir</string>
+    <string>{{xml .Child}}</string>
+{{- else}}
     <string>serve</string>
     <string>--config</string>
     <string>{{xml .CfgDir}}</string>
@@ -35,6 +44,7 @@ const launchdPlist = `<?xml version="1.0" encoding="UTF-8"?>
     <string>{{xml .DataDir}}</string>
     <string>--stop-budget</string>
     <string>{{secs .StopBudget}}</string>
+{{- end}}
   </array>
   <key>KeepAlive</key>
   <dict>
@@ -50,9 +60,9 @@ const launchdPlist = `<?xml version="1.0" encoding="UTF-8"?>
   <key>WorkingDirectory</key>
   <string>{{xml .DataDir}}</string>
   <key>StandardOutPath</key>
-  <string>{{xml .LogDir}}/serve.log</string>
+  <string>{{xml .LogDir}}/{{.LogName}}.log</string>
   <key>StandardErrorPath</key>
-  <string>{{xml .LogDir}}/serve.err.log</string>
+  <string>{{xml .LogDir}}/{{.LogName}}.err.log</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key>
@@ -71,12 +81,23 @@ var launchdTmpl = template.Must(template.New("plist").Funcs(template.FuncMap{
 
 func (s serviceSpec) unitText() string {
 	home, _ := os.UserHomeDir()
+	if s.System {
+		home = "/var/root" // a daemon is nobody's session: root's own home, not the installer's
+	}
 	var b strings.Builder
 	_ = launchdTmpl.Execute(&b, struct {
 		serviceSpec
-		Home string
-	}{s, home})
+		Home, LogName string
+	}{s, home, s.logName()})
 	return b.String()
+}
+
+// logName is the base name of the unit's two log files.
+func (s serviceSpec) logName() string {
+	if s.Child != "" {
+		return "child"
+	}
+	return "serve"
 }
 
 // unitDir is where this user's LaunchAgents live. A variable so that the tests keep
@@ -88,9 +109,23 @@ var unitDir = func() string {
 	return filepath.Join(home, "Library", "LaunchAgents")
 }
 
-func (s serviceSpec) unitPath() string { return filepath.Join(unitDir(), s.Label+".plist") }
+// systemUnitDir is where the machine's own daemons live: a --system child's.
+// A variable for the same reason unitDir is one.
+var systemUnitDir = func() string { return "/Library/LaunchDaemons" }
 
-func (s serviceSpec) domain() string { return fmt.Sprintf("gui/%d", os.Getuid()) }
+func (s serviceSpec) unitPath() string {
+	if s.System {
+		return filepath.Join(systemUnitDir(), s.Label+".plist")
+	}
+	return filepath.Join(unitDir(), s.Label+".plist")
+}
+
+func (s serviceSpec) domain() string {
+	if s.System {
+		return "system"
+	}
+	return fmt.Sprintf("gui/%d", os.Getuid())
+}
 func (s serviceSpec) target() string { return s.domain() + "/" + s.Label }
 
 func (s serviceSpec) install(ctx context.Context) error {
@@ -161,6 +196,9 @@ func (s serviceSpec) unitCurrent(context.Context) (bool, error) {
 }
 
 func (s serviceSpec) logs() string {
+	if s.Child != "" {
+		return filepath.Join(s.LogDir, "child.log") + " and child.err.log"
+	}
 	return filepath.Join(s.LogDir, "serve.log") + " and serve.err.log (the log book has the rest: tenant logs)"
 }
 

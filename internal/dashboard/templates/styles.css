@@ -470,3 +470,11 @@ details.tool[open] summary{border-bottom:1px solid var(--line2)}
 .rail .line.k-err{color:var(--red)}
 .rail .line.k-ok{color:var(--green)}
 @media (max-width:600px){.chat-row{flex-direction:column}.activity{max-width:none}.activity[open]{width:auto}.rail{max-height:30vh}}
+/* == TEN-533 fleet == */
+.fl-table{min-width:820px}
+.fl-table td:not(:first-child),.fl-facts td:not(:first-child){white-space:normal;overflow-wrap:anywhere}
+.fl-table td:first-child{min-width:110px}
+.fl-facts th{width:1%;padding-right:18px}
+.fl-said{font-family:ui-monospace,monospace;font-size:12px;color:#cdd8ea}
+.fl-paste{flex:1;min-width:0;overflow-wrap:anywhere;user-select:all;font-size:12px}
+/* == end TEN-533 == */

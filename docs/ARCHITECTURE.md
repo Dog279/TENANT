@@ -24,14 +24,14 @@ includes comments and blank lines. “Plugin capability packages” counts immed
 with `go run ./scripts/docfacts -write docs/ARCHITECTURE.md`; CI checks this
 block for drift.
 
-<!-- docfacts:generated:start; date=2026-11-21; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
+<!-- docfacts:generated:start; date=2026-11-22; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
-| Go packages | 103 |
-| Go files | 1,415 |
-| Test files | 689 |
-| Production Go LOC | 184,572 |
-| Test Go LOC | 139,091 |
+| Go packages | 106 |
+| Go files | 1,585 |
+| Test files | 801 |
+| Production Go LOC | 207,340 |
+| Test Go LOC | 180,435 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -128,6 +128,7 @@ generated from `internal/archtest/rules.go`, and
 |---|---|---|
 | every `internal/**` package | `internal/logs/event`, `internal/logs/catalog`, `internal/logs/capture`, `internal/procprotect` | on top of its own row: the event model, the built-in providers (the Security log's records among them) and child capture, so an event is written, and a child filed, where the action happens; and procprotect, through which every command is started |
 | `cmd/**` | anything | the composition root and command adapters |
+| `scripts/releasekey` | `internal/selfupdate`, `internal/fsperm` | signs releases in the exact form the binary verifies (TEN-542); both are stdlib-only leaves |
 | `scripts/**` | nothing in the module | build tools stand alone |
 | `reference/**` | `reference/**` | examples for tool builders; never tenant/internal |
 | `internal/archtest` | nothing in the module | these tests |
@@ -159,7 +160,9 @@ generated from `internal/archtest/rules.go`, and
 | `internal/logs/capture` | `internal/logs/event`, `internal/runtrace`, `internal/lifecycle` | child-process capture; every internal package may import it; a running child is a lifecycle component |
 | `internal/research` | `internal/fsperm` |  |
 | `internal/backup` | `internal/datalock`, `internal/fsperm`, `internal/secrets`, `internal/version` |  |
+| `internal/fleet/shadow` | `internal/memory/episodic`, `internal/memory/semantic`, `internal/secrets`, `internal/fsperm`, `internal/datalock` | a fleet machine's memory: the master's shadow in RAM and its encrypted snapshots, the child's copies, and which side wins; knows no link |
 | `internal/peering` | `internal/httplimits`, `internal/secrets` |  |
+| `internal/fleet` | `internal/fleet/shadow`, `internal/secrets`, `internal/datalock`, `internal/httplimits`, `internal/mcp/**`, `internal/model` | a fleet's identity, enrollment and fleet.json, and the link between a master and its children; serves the tool mux it is handed and knows no tool and no command |
 | `internal/mcp` | `internal/mcp/transport` | wire protocol only, no LLM knowledge |
 | `internal/model` | `internal/model/profiles`, `internal/runtrace` | no memory, agent or plugins |
 | `internal/model/**` | `internal/model/**`, `internal/runtrace`, `internal/fsperm` |  |
@@ -269,7 +272,12 @@ Handler, Call/Notify, read pump, response routing), `initialize.go`
 `version.go` (`ProtocolVersion = "2025-06-18"`, `LibraryVersion`),
 `transport/transport.go` (`Transport` interface, `ErrClosed`,
 `ErrFrameTooLarge`), `transport/stdio.go` (newline-delimited stdio:
-NewStdioSelf / NewStdioStreams / NewStdioProcess).
+NewStdioSelf / NewStdioStreams / NewStdioProcess), `transport/sse.go`
+(HTTP with Server-Sent Events), `transport/ws.go` (WebSocket over a
+connection the caller supplies, for the fleet link: NewWSClient /
+NewWSServer / UpgradeWSClient / UpgradeWSServer; a frame limit both ways,
+a write deadline, and a dead peer noticed within two ping intervals, see
+the package comment).
 
 **Public API:**
 - `mcp.NewSession(t transport.Transport, h Handler) *Session`
@@ -1385,6 +1393,57 @@ when no surface can reach the operator. It knows no plugin and no surface:
 plugin registry's; an action neither knows is destructive) and the launch flags'
 grants, and the commands wire in persistence, the event stream and each
 channel's backend.
+
+**A fleet machine's approvals** (`internal/approval/fleet.go`, TEN-531). An
+action that lands on a child machine is checked twice, and both checks must
+pass: by the origin of its turn (`approval.Origin`: this computer, a relay, a
+scheduled job) and by that machine's own scheme. `approval.Fleet` holds a scheme
+per machine id as a `Broker` and a `Rules` of its own, and keeps them in the
+settings file (`fleet_schemes`, and `fleet_rules` for what new machines start
+with). `Fleet.For(origin, machine).Confirm` decides through `Broker.Confirm`'s
+own ladder: deny beats ask beats allow, an origin with nobody to ask turns ask
+into deny, "always" saves into that machine's scheme alone, the read-only
+command judgement is never asked, and the request and every Security record
+name the machine. An origin that was not opened for the fleet reaches no
+machine at all (`Decider.Reach`).
+
+**The dashboard's Fleet page** (`internal/dashboard/fleet.go`,
+`cmd/tenant/fleet_dashctl.go`, TEN-533) runs the same operations as `tenant
+fleet` and `/fleet` (`fleetOps`) over the running process's state: the
+machines with their link, what each reports about itself (escaped and quoted
+by `fleetQuote` before it reaches the page), each machine's scheme, and its
+drift from what `Fleet.Inherit` would give it now (`Scheme.Drift`), with "copy
+again" and "apply fleet rules". Its memory column is `memoryStateIn`
+(`cmd/tenant/fleetmemory.go`): the holder's last comparison, or in another
+process the holder's record in `<data>/fleet/states.json`; it decrypts
+nothing. A machine is
+confirmed there only from a browser signed in on the computer running Tenant
+(`Server.atThisComputer`: loopback peer, loopback Host, no proxy header, the
+session cookie and never the API key); `TestOnlyTheOperatorConfirmsAMachine`
+holds the dashboard to that one handler. `GET /api/fleet` is the page as JSON
+and changes nothing.
+
+**Losing the master** (TEN-533). `tenant child rehome` (`childRehome`,
+`cmd/tenant/childctl.go`) is `fleet.Enroll` again with the machine's existing
+identity, then one `fleet.UpdateChild` that swaps id, name, addresses and the
+master's fingerprint; it holds the child's audit log while it works (so no
+child process runs meanwhile) and appends an `AuditRehome` record.
+`TestChildRehomeIsStartedOnlyOnTheMachine` pins its one caller, the writers of
+`child.json` and the link's method set. The copies on the machine stay sealed
+to the old fleet; `tenant fleet recover` posts the recovery identity as the
+body of `POST /fleet/recover` to the holder, whose `fleetMemory.recoverWith`
+reads the newest copy under another key with `shadow.Store.AdoptAs` (which
+accepts a copy naming the machine's old id only under a recovery identity)
+and pushes the result as a generation under the new key.
+
+**Whose word an update is taken on.** `fleet.Update` carries the release's
+`Asset`, `Checksums` and `Bundle` on the opening piece of each send (`sendPieces`). A child on
+the default rule (`child.json` `updates` empty or `release`) runs `childUpdater.verifyRelease`
+before it takes a byte: the asset name for its own target, `cosign verify-blob --offline`
+(`selfupdate.CosignArgs`) against `childReleaseRepo`, which is the binary's own `version.Repo`, and
+the verified checksums' entry for the asset equal to the SHA-256 sent. `updates: master` keeps
+the master's hash. The rule is set only by `tenant child install --updates` and `tenant child
+updates`; `TestChildUpdateRuleIsNotSetOverTheLink` pins `fleet/addresses` to the addresses.
 
 ### 5.13 `cmd/tenant` — CLI (main.go + wiring.go + commands.go)
 

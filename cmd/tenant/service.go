@@ -32,9 +32,42 @@ import (
 // has no shell and no working directory of ours to resolve them against.
 type serviceSpec struct {
 	Exe, CfgDir, DataDir, LogDir string
-	System                       bool          // Windows only: an SCM service as SYSTEM; elsewhere "not supported yet"
+	System                       bool          // serve: Windows only, an SCM service as SYSTEM. A child: every OS, as root or SYSTEM
 	StopBudget                   time.Duration // passed as --stop-budget: the grace the OS grants a stop (the plan's PR E table)
 	Label                        string        // the unit's name under its manager
+	// Child, when set, is a fleet child's directory: the unit runs `tenant
+	// child run --dir <Child>` instead of serve (TEN-531, childctl.go).
+	Child string
+}
+
+// what says what the unit runs, where a manager shows a description.
+func (s serviceSpec) what() string {
+	if s.Child != "" {
+		return "Tenant fleet child (tenant child run)"
+	}
+	return "Tenant agent (tenant serve)"
+}
+
+// childSpecFor is the unit of the fleet child in dir: its own label, so it
+// stands beside a `tenant service` install, and with system a unit that the
+// machine starts at boot as root or SYSTEM, on every OS.
+func childSpecFor(goos, exe, dir string, system bool) (serviceSpec, error) {
+	dir, err := filepath.Abs(expandPath(dir))
+	if err != nil {
+		return serviceSpec{}, err
+	}
+	s := serviceSpec{Exe: exe, Child: dir, CfgDir: dir, DataDir: childDataDir(dir), System: system, StopBudget: 30 * time.Second, Label: "tenant-child"}
+	switch goos {
+	case "darwin":
+		// launchd writes the child's output where the unit says. Beside the
+		// child's other working files, whoever it runs as.
+		s.Label, s.LogDir = "com.tenant.child", filepath.Join(s.DataDir, "logs")
+	case "windows":
+		if s.Label = `\Tenant\Child`; system {
+			s.Label = "TenantChild"
+		}
+	}
+	return s, nil
 }
 
 // runCmd runs one service-manager command and returns its combined output.

@@ -30,6 +30,19 @@ func noServiceManager(context.Context, string, ...string) (string, error) {
 	return "", errNoServiceManager
 }
 
+// notLoaded is what a stand-in that only writes down what it is asked
+// answers: yes to everything, except to launchd's "is the job loaded"
+// (launchctl print). It performs nothing, so nothing is ever loaded, and a
+// yes there makes a stop on macOS wait its whole budget for an end that
+// never comes (first seen on CI's Mac: every child install took 40 s and
+// failed).
+func notLoaded(name string, args []string) (string, error) {
+	if name == "launchctl" && len(args) > 0 && args[0] == "print" {
+		return "", errors.New("exit status 113")
+	}
+	return "", nil
+}
+
 // liveServiceManager gives a test the real launchctl, systemctl, schtasks
 // and sc, and the real unit dir (useRealUnitDir): the TENANT_LIVE_SERVICE
 // tests, which install a unit of their own under a test name.
@@ -65,7 +78,7 @@ func (r *cmdRecorder) install(t *testing.T) {
 		if r.reply != nil {
 			return r.reply(argv)
 		}
-		return "", nil
+		return notLoaded(name, args)
 	}
 	t.Cleanup(func() { runCmd = prev })
 }

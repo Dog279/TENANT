@@ -24,6 +24,7 @@ var anything = []string{"**"}
 // decision here.
 var rules = []rule{
 	{Pkg: "cmd/**", May: anything, Notes: "the composition root and command adapters"},
+	{Pkg: "scripts/releasekey", May: []string{"internal/selfupdate", "internal/fsperm"}, Notes: "signs releases in the exact form the binary verifies (TEN-542); both are stdlib-only leaves"},
 	{Pkg: "scripts/**", Notes: "build tools stand alone"},
 	{Pkg: "reference/**", May: []string{"reference/**"}, Notes: "examples for tool builders; never tenant/internal"},
 	{Pkg: "internal/archtest", Notes: "these tests"},
@@ -57,7 +58,9 @@ var rules = []rule{
 	{Pkg: "internal/logs/capture", May: []string{"internal/logs/event", "internal/runtrace", "internal/lifecycle"}, Notes: "child-process capture; every internal package may import it; a running child is a lifecycle component"},
 	{Pkg: "internal/research", May: []string{"internal/fsperm"}},
 	{Pkg: "internal/backup", May: []string{"internal/datalock", "internal/fsperm", "internal/secrets", "internal/version"}},
+	{Pkg: "internal/fleet/shadow", May: []string{"internal/memory/episodic", "internal/memory/semantic", "internal/secrets", "internal/fsperm", "internal/datalock"}, Notes: "a fleet machine's memory: the master's shadow in RAM and its encrypted snapshots, the child's copies, and which side wins; knows no link"},
 	{Pkg: "internal/peering", May: []string{"internal/httplimits", "internal/secrets"}},
+	{Pkg: "internal/fleet", May: []string{"internal/fleet/shadow", "internal/secrets", "internal/datalock", "internal/httplimits", "internal/mcp/**", "internal/model"}, Notes: "a fleet's identity, enrollment and fleet.json, and the link between a master and its children; serves the tool mux it is handed and knows no tool and no command"},
 	{Pkg: "internal/mcp", May: []string{"internal/mcp/transport"}, Notes: "wire protocol only, no LLM knowledge"},
 	{Pkg: "internal/model", May: []string{"internal/model/profiles", "internal/runtrace"}, Notes: "no memory, agent or plugins"},
 	{Pkg: "internal/model/**", May: []string{"internal/model/**", "internal/runtrace", "internal/fsperm"}},

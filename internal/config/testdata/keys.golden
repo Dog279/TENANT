@@ -26,6 +26,7 @@ config.json: cron.catchup
 config.json: cron.jobs
 config.json: cron.jobs[].enabled
 config.json: cron.jobs[].exec
+config.json: cron.jobs[].fleet
 config.json: cron.jobs[].id
 config.json: cron.jobs[].kind
 config.json: cron.jobs[].name
@@ -58,6 +59,8 @@ config.json: embed_dim
 config.json: embed_endpoint
 config.json: embed_model
 config.json: fallbacks
+config.json: fleet
+config.json: fleet.listen
 config.json: gateway
 config.json: gateway.mode
 config.json: gateway.sse_addr
@@ -69,6 +72,7 @@ config.json: health_gating.cooldown_ms
 config.json: health_gating.min_samples
 config.json: health_gating.slow_threshold_ms
 config.json: imessage
+config.json: imessage.allow_fleet
 config.json: imessage.allow_from
 config.json: imessage.enabled
 config.json: imessage.known_categories
@@ -178,6 +182,7 @@ config.json: providers.*.tool_format
 config.json: providers.*.vision
 config.json: relay
 config.json: relay.allow_exec
+config.json: relay.allow_fleet
 config.json: relay.approval_timeout
 config.json: relay.card_style
 config.json: relay.enabled
@@ -245,6 +250,8 @@ settings.json: exec_profiles.*.memory_mb
 settings.json: exec_profiles.*.network
 settings.json: exec_profiles.*.read_roots
 settings.json: exec_profiles.*.write_roots
+settings.json: fleet_rules
+settings.json: fleet_schemes
 settings.json: known_categories
 settings.json: permissions
 settings.json: protection_acknowledged

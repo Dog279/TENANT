@@ -1922,6 +1922,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	// Execution-sandbox profiles and exceptions (execprofiles.go): same file,
 	// re-read on edit; an approved exception is saved through stg.
 	loadExecSettings(c, stg, &stgMu, pushSys)
+	loadFleetSettings(stg, &stgMu, c.cfgDir, c.agent, pushSys) // each fleet machine's approval scheme: same file
 	go watchSettings(ctx, c.cfgDir, c.agent, broker, defaultToolRules, &stgMu, stg, pushSys)
 
 	// Web is PER-AGENT (each agent gets its own browser so concurrent
@@ -2170,7 +2171,8 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	mux.EnableStats(tstats)
 	mainLocal.EnableStats(tstats)
 	life.AddFunc(lifecycle.Release, "tool stats", tstats.StartPersist(time.Minute))
-	mainTools := composite{shared: mux, local: mainLocal, budget: rt.budget, agentID: c.agent}
+	wireFleetTools() // the fleet_* tools work on this process's fleet (TEN-531); before the first turn
+	mainTools := composite{shared: mux, local: mainLocal, budget: rt.budget, agentID: c.agent, refresh: fleetToolSync(mainLocal, mux)}
 
 	// Live bus view → feed (lossless cursor over the retained log).
 	go func() {
@@ -2330,7 +2332,8 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		PerTurnToolRanking: c.lc.PerTurnToolRanking,
 		Skills:             skillRetriever{st: skillStore, agentID: c.agent, tools: mainTools},
 		SystemPrompt:       mainPrompt,
-		RenderAgents:       func() string { return renderAgentsForOrchestrator(rt.AgentProfiles()) },
+		RenderAgents:       func() string { return renderAgentsForOrchestrator(rt.AgentProfiles()) + fleetRoster() },
+		OnEpisode:          fleetOnEpisode, // each machine a turn worked on gets its part of it (TEN-532)
 		// Context compaction: when the budget fills, summarize old turns
 		// (via the summarizer role) instead of hard-truncating them.
 		Compactor: compressor,
@@ -2405,7 +2408,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 			for _, j := range c.lc.Cron.Jobs {
 				cronDefs = append(cronDefs, cron.JobDef{
 					ID: j.ID, Name: j.Name, Spec: j.Spec, Prompt: j.Prompt,
-					Enabled: j.Enabled, Kind: j.Kind, Exec: j.Exec, TZ: j.TZ,
+					Enabled: j.Enabled, Kind: j.Kind, Exec: j.Exec, TZ: j.TZ, Fleet: j.Fleet,
 				})
 			}
 		}
@@ -2417,7 +2420,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 			for i, d := range defs {
 				jobs[i] = cronJobConfig{
 					ID: d.ID, Name: d.Name, Spec: d.Spec, Prompt: d.Prompt,
-					Enabled: d.Enabled, Kind: d.Kind, Exec: d.Exec, TZ: d.TZ,
+					Enabled: d.Enabled, Kind: d.Kind, Exec: d.Exec, TZ: d.TZ, Fleet: d.Fleet,
 				}
 			}
 			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Cron.Jobs = jobs })
@@ -2521,6 +2524,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		// the TUI now shows + resolves the SAME pending queue, no channel-stealing.
 		approvals: broker,
 		rules:     dashRules{defaultToolRules},
+		fleet:     newDashFleet(c, stg, &stgMu), // the Fleet page, over the same operations as /fleet (TEN-533)
 		broker:    evBroker,
 		logs:      hub, // the log book: Activity backfill + replay + the folders on disk
 		runs:      st.runs,
@@ -2581,6 +2585,8 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	// approver) is wired below, once the relay manager exists.
 	discordBroker := newDiscordApprovalBroker(log.With("source", "approvals"))
 	discordBroker.SetEvents(emit) // visibility bridge: Discord-routed approvals surface on the feed (TEN-203)
+	// A Discord turn's fleet call is checked by this broker as well as by the machine's scheme (TEN-531).
+	fleetRelayBroker(surfaceDiscord, discordBroker)
 	discordBroker.SetPersist(func(snap map[string]string, known []string) {
 		persistChoice(c.cfgDir, c.lc, pushSys, "relay: the permission change", func(lc *launchConfig) {
 			lc.Relay.Permissions, lc.Relay.KnownCategories = snap, known
@@ -2707,6 +2713,8 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		imsgBroker.LoadModes(c.lc.IMessage.Permissions, c.lc.IMessage.KnownCategories)
 	}
 	imsgAllowMgr.setPerms(imsgBroker)
+	// An iMessage turn's fleet call is checked by this broker as well as by the machine's scheme (TEN-531).
+	fleetRelayBroker(surfaceIMessage, imsgBroker)
 	imsgAllowMgr.loadConfig(c.cfgDir, c.lc)
 
 	// Phase-2 text-confirm operator (TEN-267): the handle whose "Y <nonce>" reply
@@ -2831,6 +2839,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 			}
 		}
 		sched.Register(distillJob, *distillEvery)
+		sched.Register(fleetDistillJob{d: distiller}, *distillEvery) // each fleet machine's own episodes (TEN-532)
 		improveCfg := improveConfig{}
 		// Pinned proposer router (TEN-195): reflection/summarizer/proposer calls
 		// use a stronger model when improve.profile is set; the embedder and the
@@ -3101,6 +3110,12 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		}
 	}
 
+	// The fleet (TEN-531): the terminal app holds the fleet's links unless
+	// `tenant serve` already does, and /fleet says which (fleethub.go).
+	setFleetEmbedder(peerEmb) // re-embeds a machine's memory rebuilt from its copy (TEN-532)
+	life.AddFunc(lifecycle.Intake, "fleet listener", startFleetHub(ctx, c, "tui", broker, pushSys, log.With("source", "fleet")))
+	fleetCtl := newFleetTUIControl(c, stg, &stgMu)
+
 	modelName := c.vllmModel
 	if c.backend == "echo" || modelName == "" {
 		modelName = c.backend
@@ -3165,6 +3180,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		Logs:            newTUILogs(hub, st.runs),
 		MCP:             mcpCtl,
 		GitHub:          githubTUIControl{cfgDir: c.cfgDir, lc: c.lc},
+		Fleet:           fleetCtl,
 		Peer:            peerTUIControl{cfgDir: c.cfgDir, serve: peerServeFn, reconnect: func() { mux.ReconnectPeersSilently(c.cfgDir) }, stats: peerFedStatsView(mux), health: peerHealth.tuiHealth},
 		Secrets:         tuiKeys{dk: dashKeys{cfgDir: c.cfgDir, mc: modelCtl, surface: surfaceTUI}},
 		Setup:           setupControl{cfgDir: c.cfgDir, mc: modelCtl},

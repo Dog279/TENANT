@@ -250,60 +250,12 @@ func withDB(path string, readOnly bool, fn func(*sql.DB) error) error {
 // selectRows adds the rows sel picks directly to s: episodes, facts, SME
 // sections, skills and runs, and the run of every selected episode.
 func selectRows(ctx context.Context, d Data, sel Selector, s *selection) error {
-	agentCond, agentArgs := "", []any(nil)
-	if sel.Agent != "" {
-		agentCond, agentArgs = " AND agent_id = ?", []any{sel.Agent}
-	}
-	with := func(cond string, args ...any) (string, []any) {
-		return "(" + cond + ")" + agentCond, append(args, agentArgs...)
-	}
-	err := withDB(d.path(episodesDB), true, func(db *sql.DB) error {
-		if len(sel.Sessions) > 0 {
-			c, a := with("session_id IN ("+inClause(len(sel.Sessions))+")", anys(sel.Sessions)...)
-			if err := selectEpisodesWhere(ctx, db, s.episodes, c, a...); err != nil {
-				return err
-			}
-		}
-		for _, ids := range chunks(sel.Episodes, 500) {
-			c, a := with("id IN ("+inClause(len(ids))+")", anys(ids)...)
-			if err := selectEpisodesWhere(ctx, db, s.episodes, c, a...); err != nil {
-				return err
-			}
-		}
-		if !sel.Before.IsZero() {
-			c, a := with("ts < ?", sel.Before.Unix())
-			if err := selectEpisodesWhere(ctx, db, s.episodes, c, a...); err != nil {
-				return err
-			}
-		}
-		if s.match != "" {
-			c, a := with(`instr(lower(prompt || char(10) || response || char(10) || coalesce(tags, '') || char(10) || coalesce(tool_calls, '')), ?) > 0`, s.match)
-			if err := selectEpisodesWhere(ctx, db, s.episodes, c, a...); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	with := agentScope(sel.Agent)
+	err := withDB(d.path(episodesDB), true, func(db *sql.DB) error { return selectEpisodeRows(ctx, db, sel, s) })
 	if err != nil {
 		return err
 	}
-	err = withDB(d.path(factsDB), true, func(db *sql.DB) error {
-		if s.match != "" {
-			c, a := with(`instr(lower(fact), ?) > 0`, s.match)
-			if err := selectIDs(ctx, db, `SELECT id FROM facts WHERE `+c, a, s.facts); err != nil {
-				return err
-			}
-			if ok, err := hasTable(ctx, db, "sme_docs"); err != nil {
-				return err
-			} else if ok {
-				c, a := with(`instr(lower(body), ?) > 0`, s.match)
-				if err := selectIDs(ctx, db, `SELECT id FROM sme_docs WHERE `+c, a, s.sme); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	})
+	err = withDB(d.path(factsDB), true, func(db *sql.DB) error { return selectFactRows(ctx, db, sel, s) })
 	if err != nil {
 		return err
 	}
@@ -353,6 +305,76 @@ func selectRows(ctx context.Context, d Data, sel Selector, s *selection) error {
 	return withDB(d.path(episodesDB), true, func(db *sql.DB) error {
 		return episodeRuns(ctx, db, s.episodes, s.runs)
 	})
+}
+
+// agentScope adds "this agent's rows only" to a condition, when agent is set.
+func agentScope(agent string) func(cond string, args ...any) (string, []any) {
+	return func(cond string, args ...any) (string, []any) {
+		if agent == "" {
+			return "(" + cond + ")", args
+		}
+		return "(" + cond + ") AND agent_id = ?", append(args, agent)
+	}
+}
+
+// selectEpisodeRows adds the episodes sel picks in db to s.
+func selectEpisodeRows(ctx context.Context, db queryer, sel Selector, s *selection) error {
+	with := agentScope(sel.Agent)
+	if len(sel.Sessions) > 0 {
+		c, a := with("session_id IN ("+inClause(len(sel.Sessions))+")", anys(sel.Sessions)...)
+		if err := selectEpisodesWhere(ctx, db, s.episodes, c, a...); err != nil {
+			return err
+		}
+	}
+	for _, ids := range chunks(sel.Episodes, 500) {
+		c, a := with("id IN ("+inClause(len(ids))+")", anys(ids)...)
+		if err := selectEpisodesWhere(ctx, db, s.episodes, c, a...); err != nil {
+			return err
+		}
+	}
+	if len(sel.Runs) > 0 && hasColumn(ctx, db, "episodes", "source_run_id") {
+		for _, runs := range chunks(sel.Runs, 500) {
+			c, a := with("source_run_id IN ("+inClause(len(runs))+")", anys(runs)...)
+			if err := selectEpisodesWhere(ctx, db, s.episodes, c, a...); err != nil {
+				return err
+			}
+		}
+	}
+	if !sel.Before.IsZero() {
+		c, a := with("ts < ?", sel.Before.Unix())
+		if err := selectEpisodesWhere(ctx, db, s.episodes, c, a...); err != nil {
+			return err
+		}
+	}
+	if s.match != "" {
+		c, a := with(`instr(lower(prompt || char(10) || response || char(10) || coalesce(tags, '') || char(10) || coalesce(tool_calls, '')), ?) > 0`, s.match)
+		if err := selectEpisodesWhere(ctx, db, s.episodes, c, a...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// selectFactRows adds the facts and SME sections that hold sel's text in db
+// to s.
+func selectFactRows(ctx context.Context, db queryer, sel Selector, s *selection) error {
+	if s.match == "" {
+		return nil
+	}
+	with := agentScope(sel.Agent)
+	c, a := with(`instr(lower(fact), ?) > 0`, s.match)
+	if err := selectIDs(ctx, db, `SELECT id FROM facts WHERE `+c, a, s.facts); err != nil {
+		return err
+	}
+	if ok, err := hasTable(ctx, db, "sme_docs"); err != nil {
+		return err
+	} else if ok {
+		c, a := with(`instr(lower(body), ?) > 0`, s.match)
+		if err := selectIDs(ctx, db, `SELECT id FROM sme_docs WHERE `+c, a, s.sme); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func selectEpisodesWhere(ctx context.Context, db queryer, into map[int64]episodeRef, cond string, args ...any) error {

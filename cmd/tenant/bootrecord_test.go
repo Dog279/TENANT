@@ -20,6 +20,7 @@ import (
 	"tenant/internal/logs/event"
 	"tenant/internal/logs/store"
 	"tenant/internal/model"
+	"tenant/internal/procprotect"
 )
 
 // TestMain doubles as the Tenant processes the boot-record tests start
@@ -30,6 +31,12 @@ func TestMain(m *testing.M) {
 	// this it would run every test of the package instead.
 	if was, code := runSessionWatcher(); was {
 		os.Exit(code)
+	}
+	// The same for the helper that keeps a console open, which Protect starts
+	// in a test's process that is alone on its console (fleet_e2e_test.go):
+	// Protect, in that process, is all it does (internal/procprotect).
+	if len(os.Args) == 2 && os.Args[1] == "__console-anchor" {
+		procprotect.Protect()
 	}
 	if mode := os.Getenv("TENANT_BOOT_HELPER"); mode != "" {
 		bootHelper(mode, os.Getenv("TENANT_BOOT_ROOT"))

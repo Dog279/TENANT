@@ -12,6 +12,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"flag"
 	"fmt"
@@ -196,40 +197,11 @@ func runUpdate(ctx context.Context, u *updateEnv, o updateOpts) error {
 	if err := os.MkdirAll(stage, 0o700); err != nil {
 		return err
 	}
-	asset := selfupdate.AssetName(newV, runtime.GOOS, runtime.GOARCH)
-	for _, name := range []string{asset, "checksums.txt"} {
-		url, ok := rel.Assets[name]
-		if !ok {
-			return fmt.Errorf("release %s has no %s", rel.Tag, name)
-		}
-		if err := selfupdate.Download(ctx, u.client, url, gh, filepath.Join(stage, name)); err != nil {
-			return err
-		}
-	}
-	archive, sums := filepath.Join(stage, asset), filepath.Join(stage, "checksums.txt")
-	bundle := ""
-	if url, ok := rel.Assets["checksums.txt.sigstore.json"]; ok {
-		bundle = filepath.Join(stage, "checksums.txt.sigstore.json")
-		if err := selfupdate.Download(ctx, u.client, url, gh, bundle); err != nil {
-			return err
-		}
-	}
-	// 4. Verify: the checksum always; the signature when cosign is on PATH
-	// and the release carries the bundle, failing closed.
-	if err := selfupdate.Verify(archive, sums); err != nil {
+	archive, said, err := fetchRelease(ctx, u.client, u.repo, gh, rel, runtime.GOOS, runtime.GOARCH, stage)
+	if err != nil {
 		return err
 	}
-	switch {
-	case bundle != "" && selfupdate.HaveCosign():
-		if err := selfupdate.CosignVerify(ctx, runCmd, sums, bundle, u.repo); err != nil {
-			return err
-		}
-		fmt.Fprintln(u.out, "verified checksum and signature")
-	case bundle == "":
-		fmt.Fprintln(u.out, "verified checksum only (the release carries no signature bundle)")
-	default:
-		fmt.Fprintln(u.out, "verified checksum only (install cosign to verify the signature)")
-	}
+	fmt.Fprintln(u.out, said)
 	// 5. Smoke-test before touching anything: the new binary must run and
 	// be the version the tag says.
 	member := exeName()
@@ -343,6 +315,95 @@ func runUpdate(ctx context.Context, u *updateEnv, o updateOpts) error {
 	_ = selfupdate.ClearState(marker)
 	fmt.Fprintf(u.out, "updated %s -> %s\n", version.Version, newV)
 	return nil
+}
+
+// fetchRelease is steps 3 and 4 for one target: the archive release rel
+// publishes for goos and goarch, its checksums and, when the release has
+// one, the signature bundle, downloaded into stage; then verified, the
+// checksum always and the signature when cosign is on PATH and the release
+// carries the bundle, failing closed. `tenant update` takes its own target;
+// `tenant fleet update` takes the machine's (fleetupdate.go), so a child is
+// sent nothing this Tenant would not install on itself. said is the line
+// that tells the operator what was verified.
+func fetchRelease(ctx context.Context, client *http.Client, repo, gh string, rel selfupdate.Release, goos, goarch, stage string) (archive, said string, err error) {
+	asset := selfupdate.AssetName(selfupdate.VersionOf(rel.Tag), goos, goarch)
+	for _, name := range []string{asset, "checksums.txt"} {
+		url, ok := rel.Assets[name]
+		if !ok {
+			return "", "", fmt.Errorf("release %s has no %s", rel.Tag, name)
+		}
+		if err := selfupdate.Download(ctx, client, url, gh, filepath.Join(stage, name)); err != nil {
+			return "", "", err
+		}
+	}
+	archive, sums := filepath.Join(stage, asset), filepath.Join(stage, "checksums.txt")
+	bundle := ""
+	if url, ok := rel.Assets["checksums.txt.sigstore.json"]; ok {
+		bundle = filepath.Join(stage, "checksums.txt.sigstore.json")
+		if err := selfupdate.Download(ctx, client, url, gh, bundle); err != nil {
+			return "", "", err
+		}
+	}
+	// The project signature (TEN-542), fetched whenever the release has one
+	// (a master sends it on to its machines), checked when this build
+	// carries the project key, and then required.
+	signed := false
+	if url, ok := rel.Assets[selfupdate.SignatureAsset]; ok {
+		signed = true
+		if err := selfupdate.Download(ctx, client, url, gh, filepath.Join(stage, selfupdate.SignatureAsset)); err != nil {
+			return "", "", err
+		}
+	}
+	keys, err := selfupdate.ParseKeys(version.ReleaseKeys)
+	if err != nil {
+		return "", "", fmt.Errorf("this build's project key does not read (%v), so it takes no update", err)
+	}
+	if len(keys) > 0 {
+		if !signed {
+			return "", "", fmt.Errorf("release %s carries no project signature (%s), and this build of Tenant takes only a release signed with the project key it carries", rel.Tag, selfupdate.SignatureAsset)
+		}
+		if err := verifyProjectFiles(stage, keys); err != nil {
+			return "", "", fmt.Errorf("release %s: %w", rel.Tag, err)
+		}
+	}
+	if err := selfupdate.Verify(archive, sums); err != nil {
+		return "", "", err
+	}
+	cosigned := false
+	if bundle != "" && selfupdate.HaveCosign() {
+		if err := selfupdate.CosignVerify(ctx, runCmd, sums, bundle, repo); err != nil {
+			return "", "", err
+		}
+		cosigned = true
+	}
+	switch {
+	case len(keys) > 0 && cosigned:
+		return archive, "verified checksum, the project key's signature and the release workflow's signature", nil
+	case len(keys) > 0 && bundle == "":
+		return archive, "verified checksum and the project key's signature (the release carries no signature bundle for cosign)", nil
+	case len(keys) > 0:
+		return archive, "verified checksum and the project key's signature (install cosign to verify the release workflow's signature as well)", nil
+	case cosigned:
+		return archive, "verified checksum and signature", nil
+	case bundle == "":
+		return archive, "verified checksum only (the release carries no signature bundle)", nil
+	}
+	return archive, "verified checksum only (install cosign to verify the signature)", nil
+}
+
+// verifyProjectFiles checks the checksums.txt.sig fetchRelease left in dir
+// over the checksums.txt beside it, both read within their bounds.
+func verifyProjectFiles(dir string, keys []ed25519.PublicKey) error {
+	sums, err := readReleaseFile(dir, "checksums.txt", selfupdate.MaxChecksums, true)
+	if err != nil {
+		return err
+	}
+	sig, err := readReleaseFile(dir, selfupdate.SignatureAsset, selfupdate.MaxSignature, true)
+	if err != nil {
+		return err
+	}
+	_, err = selfupdate.VerifyProject(sums, sig, keys)
+	return err
 }
 
 // rollback is --rollback: the previous binary back, a restart, and the

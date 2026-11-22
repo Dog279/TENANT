@@ -123,7 +123,10 @@ func (r *RetryDecorator) Dispatch(ctx context.Context, call model.ToolCall) (str
 func DefaultEligibleTransient(toolName, result string, isErr bool, err error) bool {
 	// 1. Hard deny: never retry side-effectful tools. Retrying a partial
 	//    write is worse than surfacing the error.
-	if mutatingTools[toolName] {
+	// A fleet tool is never sent twice: its failure may be a machine's own
+	// output ("connection refused" from a command that did run), and a call
+	// whose link dropped may have run (TEN-531).
+	if mutatingTools[toolName] || strings.HasPrefix(toolName, "fleet_") {
 		return false
 	}
 	// 2. Typed-err path. ctx.Canceled means the caller asked us to stop;

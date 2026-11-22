@@ -4664,6 +4664,10 @@ Writes the `security` log.
 | [4303](#security-4303) | warning | Access | `Request from {remote} refused: {reason}` |
 | [4311](#security-4311) | info | Peering | `Paired with peer {peer}` |
 | [4312](#security-4312) | info | Peering | `Unpaired peer {peer} ({how})` |
+| [4321](#security-4321) | warning | Fleet | `Fleet enrollment from {remote} refused: {reason}` |
+| [4322](#security-4322) | error | Fleet | `A spent fleet enrollment code for {name} was presented again from {remote}` |
+| [4323](#security-4323) | info | Fleet | `Fleet machine {name}: {change}` |
+| [4324](#security-4324) | warning | Fleet | `Fleet machine {name} was not confirmed: {reason}` |
 | [4501](#security-4501) | info | Configuration | `{file} changed: {changes} settings` |
 | [4601](#security-4601) | info | Secret | `Secret {secret} stored from {surface}` |
 | [4602](#security-4602) | info | Secret | `Secret {secret} changed from {surface}` |
@@ -4688,13 +4692,13 @@ Writes the `security` log.
 `Approval requested: {action} ({category})`
 
 - **Level:** info · **Channel:** operational · **Task:** Approval · **Log:** security
-- **Fields:** `category`, `action`, `detail`, `origin`
+- **Fields:** `category`, `action`, `detail`, `origin`, `host`, `host_name`
 - **Keywords:** `audit.success`
 - **Find it:** `provider:security id:4101`
 
 **What it means.** A gated action is waiting for the operator's decision.
 
-**Why it happens.** The agent, a job or a peer asked for an action whose category needs approval.
+**Why it happens.** The agent, a job or a peer asked for an action whose category needs approval. For an action on a fleet machine, host and host_name say which machine, and detail starts with them.
 
 **What to do.** Approve or deny it where it was asked; it expires when nobody answers.
 
@@ -4703,7 +4707,7 @@ Writes the `security` log.
 `Approval granted {grant}: {action} ({category})`
 
 - **Level:** info · **Channel:** operational · **Task:** Approval · **Log:** security
-- **Fields:** `category`, `action`, `detail`, `origin`, `grant`, `via`, `nonce`
+- **Fields:** `category`, `action`, `detail`, `origin`, `grant`, `via`, `nonce`, `host`, `host_name`
 - **Keywords:** `audit.success`
 - **Find it:** `provider:security id:4102`
 
@@ -4718,13 +4722,13 @@ Writes the `security` log.
 `Approval denied: {action} ({category})`
 
 - **Level:** warning · **Channel:** operational · **Task:** Approval · **Log:** security
-- **Fields:** `category`, `action`, `detail`, `origin`, `via`, `nonce`
+- **Fields:** `category`, `action`, `detail`, `origin`, `via`, `nonce`, `host`, `host_name`
 - **Keywords:** `audit.failure`
 - **Find it:** `provider:security id:4103`
 
 **What it means.** A gated action was denied, so it did not run.
 
-**Why it happens.** The operator denied it (via operator), a standing setting did (the category's mode, a tool rule, the surface's lock: the Discord relay's exec mode, or the cron-exec approver), or no operator could be reached (no_surface).
+**Why it happens.** The operator denied it (via operator), a standing setting did (the category's mode, a tool rule, the surface's lock: the Discord relay's exec mode, or the cron-exec approver), or no operator could be reached (no_surface). For an action on a fleet machine (host): the origin's own rules refused it (origin), the origin may not reach that machine or the request was not fit to show (fleet), or the machine asked too often (rate_limit).
 
 **What to do.** None when intended; otherwise check the category's approval mode.
 
@@ -4733,7 +4737,7 @@ Writes the `security` log.
 `Approval denied at shutdown: {action} ({category})`
 
 - **Level:** warning · **Channel:** operational · **Task:** Approval · **Log:** security
-- **Fields:** `category`, `action`, `detail`, `origin`
+- **Fields:** `category`, `action`, `detail`, `origin`, `host`, `host_name`
 - **Keywords:** `audit.failure`
 - **Find it:** `provider:security id:4104`
 
@@ -4748,7 +4752,7 @@ Writes the `security` log.
 `Approval expired unanswered: {action} ({category})`
 
 - **Level:** warning · **Channel:** operational · **Task:** Approval · **Log:** security
-- **Fields:** `category`, `action`, `detail`, `origin`, `nonce`
+- **Fields:** `category`, `action`, `detail`, `origin`, `nonce`, `host`, `host_name`
 - **Keywords:** `audit.failure`
 - **Find it:** `provider:security id:4105`
 
@@ -4767,9 +4771,9 @@ Writes the `security` log.
 - **Keywords:** `audit.success`
 - **Find it:** `provider:security id:4106`
 
-**What it means.** The operator changed how one category of gated actions is approved on one surface (broker: local, discord or imessage): ask, allow or deny.
+**What it means.** The operator changed how one category of gated actions is approved on one surface (broker: local, discord or imessage) or for one fleet machine (broker: fleet: followed by the machine's id): ask, allow or deny.
 
-**Why it happens.** /permissions, /relay permissions or /imessage permissions in the terminal, or the dashboard's Access page. An Always grant sets allow too; its record is the grant (4102).
+**Why it happens.** /permissions, /relay permissions or /imessage permissions in the terminal, tenant fleet permissions, or the dashboard's Access page or, for a fleet machine, its Fleet page. An Always grant sets allow too; its record is the grant (4102).
 
 **What to do.** None when intended.
 
@@ -4907,6 +4911,66 @@ Writes the `security` log.
 **Why it happens.** tenant peer remove or revoke, or /peer remove.
 
 **What to do.** None when intended. Pair again to restore it.
+
+### security 4321
+
+`Fleet enrollment from {remote} refused: {reason}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Fleet · **Log:** security
+- **Fields:** `reason`, `remote`, `name`, `machine`, `certificate`
+- **Keywords:** `audit.failure`
+- **Find it:** `provider:security id:4321`
+
+**What it means.** The fleet's enroll endpoint turned an attempt away. reason says why: rate_limited, bad_method, no_certificate, enrollment_off, store_unreadable, body_too_large, bad_request, unknown_code, expired_code, conflict (the name or the certificate is in use). name is the machine name on the code, when the code was recognised; certificate is the fingerprint the attempt presented.
+
+**Why it happens.** A code that was mistyped or has expired, a machine enrolled twice, or something on the network probing the fleet port.
+
+**What to do.** For a machine of yours, make a new code with tenant fleet enroll. Many from an address you don't know mean someone is guessing: keep the fleet port off public networks.
+
+### security 4322
+
+`A spent fleet enrollment code for {name} was presented again from {remote}`
+
+- **Level:** error · **Channel:** operational · **Task:** Fleet · **Log:** security
+- **Fields:** `name`, `machine`, `remote`, `certificate`
+- **Keywords:** `audit.failure`
+- **Find it:** `provider:security id:4322`
+
+**What it means.** An enrollment code that had already enrolled a machine was presented a second time, and refused. Someone other than the machine it enrolled holds the code, or held it first. machine is the id of the machine the code enrolled.
+
+**Why it happens.** The install was run twice on one machine, or the code leaked and one of the two (the machine that is pending, or this attempt) is not yours.
+
+**What to do.** Check the pending machine before you confirm it: compare the six digits on its own screen. If in doubt, tenant fleet revoke it and enroll it again with a new code.
+
+### security 4323
+
+`Fleet machine {name}: {change}`
+
+- **Level:** info · **Channel:** operational · **Task:** Fleet · **Log:** security
+- **Fields:** `name`, `machine`, `change`, `detail`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4323`
+
+**What it means.** The operator changed the fleet: change is initialised (this Tenant became a master), code issued, confirmed, renamed, revoked, removed (revoked, and its record and approval scheme deleted) or scheme changed (the machine's approval scheme was replaced by a fresh copy of the master's, or the fleet's rules were laid over it again; detail says which). For a confirmed machine, detail is what the machine reported about itself (its own words) and the categories the operator loosened. surface is where the operator was: cli, tui or dashboard.
+
+**Why it happens.** tenant fleet init, enroll, confirm, rename, revoke or permissions --from; /fleet confirm or revoke in the terminal; or the dashboard's Fleet page.
+
+**What to do.** None when intended. Otherwise tenant fleet revoke the machine.
+
+### security 4324
+
+`Fleet machine {name} was not confirmed: {reason}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Fleet · **Log:** security
+- **Fields:** `name`, `machine`, `reason`
+- **Keywords:** `audit.failure`
+- **Find it:** `provider:security id:4324`
+
+**What it means.** A confirmation of a pending fleet machine was refused, and the machine stays pending. On the dashboard the actor is the operator when a browser signed in on the computer running Tenant asked, and otherwise the address the request came from.
+
+**Why it happens.** The six digits typed are not the ones that machine shows (a typo, or the pending machine is not the one in front of you), or the machine is not waiting for confirmation. On the dashboard also: the request did not come from a browser signed in on the computer running Tenant (it came with the API key, by a tailnet or proxy name, through a proxy or from another address), or too many attempts for that machine failed and the next ones have to wait.
+
+**What to do.** Read the six digits from the machine's own screen and try again. If they never match, the pending machine is not yours: tenant fleet revoke it. A machine is confirmed in the terminal, or in a browser on the computer running Tenant at the dashboard's 127.0.0.1 address; a refusal from an address you don't know means someone who can reach the dashboard tried.
 
 ### security 4501
 
@@ -6252,10 +6316,10 @@ Writes the `turns` log.
 `Tool {tool} finished in {duration}`
 
 - **Level:** info · **Channel:** operational · **Task:** Tool call · **Log:** turns
-- **Fields:** `agent`, `iter`, `tool`, `duration`
+- **Fields:** `agent`, `iter`, `tool`, `duration`, `host`
 - **Find it:** `provider:turns id:1101`
 
-**What it means.** A tool call returned. Its arguments and result are in the diagnostic channel (turns 9001 and 9002).
+**What it means.** A tool call returned. Its arguments and result are in the diagnostic channel (turns 9001 and 9002). host names the fleet machine a fleet_* call worked on.
 
 **Why it happens.** The model called a tool.
 
@@ -6532,10 +6596,10 @@ Writes the `turns` log.
 `Tool {tool} failed after {duration}`
 
 - **Level:** error · **Channel:** operational · **Task:** Tool call · **Log:** turns
-- **Fields:** `agent`, `iter`, `tool`, `duration`, `error`
+- **Fields:** `agent`, `iter`, `tool`, `duration`, `error`, `host`
 - **Find it:** `provider:turns id:3101`
 
-**What it means.** A tool call returned an error. The model gets the error and usually tries something else; the result is in the diagnostic channel (turns 9003), and error holds a failure outside the tool itself.
+**What it means.** A tool call returned an error. The model gets the error and usually tries something else; the result is in the diagnostic channel (turns 9003), and error holds a failure outside the tool itself. host names the fleet machine a fleet_* call worked on.
 
 **Why it happens.** The tool refused its arguments, its service failed, or the tool is broken.
 

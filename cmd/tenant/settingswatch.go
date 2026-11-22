@@ -98,6 +98,17 @@ func applySettingsFile(cfgDir, agentID string, broker *approvalBroker, rules *to
 	fresh, err := loadSettings(cfgDir, agentID)
 	savedKnown := slices.Clone(stg.KnownCategories)
 	savedModes := maps.Clone(stg.Permissions)
+	// The fleet's schemes (fleet_schemes, fleet_rules) are applied in the same
+	// hold as the read: the fleet's own saves write the file in a hold of mu
+	// too (loadFleetSettings), so what was just read is what the fleet last
+	// wrote unless someone edited it. stg tracks the file, entries that could
+	// not be read included, so a later save keeps the operator's text.
+	var fleetChanged int
+	var fleetProblems []string
+	if err == nil {
+		fleetChanged, fleetProblems = defaultFleet.Load(fresh.FleetSchemes, fresh.FleetRules)
+		stg.FleetSchemes, stg.FleetRules = fresh.FleetSchemes, fresh.FleetRules
+	}
 	mu.Unlock()
 	if err != nil {
 		sysConfigNotLoaded.Log(context.Background(), "path", path, "fallback", "the live settings stay as they were", "err", err)
@@ -175,6 +186,13 @@ func applySettingsFile(cfgDir, agentID string, broker *approvalBroker, rules *to
 		s := fmt.Sprintf("%d sandbox exception(s)", n)
 		if len(skipped) > 0 {
 			s += fmt.Sprintf(" (%d invalid skipped: %s)", len(skipped), strings.Join(skipped, "; "))
+		}
+		parts = append(parts, s)
+	}
+	if fleetChanged > 0 {
+		s := fmt.Sprintf("%d fleet scheme change(s)", fleetChanged)
+		if len(fleetProblems) > 0 { // a machine whose entry can't be read is refused everything: say which and why
+			s += " (" + strings.Join(fleetProblems, " ") + ")"
 		}
 		parts = append(parts, s)
 	}

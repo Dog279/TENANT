@@ -12,7 +12,8 @@ package main
 //	                        each one out and reports it as not in force; the
 //	                        helper serve starts on Windows is told the same
 //	TENANT_TEST_VERSION     the version this process says it is
-//	TENANT_TEST_SYSTEM_LOG  a file that stands in for the system's log
+//	TENANT_TEST_SYSTEM_LOG  a file that stands in for the system's log, also
+//	                        for a fleet child's audit lines
 //	TENANT_TEST_TERMINAL    1: stdin and stderr count as a terminal
 //	TENANT_TEST_REPORT      a file Protect's report is written to, as JSON
 
@@ -50,6 +51,9 @@ func init() { // before main, so before Protect
 			_, err = f.WriteString(msg + "\n")
 			return err
 		}
+		// A fleet child's audit lines too: a test's child stays out of the
+		// machine's own log.
+		openChildOSLog = func() (func(string) error, func(), error) { return systemLog, func() {}, nil }
 	}
 	if os.Getenv("TENANT_TEST_TERMINAL") == "1" {
 		ackConsole = func() (*bufio.Reader, io.Writer, bool) { return bufio.NewReader(os.Stdin), os.Stderr, true }

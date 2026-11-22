@@ -1,0 +1,5 @@
+go test fuzz v1
+string("name=0&runs=user")
+string("Http://127.0.0.1:9770")
+string("a-signed-in-browser")
+string("")

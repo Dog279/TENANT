@@ -154,6 +154,178 @@ Releases page.
   the acknowledgement run a `tenant` built with `-tags procprotecttest`, in which the environment
   can say that a control cannot be applied; `tenant version` announces such a build, and no
   release is built with the tag.
+- **A machine joins a fleet in one paste** (TEN-541). `tenant fleet enroll <name>` now prints,
+  beside the lines for a machine that has Tenant, the whole line for a machine with nothing on
+  it: `install.sh` (Linux, macOS) or `install.ps1` (PowerShell) from the latest release, which
+  checks the download and goes straight on to `tenant child install`, as the user's own child or
+  as a service from boot. The code travels in `TENANT_ENROLL_CODE` or on standard input, never
+  as an argument; the boot-time line for Linux and macOS keeps it off sudo's command line
+  (`sudo --preserve-env`), and the install script's own example now does too. The same output
+  is `/fleet enroll <name>` in the terminal app, and the dashboard's Fleet page has **Add
+  machine**: a name and whether it runs as you or from boot, then the line with a Copy button,
+  shown once, in that answer only. Making a code there takes a signed-in browser (not the API
+  key); confirming the machine stays on this computer, with its six digits. `tenant fleet
+  address list | add | remove` changes the addresses a code carries one at a time, and every
+  place a code is made warns when each IP address on it is private, link-local or loopback.
+  `docs/fleet-runbook.md` has the three routes: a LAN, an overlay network, a public address.
+  Joining stays by code only: no discovery, no request to join.
+- **The main releases are signed with a project key as well** (TEN-542). Beside cosign's
+  keyless bundle, a release of the main repository carries `checksums.txt.sig`, an Ed25519
+  signature over `checksums.txt` made by the release workflow with a key held as a repository
+  secret; the public key is built into the release binary. A binary that carries the key takes,
+  with `tenant update`, only a release whose signature verifies under it, with nothing
+  installed; a missing, malformed or wrong signature refuses the update, and no flag skips it.
+  cosign is still checked when it is installed, and then both must pass. A fleet machine on the
+  default rule takes a release when cosign verifies it or, when its Tenant carries the key, when
+  the project signature its master sent verifies; one that is sent and wrong refuses at once.
+  `tenant fleet update` says which check each machine passed. A fork's binaries and development
+  builds carry no key and update exactly as before. The maintainer makes and replaces the key
+  with `go run ./scripts/releasekey keygen` (SECURITY.md, "Release signatures"); a repository
+  without the secret and the variable releases as before.
+- **A fleet: one Tenant that owns your other machines** (TEN-531, the first of three parts).
+  Install Tenant on a machine you own and run `tenant child install` with a one-time code from
+  the master (`tenant fleet enroll <name>`): the machine becomes a **child**. It has no model
+  and no agent. It dials the master, holds one link open, and serves that machine's tools to
+  the master's agent. The agent works on it with ten new tools that take a `host`: `fleet_list`,
+  `fleet_exec`, `fleet_process`, `fleet_read`, `fleet_list_dir`, `fleet_write`, `fleet_edit`,
+  `fleet_copy`, `fleet_tools` and `fleet_call`. They are there only while a confirmed machine
+  exists. Peering is unchanged: it is for a machine with a different operator.
+  - *Enrollment.* The machine mints its own key and shows six digits; the master sends it
+    nothing until you type them at a terminal (`tenant fleet confirm <name>`, or `/fleet confirm`).
+    No tool, relay or approval card can confirm a machine. `tenant fleet init | enroll | list |
+    show | confirm | rename | revoke | permissions | relay`, and `/fleet` in the terminal.
+  - *The link.* The child dials the master's fleet port (`fleet.listen`, default `0.0.0.0:9777`,
+    off until `tenant fleet init`) over TLS 1.3 with both certificates pinned by fingerprint: no
+    certificate authority and no token. A certificate that is not pinned is dropped before
+    anything is answered. Idle, a link carries one ping and its answer every 30 seconds, about
+    100 bytes a minute; a dead link is noticed within a minute by both ends, and the child
+    reconnects by itself. One process holds the links (`tenant serve` should); another on the
+    same data dir says which.
+  - *Approvals stay on the master.* A tool on the child asks the master over the link. The card
+    names the machine, and on the dashboard its headline says "on your fleet machine <name>"
+    with no step for the rest of the session. Each machine has its own approval scheme, copied
+    from the master's when it is confirmed, with commands, file writes, destructive actions,
+    sends and leaving the sandbox no looser than ask. Every shell command on a machine asks until
+    you answer "always", which saves a rule for that machine alone. A relay or a cron job reaches
+    no machine, reads included, until you open it (`tenant fleet relay discord on`, `/cron
+    fleet`). `tenant fleet …` and `tenant child …` join `tenant service …` and `tenant update …`
+    among the commands the agent does not run unasked.
+  - *On the machine.* `tenant child status | pause | resume | audit | uninstall`. `child.json`
+    holds a ceiling the master cannot lift (`no-exec`, `read-only`, a list of the only tools the
+    machine serves), read from the disk on every call. Every call is written to a hash-chained
+    audit log on the machine before it runs, and the master keeps that record's hash with its own
+    record of the call.
+  - *What a machine returns is untrusted.* Results are framed and labelled, the egress check
+    covers them, and after a turn has read from one machine anything but a read on another asks;
+    that card says which machine the turn read from.
+  - The run trace, the dashboard's activity rail (`fleet_exec@web1`) and the turns log's tool
+    records name the machine a fleet call worked on.
+  - Not in this part: a machine's memory (TEN-532); `tenant fleet update`, `tenant child rehome`,
+    the dashboard's Fleet page and doctor checks (TEN-533). A picture a tool makes on a machine
+    stays there (the result says so). `docs/fleet-runbook.md` has the walk-through.
+- **A fleet machine is updated over its link** (TEN-533). `tenant fleet update <name>` (or
+  `--all`, or Update on the machine's page of the dashboard) fetches the release for that
+  machine's system and processor, verifies it as `tenant update` verifies its own, and sends it
+  over the link with its SHA-256: the machine needs no way to the internet. The machine checks
+  the hash before it touches anything, runs the new version beside the old one until it reaches
+  the master, then swaps the binaries and restarts into it. A new version that exits, or does not
+  reach the master within a minute, is rolled back and the machine reconnects on the old one; a
+  machine stopped in the middle finishes or undoes the update at its next start. Background
+  commands on the machine end at the restart. An older version is sent only with
+  `--allow-older`, and an offline machine is refused (nothing is queued). The command prints each
+  step and how it ended; `tenant child status` on the machine shows the last update. The update
+  is allowed whatever link version the machine speaks.
+  - *Doctor* on a master checks each machine through the running Tenant: reachable, its version
+    against the master's, whether the master still serves its link version, and how its last
+    update went.
+  - The machine's hello now also says which processor it has (an older machine leaves it out;
+    `--arch` names it then).
+- **A fleet machine's memory is kept, encrypted, on both ends** (TEN-532, the second part).
+  - *Keys.* `tenant fleet init` makes the fleet key (sealed by Windows' data protection, an
+    owner-only file elsewhere) and a recovery identity, which it shows you once at a terminal
+    and records only after you have typed it back. Keep it away from this computer: with it, and
+    only with it, a master rebuilt from nothing can read its machines' memory again. Without a
+    terminal init makes everything else, shows no secret and exits 1; run it again at a terminal.
+    A fleet made before this gets its keys at its next `tenant fleet init`.
+  - *Copies.* A machine's memory lives in the master's RAM, and on its disk only as an
+    encrypted snapshot. Every five minutes a changed memory becomes a new generation, encrypted
+    to the fleet key and the recovery key, and goes to the machine, which keeps the last three
+    and cannot read them. Each time a machine connects the two sides compare: the newer wins,
+    the machine's copy rebuilds a master that lost or damaged its own, and a copy made under
+    another fleet key marks the machine **needs recovery key** and nothing is overwritten.
+    A replaced memory is kept aside on the master for thirty days. Each snapshot ends with an
+    authenticator only the fleet key's secret makes: a copy that names this master's key and
+    does not carry it is refused unread, so knowing the fleet key's or the recovery key's public
+    half is not enough to put a memory on the master. A copy read with the recovery identity
+    (`tenant fleet recover`) cannot be checked that way: whatever it says the master recorded
+    (the inventory, notes) is recalled from then on as the machine's own words, inside its frame,
+    and the master takes the machine's inventory again.
+  - `/fleet` and `tenant fleet show` say each machine's memory: in step, behind, needs recovery
+    key, or why it is not known. `tenant doctor` checks the fleet key (and that it is held in
+    memory kept out of the swap file) and that the recovery key was proven. `tenant backup` warns
+    when a fleet master's backup is not encrypted. `tenant fleet revoke --delete-scheme` deletes
+    the machine's memory too.
+  - *What goes into it.* A turn's episode stays in the master's memory, tagged with the machines
+    it worked on, and each of those machines gets the request and its own calls with what came
+    back: never another machine's output, the agent's answer or the master's own memory. At
+    confirmation the master records the machine's OS, account, version, sandbox and ceiling as
+    facts, each from a field it checked. A new tool, `fleet_note`, records a fact about a machine
+    in the agent's words; nothing goes to the machine. Distillation runs over each machine's own
+    turns, into that machine's facts. A machine's memory needs an embedder, as the master's does.
+  - *How it comes back.* A machine's memory comes into a conversation with the first answer from
+    that machine there, and `memory_search` takes a `host` once the conversation has had one. The
+    master's own words (the inventory, notes) are quoted lines; everything else is the machine's
+    output and comes inside that machine's frame, escaped and labelled untrusted, so the egress
+    check covers it, and a note that quotes a machine's output asks first. A relay or job that may
+    not reach a machine gets none of its memory, nor does a helper, team, research or goal run.
+  - *Forget.* `tenant privacy forget` reaches every machine's memory: the holder deletes it there
+    and from the memory kept aside, sends the machine a new copy and tells it to delete its older
+    ones, also once a machine that was offline is back, and applies it again to a memory rebuilt
+    from a copy made before it. Copies a machine keeps under an earlier fleet key are not deleted;
+    you are told. Retention pruning does not reach the machines' memory. The request, which
+    names what is forgotten, is kept sealed until every machine still in the fleet has had it,
+    has dropped its older copies and keeps none under another key; then it is deleted. A copy
+    older than the forget that comes back after that, from a backup of a machine's own disk, is
+    not purged, and a memory rebuilt from it holds what was forgotten again.
+- **A fleet machine verifies an update's release itself** (TEN-533). `tenant fleet
+  update` now sends the release's checksums and signature bundle with the archive, before any of
+  it; a machine checks, offline, that the signature is the release workflow's of the repository
+  its own binary was built from, that the checksums list the archive with the hash it was sent,
+  and that the archive is its own system's and processor's for the version named, and refuses
+  anything else before the archive is on the wire. A master that was taken over, or whose copy
+  of an archive was changed, can no longer install it on its machines. This needs `cosign` on
+  the machine and a signed release; a development build refuses every update on this rule and
+  says so. `tenant child install --updates master` (or later, on the machine,
+  `tenant child updates master`) makes a machine take its master's hash instead, to run a build
+  of your own; it is set only on the machine, kept by rehome, shown by `tenant child status`, and
+  recorded in the audit log. `tenant fleet update` says which rule each machine applied.
+- **A fleet survives losing its master** (TEN-533). `tenant child rehome`, run on a machine with
+  its child stopped, gives it another master: a master restored from a plain backup or rebuilt
+  from nothing. It takes a code from the new master's `tenant fleet enroll` as `child install`
+  does (standard input or `$TENANT_ENROLL_CODE`, never an argument) and keeps the machine's key,
+  ceiling, tools, sandbox, pause, audit log and memory copies; only which master it trusts
+  changes, in one step, and a rehome that fails leaves it its old master's. The new master holds
+  it as pending until you type its six digits; the old master's certificate is refused from then
+  on. Nothing on the link can start one. The audit log records who did it and both masters'
+  fingerprints.
+  - `tenant fleet recover <name> [--was ID]` brings the recovery identity (at the terminal, or on
+    standard input) to the running master, which reads the machine's memory from its copy made
+    under the old fleet key, makes it the machine's memory and sends it back under the new key.
+    Until then a re-homed machine's memory says **needs recovery key** and none of it is read.
+  - The dashboard's Fleet page shows each machine's memory (in step, behind, needs recovery key,
+    or unknown with the reason). Doctor's line for each machine says its memory and, when it
+    needs the recovery key, the command; a recovery key that was never proven names
+    `tenant fleet init`, which now asks at a terminal for the identity you kept and records the
+    proof.
+- **Fixed: on Windows, a Tenant with no console window opened one for every command it ran.** A
+  Tenant started by the service manager has no console to share, so each command got a new
+  console window. Such a Tenant now starts its commands with a console that has no window; one
+  in a terminal, or with the logon task's hidden console, shares it as before.
+- **Fixed: an MCP request cancelled the moment it was sent could run to the end.** A request is
+  now registered as it is read; one cancelled before its handler starts is not run.
+- **Fixed: a local MCP server could be left running after its tools were closed.** A server whose
+  start was still under way at that moment went on to start afterwards and was never stopped.
+  Closing now cancels a start that is under way and waits for it.
 - **Security: a command that only looked read-only ran with no approval prompt (TEN-534).** With
   the exec permission on ask, a shell command that only looks at the machine (`ls`, `git status`)
   runs without a prompt, on the host and on Discord. The check behind that was fooled, in three

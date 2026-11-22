@@ -194,6 +194,12 @@ type Config struct {
 	// records the interrupted turn in the archive instead. nil ⇒ never.
 	Stopping func() bool
 
+	// OnEpisode, if set, sees each turn's episode just before it is written,
+	// under the turn's context: it may add tags, and it is where a fleet
+	// master hands each machine the part of the turn that is that machine's
+	// (TEN-532). It must not block: the turn waits for it. nil ⇒ none.
+	OnEpisode func(ctx context.Context, ep *episodic.Episode)
+
 	// EpisodeVisibility overrides the default `private` visibility used
 	// when this agent's turns are persisted to the episodic store.
 	// Sub-agents spawned by an orchestrator (see cmd/tenant/team.go) set
@@ -1216,7 +1222,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		for _, call := range resp.ToolCalls {
 			call = unstringifyArgs(call, a.cfg.Tools)
 			if err := validateToolCall(call, a.cfg.Tools); err != nil {
-				span.AddTool(runtrace.ToolCall{ID: call.ID, Name: call.Name, Arguments: string(call.Arguments), Result: err.Error(), Outcome: "validation_error"})
+				span.AddTool(runtrace.ToolCall{ID: call.ID, Name: call.Name, Host: callHost(call), Arguments: string(call.Arguments), Result: err.Error(), Outcome: "validation_error"})
 				a.feedValidationError(ctx, call, err)
 				continue
 			}
@@ -1226,7 +1232,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 			// otherwise still reach the dispatcher. Refuse it here with a clean
 			// tool error instead.
 			if spec, ok := a.cfg.Tools.Get(call.Name); ok && spec.Gate != "" && !profile.AllowsTool(spec.Gate) {
-				span.AddTool(runtrace.ToolCall{ID: call.ID, Name: call.Name, Arguments: string(call.Arguments), Outcome: "denied"})
+				span.AddTool(runtrace.ToolCall{ID: call.ID, Name: call.Name, Host: callHost(call), Arguments: string(call.Arguments), Outcome: "denied"})
 				a.feedToolResult(ctx, ToolCallResult{
 					Call:    call,
 					Result:  fmt.Sprintf("%q is not available for the current model.", call.Name),
@@ -1274,7 +1280,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 			parallel = 1
 		}
 		for _, call := range validCalls {
-			a.emit(Event{Kind: EventToolCall, Iter: iter, Tool: call.Name, ToolCallID: call.ID, Args: string(call.Arguments)})
+			a.emit(Event{Kind: EventToolCall, Iter: iter, Tool: call.Name, Host: callHost(call), ToolCallID: call.ID, Args: string(call.Arguments)})
 		}
 		toolStart := time.Now()
 		batchResults := dispatchBatch(a.ev(ctx), validCalls, callFlows, parallel, a.cfg.Dispatcher)
@@ -1295,10 +1301,19 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 					br.Labels = appendLabel(br.Labels, label)
 				}
 				br.Images = a.saveToolImages(ctx, br)
-			} else if len(br.rawImages) > 0 {
-				// A failed or unregistered call has no result labels to give
-				// its images, so they aren't attached; say so (TEN-493).
-				ImageDropped.Log(a.ev(ctx), "agent", a.cfg.AgentID, "tool", br.Call.Name, "err", "the tool call failed")
+			} else {
+				// A failed call's text can be somebody else's too (a fleet
+				// machine's error is that machine's words): what the tool
+				// reported is tracked and labelled all the same (TEN-531).
+				a.infoFlow.adopt(br.reported.results)
+				for _, label := range br.reported.Labels() {
+					br.Labels = appendLabel(br.Labels, label)
+				}
+				if len(br.rawImages) > 0 {
+					// A failed or unregistered call has no result labels to give
+					// its images, so they aren't attached; say so (TEN-493).
+					ImageDropped.Log(a.ev(ctx), "agent", a.cfg.AgentID, "tool", br.Call.Name, "err", "the tool call failed")
+				}
 			}
 			result.ToolTrace = append(result.ToolTrace, br)
 			toolOutcome := "success"
@@ -1309,18 +1324,22 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 			if br.Err != nil && toolResult == "" {
 				toolResult = br.Err.Error()
 			}
-			span.AddTool(runtrace.ToolCall{ID: br.Call.ID, Name: br.Call.Name, Arguments: string(br.Call.Arguments), Result: toolResult, Outcome: toolOutcome})
-			a.emit(Event{Kind: EventToolResult, Iter: iter, Tool: br.Call.Name, ToolCallID: br.Call.ID, Result: toolResult, IsErr: toolOutcome == "error", Duration: br.Duration})
+			host := callHost(br.Call)
+			span.AddTool(runtrace.ToolCall{ID: br.Call.ID, Name: br.Call.Name, Host: host, Arguments: string(br.Call.Arguments), Result: toolResult, Outcome: toolOutcome})
+			a.emit(Event{Kind: EventToolResult, Iter: iter, Tool: br.Call.Name, Host: host, ToolCallID: br.Call.ID, Result: toolResult, IsErr: toolOutcome == "error", Duration: br.Duration})
 			// The operational record of the call; its payloads are the
 			// diagnostic rows above (EntryFor).
+			kv := []any{"agent", a.cfg.AgentID, "iter", iter, "tool", br.Call.Name, "duration", br.Duration}
+			if host != "" {
+				kv = append(kv, "host", host)
+			}
 			if toolOutcome == "error" {
-				kv := []any{"agent", a.cfg.AgentID, "iter", iter, "tool", br.Call.Name, "duration", br.Duration}
 				if br.Err != nil {
 					kv = append(kv, "error", br.Err)
 				}
 				ToolFailed.Log(a.ev(ctx), kv...)
 			} else {
-				ToolDone.Log(a.ev(ctx), "agent", a.cfg.AgentID, "iter", iter, "tool", br.Call.Name, "duration", br.Duration)
+				ToolDone.Log(a.ev(ctx), kv...)
 			}
 			seen = append(seen, fmt.Sprintf("%q %q %q %q", br.Call.Name, br.Call.Arguments, a.feedToolResult(ctx, br, profile.ToolResultCap()), imagePaths(br.Images)))
 		}
@@ -2075,7 +2094,7 @@ func (a *Agent) persistEpisode(ctx context.Context, prompt, response string, tra
 	if routeState != nil {
 		routeTags, routeVersion = routeState.snapshot()
 	}
-	id, err := a.cfg.Episodic.Insert(ctx, &episodic.Episode{
+	ep := &episodic.Episode{
 		AgentID:     a.cfg.AgentID,
 		Visibility:  visibility,
 		SessionID:   a.cfg.SessionID,
@@ -2087,7 +2106,11 @@ func (a *Agent) persistEpisode(ctx context.Context, prompt, response string, tra
 		Tags:        routeTags,
 		EmbedderID:  string(embedderID),
 		Embedding:   queryEmbedding,
-	})
+	}
+	if a.cfg.OnEpisode != nil {
+		a.cfg.OnEpisode(ctx, ep)
+	}
+	id, err := a.cfg.Episodic.Insert(ctx, ep)
 	if err != nil {
 		RecordNotSaved.Log(a.ev(ctx), "agent", a.cfg.AgentID, "record", "episode", "err", err)
 	} else if routeState != nil {

@@ -156,3 +156,34 @@ func dirNames(t *testing.T, dir string) []string {
 	}
 	return names
 }
+
+// Compare orders versions by their numbers, ignores a pre-release suffix,
+// and refuses what is not a version (a fleet machine's reported version is
+// its own word, and anything may be in it).
+func TestCompare(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		c    int
+		ok   bool
+	}{
+		{"1.2.3", "1.2.3", 0, true},
+		{"v1.2.3", "1.2.3", 0, true},
+		{"1.2.3", "1.2.10", -1, true},
+		{"1.10.0", "1.9.9", 1, true},
+		{"2.0", "2.0.0", 0, true},
+		{"1.2.0-rc1", "1.2.0", 0, true},
+		{"1.2.0+build.5", "1.2.1", -1, true},
+		{"0.0.1", "0.3.0", -1, true},
+		{"", "1.0.0", 0, false},
+		{"1.x.0", "1.0.0", 0, false},
+		{"1..2", "1.0.0", 0, false},
+		{"1.2.3.4.5", "1.0.0", 0, false},
+		{"-1.0", "1.0.0", 0, false},
+		{"1234567890.0", "1.0.0", 0, false},
+		{`"1.2.3"`, "1.2.3", 0, false},
+	} {
+		if c, ok := Compare(tc.a, tc.b); c != tc.c || ok != tc.ok {
+			t.Errorf("Compare(%q, %q) = %d, %v; want %d, %v", tc.a, tc.b, c, ok, tc.c, tc.ok)
+		}
+	}
+}

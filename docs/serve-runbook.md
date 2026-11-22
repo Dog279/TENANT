@@ -219,6 +219,11 @@ release archive for this OS and architecture, verifies its SHA-256 (and its sign
 is on PATH), on macOS signs the new binary with the hardened runtime, runs the new binary's
 `version --protection` before touching anything, asks, then:
 
+(A release binary of the main repository also carries the project key, TEN-542: it first checks
+the release's `checksums.txt.sig` against that key with nothing installed, and refuses a release
+whose signature is missing, malformed or wrong; no flag skips that. A fork's or a development
+build carries no key and updates as described here. SECURITY.md, "Release signatures".)
+
 1. writes an unencrypted backup of the config and data dirs to `<data dir>-backups/pre-update-<old version>.tenant-backup`
    (credentials are left out; the previous pre-update backup is replaced);
 2. swaps the binary in with no gap, keeping the old one as `tenant.prev`;

@@ -87,13 +87,36 @@ func (r approvalRec) fields(actor, surface string, kv ...any) []any {
 // asked records the prompt, raised by actor. An error means the action must
 // not go ahead.
 func (r approvalRec) asked(ctx context.Context, actor string) error {
-	return catalog.ApprovalAsk.Gate(r.under(ctx), r.fields(actor, r.origin)...)
+	return catalog.ApprovalAsk.Gate(r.under(ctx), r.fields(actor, r.origin, hostFields(ctx)...)...)
+}
+
+type hostKey struct{}
+
+// withHost marks ctx as deciding an action that lands on fleet machine m, so
+// every record written under it names the machine. A nil m (this computer)
+// leaves ctx as it is.
+func withHost(ctx context.Context, m *Machine) context.Context {
+	if m == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, hostKey{}, m)
+}
+
+// hostFields are the fields that name ctx's fleet machine in a record: none
+// for an action on this computer.
+func hostFields(ctx context.Context) []any {
+	m, _ := ctx.Value(hostKey{}).(*Machine)
+	if m == nil {
+		return nil
+	}
+	return []any{"host", m.ID, "host_name", m.Name}
 }
 
 // decided records d, decided by actor on surface (via: what decided, see
 // catalog.ApprovalYes), and returns it, or DenyOnce when a grant's record
 // could not be written under the deny policy.
 func (r approvalRec) decided(ctx context.Context, d control.ApprovalDecision, actor, surface, via string, kv ...any) control.ApprovalDecision {
+	kv = append(hostFields(ctx), kv...)
 	ctx = r.under(ctx)
 	switch {
 	case granted(d):

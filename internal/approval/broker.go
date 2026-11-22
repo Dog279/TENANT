@@ -22,7 +22,10 @@ import (
 // terminal UI's PermissionControl and ToolRuleControl and the dashboard's
 // ApprovalControl.
 type Broker struct {
-	mu       sync.Mutex
+	// mu is a pointer because a fleet call decides through a broker of its own
+	// that shares one machine's modes and grants under that machine's lock
+	// (fleet.go). Every other broker has a lock to itself.
+	mu       *sync.Mutex
 	modes    map[string]Mode
 	session  map[string]bool // per-category "approve session" grants
 	known    map[string]bool // categories the operator had a say in; one that asks and isn't here is New (TEN-343)
@@ -61,6 +64,16 @@ type Broker struct {
 	// had their say (TEN-491, D4). Unset on the iMessage broker, which stays
 	// deny-by-default. The osys classifier supplies it (SetReadOnly).
 	readOnly func(command string) bool
+
+	// The three below are set only on the broker a fleet call decides through
+	// (fleet.go). machine is the child the action lands on: its card and its
+	// records name it. mustAsk says the turn's origin asks for this action, so
+	// a standing allow here is a prompt instead (both checks must pass, and ask
+	// beats allow). limit bounds how often the machine's calls may put a prompt
+	// in front of the operator.
+	machine *Machine
+	mustAsk bool
+	limit   *askLimit
 }
 
 // SetReadOnly installs the read-only command judgement (nil = never).
@@ -96,6 +109,7 @@ func execCommand(action, detail string) (string, bool) {
 // every action under destructive.
 func NewBroker(log *slog.Logger, categorize func(action string) string) *Broker {
 	b := &Broker{
+		mu:         new(sync.Mutex),
 		modes:      map[string]Mode{},
 		session:    map[string]bool{},
 		known:      knownSet(Categories),
@@ -120,6 +134,7 @@ func NewBroker(log *slog.Logger, categorize func(action string) string) *Broker 
 // resolvable by id from any surface (TEN-203).
 func NewOffsiteBroker(log *slog.Logger, host *Broker) *Broker {
 	b := &Broker{
+		mu:         new(sync.Mutex),
 		modes:      map[string]Mode{},
 		session:    map[string]bool{},
 		known:      knownSet(Categories),
@@ -144,6 +159,7 @@ func NewOffsiteBroker(log *slog.Logger, host *Broker) *Broker {
 // request channel, an "ask" fails closed.
 func NewDiscordBroker(log *slog.Logger, categorize func(action string) string) *Broker {
 	b := &Broker{
+		mu:         new(sync.Mutex),
 		modes:      map[string]Mode{},
 		session:    map[string]bool{},
 		known:      knownSet(Categories),
@@ -335,6 +351,11 @@ func (b *Broker) logInfo(ctx context.Context, msg string, kv ...any) {
 // the operator decides; respects context cancellation.
 func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 	cat := b.categorize(action)
+	// The rules below judge a shell command as the tool gave it. For a fleet
+	// machine's action, what the operator and the records are shown from here
+	// on names the machine first (no change for any other broker).
+	cmd, isExec := execCommand(action, detail)
+	detail, ctx = b.shown(detail), withHost(ctx, b.machine)
 
 	b.mu.Lock()
 	locked := b.locked
@@ -350,7 +371,6 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 	// command rules, per segment (deny > ask > allow, every segment must match
 	// for allow). A tool-level `os_exec: deny` still binds, and a command the
 	// classifier called destructive keeps its prompt whatever an allow says.
-	cmd, isExec := execCommand(action, detail)
 	if isExec && b.rules != nil {
 		if cmode, cpat, ok := b.rules.LookupCommand(cmd); ok {
 			if tmode, _, tok := b.rules.Lookup(action); tok && tmode == "deny" {
@@ -362,7 +382,7 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 				return verdict(ctx, cat, action, detail, b.origin, "rule", "", control.DenyOnce)
 			case cmode == "allow" && action == "os_exec":
 				b.logInfo(ctx, "approval allowed by command rule", "origin", b.origin, "category", cat, "action", action, "rule", cpat)
-				return verdict(ctx, cat, action, detail, b.origin, "rule", "", control.ApproveAlways)
+				return b.allowed(ctx, cat, action, detail, "rule", "", control.ApproveAlways)
 			case cmode == "ask":
 				b.logInfo(ctx, "approval prompt forced by command rule", "origin", b.origin, "category", cat, "action", action, "rule", cpat)
 				switch b.askDecision(ctx, "agent", cat, action, detail, false) {
@@ -392,7 +412,7 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 			switch rmode {
 			case "allow":
 				b.logInfo(ctx, "approval allowed by tool rule", "origin", b.origin, "category", cat, "action", action, "rule", pat)
-				return verdict(ctx, cat, action, detail, b.origin, "rule", "", control.ApproveAlways)
+				return b.allowed(ctx, cat, action, detail, "rule", "", control.ApproveAlways)
 			case "deny":
 				b.logInfo(ctx, "approval denied by tool rule", "origin", b.origin, "category", cat, "action", action, "rule", pat)
 				return verdict(ctx, cat, action, detail, b.origin, "rule", "", control.DenyOnce)
@@ -453,21 +473,24 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 	switch mode {
 	case ModeAllow:
 		b.logInfo(ctx, "approval auto-allowed by category mode", "origin", b.origin, "category", cat, "action", action)
-		return verdict(ctx, cat, action, detail, b.origin, "mode", "approved_always", control.ApproveAlways)
+		return b.allowed(ctx, cat, action, detail, "mode", "approved_always", control.ApproveAlways)
 	case ModeDeny:
 		b.logInfo(ctx, "approval auto-denied by category mode", "origin", b.origin, "category", cat, "action", action)
 		return verdict(ctx, cat, action, detail, b.origin, "mode", "denied_policy", control.DenyOnce)
 	}
 	if sess {
 		b.logInfo(ctx, "approval allowed by session grant", "origin", b.origin, "category", cat, "action", action)
-		return verdict(ctx, cat, action, detail, b.origin, "session", "approved_session", control.ApproveSession)
+		return b.allowed(ctx, cat, action, detail, "session", "approved_session", control.ApproveSession)
 	}
 
 	prefix := "" // what "always" saves for a command (TEN-491); the rule shows in /permissions
 	if action == "os_exec" && b.rules != nil {
 		prefix = CommandPrefix(cmd)
 	}
-	switch b.askDecision(ctx, "agent", cat, action, detail, true) {
+	// On a fleet machine "for this session" covers this request alone: there
+	// every command asks until an "always" saves its rule for that machine.
+	sticky := b.machine == nil
+	switch b.askDecision(ctx, "agent", cat, action, detail, sticky) {
 	case control.ApproveAlways:
 		if prefix != "" {
 			// "Always" on a command saves its family (TEN-491), never all of exec.
@@ -481,15 +504,54 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 		}
 		return true
 	case control.ApproveSession:
-		b.mu.Lock()
-		b.session[cat] = true
-		b.mu.Unlock()
+		if sticky {
+			b.mu.Lock()
+			b.session[cat] = true
+			b.mu.Unlock()
+		}
 		return true
 	case control.ApproveOnce:
 		return true
 	default:
 		return false
 	}
+}
+
+// allowed is a standing setting's allow: a rule, the category's mode or a
+// session grant letting the action through unasked. On a fleet call whose
+// origin asks, it is a prompt instead, whose answer covers this one request
+// and saves nothing: the machine already allows it, and the origin's own
+// settings are not a machine's card to change.
+func (b *Broker) allowed(ctx context.Context, cat, action, detail, via, outcome string, d control.ApprovalDecision) bool {
+	if b.mustAsk {
+		return granted(b.askDecision(ctx, "agent", cat, action, detail, false))
+	}
+	return verdict(ctx, cat, action, detail, b.origin, via, outcome, d)
+}
+
+// shown is detail as a card and a record show it: a fleet machine's action
+// names the machine first.
+func (b *Broker) shown(detail string) string {
+	if b.machine == nil {
+		return detail
+	}
+	return b.machine.label() + detail
+}
+
+// SurfaceMode is this surface's own answer for action, before any rule:
+// deny when its lock refuses the action or its category denies, allow when
+// the category allows, else ask. Session grants do not count: they were given
+// on a card for this computer. It is a relay's side of a fleet call's two
+// checks (RelayOrigin).
+func (b *Broker) SurfaceMode(action string) Mode {
+	cat := b.categorize(action)
+	b.mu.Lock()
+	locked, mode := b.locked, b.modes[cat]
+	b.mu.Unlock()
+	if locked != nil && locked(action, cat) {
+		return ModeDeny
+	}
+	return mode
 }
 
 // --- per-tool rules (the set is shared by every broker) ---
@@ -554,6 +616,9 @@ func (b *Broker) askFrom(ctx context.Context, by, category, action, detail strin
 // policy is never raised.
 func (b *Broker) askDecision(ctx context.Context, by, cat, action, detail string, sticky bool) control.ApprovalDecision {
 	req := control.ApprovalRequest{Category: cat, Action: action, Detail: detail}
+	if m := b.machine; m != nil {
+		req.Host, req.HostName = m.ID, m.Name
+	}
 	start := time.Now()
 	b.logInfo(ctx, "approval pending", "origin", b.origin, "category", cat, "action", action)
 	logOutcome := func(outcome, via string) {
@@ -564,6 +629,13 @@ func (b *Broker) askDecision(ctx context.Context, by, cat, action, detail string
 	b.mu.Lock()
 	ask := b.ask
 	b.mu.Unlock()
+	// A fleet machine that keeps asking is refused, not left to wear the
+	// operator down. Only a prompt somebody would see is counted.
+	if b.limit != nil && (ask != nil || b.requests != nil) && !b.limit.take(start) {
+		logOutcome("denied", "too many prompts for this machine")
+		verdict(ctx, cat, action, detail, b.origin, "rate_limit", "denied_policy", control.DenyOnce)
+		return control.DenyOnce
+	}
 	// THIRD PATH (Discord buttons, TEN-231): ask is a REPLACEMENT single-owner
 	// backend — the operator decides in Discord, not at any other surface. It
 	// stays BESIDE the fan-out registry on purpose: routing it through Resolve

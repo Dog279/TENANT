@@ -32,6 +32,7 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+	"unicode/utf8"
 
 	"tenant/internal/control"
 	"tenant/internal/logs"
@@ -98,6 +99,13 @@ func validRulePattern(p string) error {
 	}
 	if len(p) > 200 {
 		return fmt.Errorf("pattern too long")
+	}
+	// A pattern is saved as JSON, which has no way to write bytes that are not
+	// UTF-8: each would come back as U+FFFD, a different and longer pattern
+	// than the one checked here, and for a fleet machine, whose scheme is read
+	// strictly, one that can fail the check and take the whole scheme with it.
+	if !utf8.ValidString(p) {
+		return fmt.Errorf("pattern must be valid UTF-8 text")
 	}
 	if body, ok := commandRuleBody(p); ok {
 		switch {

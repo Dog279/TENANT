@@ -1,6 +1,7 @@
 package approval
 
 import (
+	"encoding/json"
 	"maps"
 	"strings"
 	"testing"
@@ -183,5 +184,42 @@ func TestToolRules_CommandRules(t *testing.T) {
 		if got := CommandPrefix(cmd); got != want {
 			t.Errorf("CommandPrefix(%q) = %q, want %q", cmd, got, want)
 		}
+	}
+}
+
+// A pattern that is not UTF-8 cannot be saved as it is: JSON would write each
+// stray byte as U+FFFD, so the file would hold another, longer pattern than
+// the one that was checked. It is refused where every rule is checked.
+func TestToolRules_PatternMustBeUTF8(t *testing.T) {
+	stray := strings.Repeat("\xb5", 65) + "000000" // 71 bytes here, 201 once saved
+	for _, p := range []string{stray, "os_exec(" + stray + " *)", "delete_\xff*", "\xc3"} {
+		r := NewRules()
+		if err := r.Set(p, "deny"); err == nil {
+			t.Errorf("Set(%q) was accepted", p)
+		}
+		if len(r.Snapshot()) != 0 {
+			t.Errorf("a refused pattern %q is in the set", p)
+		}
+		if got, skipped := NormalizeRules(map[string]string{p: "deny"}); len(got) != 0 || skipped != 1 {
+			t.Errorf("a file with the pattern %q loads it: %v", p, got)
+		}
+	}
+	// What is accepted survives the trip through the settings file unchanged.
+	r := NewRules()
+	for _, p := range []string{"os_exec(systemctl status *)", "delete_*", "größe_*", "os_exec(echo ✓ *)"} {
+		if err := r.Set(p, "allow"); err != nil {
+			t.Fatalf("Set(%q): %v", p, err)
+		}
+	}
+	b, err := json.Marshal(r.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back map[string]string
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatal(err)
+	}
+	if got, skipped := NormalizeRules(back); skipped != 0 || !maps.Equal(got, r.Snapshot()) {
+		t.Fatalf("the rules changed on the way through JSON: %v, %d skipped", got, skipped)
 	}
 }

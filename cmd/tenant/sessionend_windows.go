@@ -167,19 +167,25 @@ const maxHelperLine = 4096
 
 // serveWindowTitle is the title of the window of the serve that uses
 // dataDir: how a command of the same install finds it.
-func serveWindowTitle(dataDir string) string {
-	if abs, err := filepath.Abs(dataDir); err == nil {
-		dataDir = abs
+func serveWindowTitle(dataDir string) string { return sessionWindowTitle("serve", dataDir) }
+
+// sessionWindowTitle names the window of what ("serve", or "child" for a
+// fleet child, childctl.go) by its directory: a serve and a child on one
+// machine never share a title, whatever their directories.
+func sessionWindowTitle(what, dir string) string {
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
 	}
-	return "tenant serve " + strings.ToLower(filepath.Clean(dataDir))
+	return "tenant " + what + " " + strings.ToLower(filepath.Clean(dir))
 }
 
-// watchSessionEnd gives serve a channel that is closed when the user's
-// session is ending or a command asks serve to stop, and with hide takes
-// the console window off the screen (serve --hidden). Both are the helper's
-// work. With no helper (a service, or one that did not come up) the channel
-// is nil and err says why, when there is something to say.
-func watchSessionEnd(dataDir string, hide bool) (ending <-chan struct{}, err error) {
+// watchSessionEnd gives serve, or a fleet child (what, with the directory
+// that names its window), a channel that is closed when the user's session
+// is ending or a command asks it to stop, and with hide takes the console
+// window off the screen (--hidden). Both are the helper's work. With no
+// helper (a service, or one that did not come up) the channel is nil and
+// err says why, when there is something to say.
+func watchSessionEnd(what, dir string, hide bool) (ending <-chan struct{}, err error) {
 	if ok, _ := svc.IsWindowsService(); ok {
 		return nil, nil
 	}
@@ -191,7 +197,7 @@ func watchSessionEnd(dataDir string, hide bool) (ending <-chan struct{}, err err
 	if hide {
 		mode = "hide"
 	}
-	c := exec.Command(exe, sessionWatchArg, mode, serveWindowTitle(dataDir))
+	c := exec.Command(exe, sessionWatchArg, mode, sessionWindowTitle(what, dir))
 	c.Env = append([]string{"SystemRoot=" + os.Getenv("SystemRoot")}, sessionHelperEnv...) // nothing of serve's environment
 	// The helper shares serve's console. For a serve that has none, Child
 	// asks for no window, as it does for every command of such a serve.

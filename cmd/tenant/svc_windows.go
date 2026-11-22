@@ -30,14 +30,20 @@ func runWindowsService() bool {
 	// ponytail: the wait hint is the budget the unit passes (--stop-budget
 	// 120s, specFor); parse serve's flags here if someone edits binPath.
 	h := &tenantService{budget: 120 * time.Second, run: func(ctx context.Context) error {
-		if len(os.Args) < 2 || os.Args[1] != "serve" {
-			return errors.New("the service's command line must be `tenant serve …`")
+		if len(os.Args) < 2 || (os.Args[1] != "serve" && os.Args[1] != "child") {
+			return errors.New("the service's command line must be `tenant serve …` or `tenant child run …`")
 		}
 		holdDataDir = lockDataDirForProcess
 		runningCommand = "serve"
 		killChildrenOnExit()
 		var err error
-		procprotect.Ordinary(func() { err = cmdServe(ctx, os.Args[2:]) }) // as main runs a command
+		procprotect.Ordinary(func() { // as main runs a command
+			if os.Args[1] == "child" { // a fleet child installed with --system (TEN-531)
+				err = cmdChild(ctx, os.Args[2:])
+				return
+			}
+			err = cmdServe(ctx, os.Args[2:])
+		})
 		return err
 	}}
 	if err := svc.Run("Tenant", h); err != nil {

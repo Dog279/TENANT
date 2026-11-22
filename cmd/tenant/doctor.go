@@ -180,6 +180,8 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		{"secret storage protection", checkSecretProtection},
 		// TEN-535: what the operating system was asked to refuse other programs.
 		{"process protection", checkProcessProtection},
+		// TEN-532: a fleet master's fleet key and recovery key.
+		{"fleet memory keys", checkFleetKeys},
 		// credentials.json schema + every keyed provider has a resolvable
 		// secret (env-var present OR stored in creds).
 		{"credentials", checkCredentials},
@@ -246,6 +248,8 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		// instead of by a silently empty daily brief.
 		{"remote MCP auth", checkRemoteMCPAuth},
 	}...)
+	// TEN-533: on a fleet master, one check per machine (doctorfleet.go).
+	checks = append(checks, fleetDoctorChecks(c.cfgDir)...)
 
 	results := make([]checkResult, 0, len(checks))
 	for _, ck := range checks {
