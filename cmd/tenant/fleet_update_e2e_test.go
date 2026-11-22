@@ -478,9 +478,19 @@ func TestFleetUpdateRealProcesses(t *testing.T) {
 
 	var startFile, endFile string
 	var started time.Time
+	// bgRuns is how long the background command runs. It has to outlast the
+	// update that is to end it, or its end says nothing about the restart: an
+	// update takes some ten seconds, and over a minute under the race
+	// detector on CI's Linux runner, where at 45 seconds the command had
+	// ended by itself and the test failed with "the background command
+	// outlived the update".
+	bgRuns := 45 * time.Second
+	if raceEnabled {
+		bgRuns = 2 * time.Minute
+	}
 	step("a command is running on the machine when the update starts", func(t *testing.T) {
 		startFile, endFile = h.join("bg-start"), h.join("bg-end")
-		res, cards := m.one("fleet_exec", map[string]any{"host": "alpha", "command": h.slow(startFile, 45, endFile, "never-printed"), "background": true}, "approve")
+		res, cards := m.one("fleet_exec", map[string]any{"host": "alpha", "command": h.slow(startFile, int(bgRuns/time.Second), endFile, "never-printed"), "background": true}, "approve")
 		if len(cards) != 1 || !strings.Contains(res, "background") {
 			t.Fatalf("the background command: %d cards\n%s", len(cards), res)
 		}
@@ -498,6 +508,7 @@ func TestFleetUpdateRealProcesses(t *testing.T) {
 	step("an update comes back on the new version", func(t *testing.T) {
 		f.rel.publish("v2.0.0", e2eBuild(t, filepath.Join(builds, "2.0.0"), "2.0.0", ""))
 		out, exit := f.update("alpha", "--version", "v2.0.0")
+		restarted := time.Since(started) // the machine is back by now, so it restarted before this
 		for _, want := range []string{"alpha: fetching v2.0.0 for " + runtime.GOOS + "/" + runtime.GOARCH, "alpha: fetched tenant_2.0.0_", "verified checksum only",
 			"the machine checked its SHA-256 and is applying it. Its background commands end at the restart",
 			"alpha: back on the new version 2.0.0"} {
@@ -529,9 +540,12 @@ func TestFleetUpdateRealProcesses(t *testing.T) {
 			t.Errorf("a command on the updated machine:\n%s", res)
 		}
 		// The command that was running ended at the restart.
-		time.Sleep(time.Until(started.Add(50 * time.Second)))
+		if restarted >= bgRuns {
+			t.Fatalf("the update took %s and the background command runs for %s: it may have ended by itself, which shows nothing about the restart (see bgRuns)", restarted.Round(time.Second), bgRuns)
+		}
+		time.Sleep(time.Until(started.Add(bgRuns + 5*time.Second)))
 		if _, err := os.Stat(endFile); err == nil {
-			t.Error("the background command outlived the update")
+			t.Errorf("the background command outlived the update (the machine was back %s after the command started, and the command runs for %s)", restarted.Round(time.Second), bgRuns)
 		}
 	})
 
