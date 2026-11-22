@@ -163,8 +163,8 @@ func TestFleetEndToEnd(t *testing.T) {
 		probe := filepath.Join(h.root, "probe.txt")
 		touch := map[string]any{"command": h.touch(probe)}
 		on := func(host string) map[string]any { return map[string]any{"host": host, "command": touch["command"]} }
-		if _, cards := m.one("fleet_exec", on("alpha"), "approve_always"); len(cards) != 1 {
-			t.Fatalf("the first run on alpha raised %d cards", len(cards))
+		if res, cards := m.one("fleet_exec", on("alpha"), "approve_always"); len(cards) != 1 {
+			t.Fatalf("the first run on alpha raised %d cards: %+v\n%s", len(cards), cards, res)
 		}
 		if _, err := os.Stat(probe); err != nil {
 			t.Errorf("the command approved with always did not run: %v", err)

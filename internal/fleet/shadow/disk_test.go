@@ -630,8 +630,14 @@ func TestStore_ALostDatabaseIsLoadedAgainFromItsSnapshot(t *testing.T) {
 		t.Fatal("a write to the lost database succeeded")
 	}
 	waitFor(t, "the lost shadow to be dropped", func() bool { return len(f.Loaded()) == 0 })
-	reported := f.errs.take()
-	if len(reported) == 0 || !errors.Is(reported[0], errMemLost) {
+	// The pass drops the shadow and then says why, so the report can be a
+	// moment behind the drop (on CI's Windows runner it was).
+	var reported []error
+	waitFor(t, "the loss to be reported", func() bool {
+		reported = append(reported, f.errs.take()...)
+		return len(reported) > 0
+	})
+	if !errors.Is(reported[0], errMemLost) {
 		t.Fatalf("the loss was reported as %v", reported)
 	}
 	p.Release()

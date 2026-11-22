@@ -129,6 +129,11 @@ func TestFleetE2EProcess(t *testing.T) {
 		}
 		return notLoaded(name, a)
 	}
+	// That stand-in cannot sign a binary either, so the macOS signing step is
+	// off in a helper: with it on, a machine refuses every update as "codesign
+	// ran, but the hardened-runtime flag is not on" (CI's Mac, the update
+	// test). childsign_test.go is the test of that step.
+	signsBinaries = false
 	if spec.Scratch != "" {
 		_ = os.MkdirAll(spec.Scratch, 0o700)
 		_ = os.Setenv("TENANT_CHILD_HELPER_UNITS", filepath.Join(spec.Scratch, "units"))
