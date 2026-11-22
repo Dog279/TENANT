@@ -933,14 +933,34 @@ func (m *e2eMaster) turn(script string, decide func(control.PendingApproval) str
 }
 
 // one makes one tool call in a turn of its own and returns its result as
-// the model read it, and the cards it raised.
+// the model read it, and the cards its permission raised.
+//
+// Not among them: the card that asks whether data may leave
+// (sensitive_egress). fleet_list prints each machine's account, which is that
+// machine's word, and a later call whose arguments hold a word of it of eight
+// letters or more is asked about on a card of its own. The paths these tests
+// use sit under the account's temp folder, so whether that card comes up
+// depends on how long the account's and the computer's names are (on CI's
+// Windows runner it does: TestFleetEndToEnd saw two cards where it counts
+// one). No caller is about that check: it is approved, once, and left out.
 func (m *e2eMaster) one(tool string, args map[string]any, decision string) (string, []control.PendingApproval) {
 	m.t.Helper()
-	turn := m.turn(e2eScript(e2eCall(tool, args)), func(control.PendingApproval) string { return decision })
+	turn := m.turn(e2eScript(e2eCall(tool, args)), func(c control.PendingApproval) string {
+		if c.Action == "sensitive_egress" {
+			return "approve"
+		}
+		return decision
+	})
 	if len(turn.Results) != 1 {
 		m.t.Fatalf("%s %v: the model was handed %d results: %q", tool, args, len(turn.Results), turn.Results)
 	}
-	return turn.Results[0], turn.Cards
+	var cards []control.PendingApproval
+	for _, c := range turn.Cards {
+		if c.Action != "sensitive_egress" {
+			cards = append(cards, c)
+		}
+	}
+	return turn.Results[0], cards
 }
 
 // --- a machine ---
