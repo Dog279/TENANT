@@ -409,7 +409,14 @@ func (h *e2eHost) command(spec e2eSpec) *exec.Cmd {
 		cmd.Env = append(os.Environ(), orders, "WSLENV="+e2eProcEnv+"/u")
 	} else {
 		cmd = exec.Command(h.bin, "-test.run=^TestFleetE2EProcess$")
-		cmd.Env = append(os.Environ(), orders)
+		// clobberfree: the collector overwrites what it frees, so memory
+		// that was freed while still in use reads as garbage every time and
+		// not only when something else has moved in. That is how a master
+		// reporting the wrong update rule on Apple Silicon was pinned on
+		// go1.26's arm64 compiler (sendUpdate in fleetupdate.go): without
+		// this the update test below failed one run in three, with it
+		// every run. A helper's own children inherit it.
+		cmd.Env = append(os.Environ(), orders, "GODEBUG=clobberfree=1")
 		// No default dir of this account is in reach, whatever a command's flags say.
 		vars := e2eHomeVars
 		if h.rehome != nil {

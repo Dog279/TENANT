@@ -435,9 +435,19 @@ func ruleWords(rule, verified string) string {
 // the machine says it is applying, and fails when the machine stops taking
 // pieces or answers what is not about this archive: a machine may stall or
 // lie, and is never waited on for longer than a request's limit.
+//
+// The return is bare on purpose. Written `return sent, from, opening, err`,
+// go1.26 on arm64 (seen with 1.26.4 and 1.26.9, on Apple Silicon) stops
+// keeping opening alive across the call once this function is inlined into
+// its caller: the garbage collector freed the strings of the machine's
+// opening answer during the transfer, and the master read other memory in
+// their place and reported the wrong rule. What it takes is two results
+// whose address is taken, one of them a struct too large for registers,
+// returned by name; amd64 is not affected. TestFleetUpdateRealProcesses
+// fails on a Mac if this comes back.
 func sendUpdate(ctx context.Context, mgr *fleet.Manager, id, path string, u fleet.Update) (sent, from int64, opening fleet.UpdateAck, err error) {
 	sent, err = sendPieces(ctx, mgr, id, path, u, &from, &opening)
-	return sent, from, opening, err
+	return
 }
 
 func sendPieces(ctx context.Context, mgr *fleet.Manager, id, path string, u fleet.Update, from *int64, opening *fleet.UpdateAck) (int64, error) {
