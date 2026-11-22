@@ -17,17 +17,36 @@ var (
 			"op is not installed, not on the PATH of the account Tenant runs as, or the op_path setting points at the wrong file.",
 			"Install the 1Password CLI, or set op_path in `/configure onepassword` to the full path of op.")
 
-	// AuthFailed: 1Password refused the service account token.
-	AuthFailed = Events.Provider.Event(3102, event.Error, "Auth", "1Password refused the service account token: {err}", "err").
-			Doc("Every call failed because 1Password did not accept the token.",
-			"The token was revoked, expired, mistyped, or belongs to another account.",
-			"Create a service account token for the vault the agent should use and store it with `/configure onepassword`.")
+	// AuthFailed: 1Password refused the sign-in (a service account token, a
+	// Connect token, or the desktop app's session).
+	AuthFailed = Events.Provider.Event(3102, event.Error, "Auth", "1Password refused the sign-in: {err}", "err").
+			Doc("Every call failed because 1Password did not accept the plugin's sign-in.",
+			"The service account or Connect token was revoked, expired, mistyped, or belongs to another account; or, with desktop sign-in, the account is not signed in to the 1Password app.",
+			"Store a current token with `/configure onepassword`, or sign in to the account in the 1Password app.")
+
+	// AppUnavailable: desktop sign-in, and the 1Password app did not answer.
+	AppUnavailable = Events.Provider.Event(3103, event.Error, "Auth", "the 1Password app did not answer the CLI: {err}", "err").
+			Doc("The plugin signs in through the 1Password desktop app, and op could not reach it, so no 1Password tool works.",
+			"The app is closed or locked out of reach, its `Integrate with 1Password CLI` setting is off, or Tenant runs in a session the app is not in (a service, a scheduled task, an SSH login).",
+			"Open 1Password on this machine and turn on Settings, Developer, `Integrate with 1Password CLI`; run Tenant in the same desktop session; or switch the plugin to a service account or a Connect server.")
+
+	// ConnectUnreachable: Connect sign-in, and the server did not answer.
+	ConnectUnreachable = Events.Provider.Event(3104, event.Error, "API", "the 1Password Connect server did not answer: {err}", "err").
+				Doc("The plugin reaches 1Password through a Connect server, and a call to it got no answer, so no 1Password tool works.",
+			"The Connect containers are stopped, the address in the settings is wrong, or the network or a firewall is in the way.",
+			"Start the Connect server (its API and sync containers), check `connect_host` in `/configure onepassword`, and run `tenant doctor`.")
+
+	// NotApproved: desktop sign-in, and the app's prompt was not approved.
+	NotApproved = Events.Provider.Event(2102, event.Warning, "Auth", "a 1Password request was not approved in the app: {op}", "op").
+			Doc("The 1Password app asked the person at the machine to approve the agent's call, and the prompt was dismissed or timed out.",
+			"Nobody answered within two minutes, or the person chose not to approve.",
+			"Nothing to do if that was the intent. Otherwise ask the agent again and approve the prompt; one approval lasts until ten idle minutes pass or the app locks.")
 
 	// RateLimited: 1Password answered 429 on a call.
 	RateLimited = Events.Provider.Event(2101, event.Warning, "API", "1Password rate limit reached on {op}", "op").
 			Doc("A call was refused because the service account's hourly or daily request limit is used up.",
-			"The agent made more calls than the plan allows (Teams and Individual: 1,000 reads and 100 writes an hour per token, 1,000 requests a day).",
-			"Wait for the window to reset; cut the calls per turn; or move to a plan with a higher limit.")
+			"The agent made more calls than the plan allows (individual, Families and Teams: 1,000 reads and 100 writes an hour per token, and 1,000 requests a day, 5,000 on Teams; Business: 10,000, 1,000 and 50,000).",
+			"Wait for the window to reset; cut the calls per turn; move to a plan with a higher limit; or use a Connect server, which has no such limit.")
 
 	// Revealed: a secret value was read into the model's context. The
 	// reference is logged; the value never is.

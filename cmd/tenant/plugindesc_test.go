@@ -285,13 +285,13 @@ func TestConnectorsAndKeysComeFromTheRegistry(t *testing.T) {
 	for _, k := range keyCatalog() {
 		ids = append(ids, k.CredID)
 	}
-	for _, want := range []string{"openai", "sakana", "tavily", "brave_search", "jina", "skill:discord:token", "skill:simplefin:access_url", "skill:github:token", "skill:onepassword:token"} {
+	for _, want := range []string{"openai", "sakana", "tavily", "brave_search", "jina", "skill:discord:token", "skill:simplefin:access_url", "skill:github:token", "skill:onepassword:token", "skill:onepassword:connect_token"} {
 		if !slices.Contains(ids, want) {
 			t.Errorf("keys page %v lacks %s", ids, want)
 		}
 	}
-	if len(ids) != len(providerKeys)+7 {
-		t.Errorf("keys page has %d keys, want the %d providers and 7 plugin keys", len(ids), len(providerKeys))
+	if len(ids) != len(providerKeys)+8 {
+		t.Errorf("keys page has %d keys, want the %d providers and 8 plugin keys", len(ids), len(providerKeys))
 	}
 }
 

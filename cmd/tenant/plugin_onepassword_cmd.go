@@ -11,9 +11,10 @@ import (
 	"tenant/internal/plugins/onepassword"
 )
 
-// cmdOnePassword is the read-only one-shot: who the token is, the vaults it
+// cmdOnePassword is the read-only one-shot: who the sign-in is, the vaults it
 // sees, the items in one. It never prints a secret value; that is what
-// op_read under the agent's approvals is for.
+// op_read under the agent's approvals is for. With desktop sign-in the
+// 1Password app asks the person running it to approve.
 func cmdOnePassword(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("onepassword", flag.ContinueOnError)
 	c := bindCommon(fs)
@@ -31,17 +32,10 @@ func cmdOnePassword(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	var settings map[string]string
-	if sk, ok := lc.Skills["onepassword"]; ok && sk != nil {
-		settings = sk.Settings
-	}
-	token := onepasswordToken(c.cfgDir)
-	if token == "" {
-		return fmt.Errorf("onepassword: %w - run `tenant setup` or `/configure onepassword`", errNotConfigured)
-	}
-	cli, err := onepassword.NewCLI(settings["op_path"], token)
+	settings := onepasswordSettings(lc)
+	cli, err := onepasswordBackend(c.cfgDir, settings)
 	if err != nil {
-		return err
+		return fmt.Errorf("onepassword: %w", err)
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
 	defer w.Flush()
@@ -51,7 +45,7 @@ func cmdOnePassword(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(w, "type\t%s\nurl\t%s\n", strings.ToLower(firstNonEmpty(id.Type, "account")), id.URL)
+		fmt.Fprintf(w, "sign-in\t%s\ntype\t%s\nurl\t%s\n", onepasswordAuth(settings), strings.ToLower(firstNonEmpty(id.Type, "account")), id.URL)
 		if id.Email != "" {
 			fmt.Fprintf(w, "email\t%s\n", id.Email)
 		}

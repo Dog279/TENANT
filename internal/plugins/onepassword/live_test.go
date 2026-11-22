@@ -13,32 +13,60 @@ import (
 	"tenant/internal/model"
 )
 
-// TestLive_OnePassword drives the dispatcher over the real op CLI against a
-// vault made for it. It needs:
+// liveBackend is the backend the environment names, one of:
 //
-//	TENANT_LIVE_OP_TOKEN  a service account token scoped to that vault (read + write)
-//	TENANT_LIVE_OP_VAULT  the vault's name
-//	TENANT_LIVE_OP_PATH   the op binary when it is not on PATH (optional)
+//	TENANT_LIVE_OP_TOKEN                               a service account token (read + write on the vault)
+//	TENANT_LIVE_OP_CONNECT_HOST + ..._CONNECT_TOKEN    a Connect server and a token for the vault
+//	TENANT_LIVE_OP_DESKTOP=1 (+ TENANT_LIVE_OP_ACCOUNT) the 1Password app on this machine; it will ask you to approve
 //
-// Without them it is skipped. It creates items named tenant-live-<time>,
-// reads them back, edits them, and archives them; nothing else in the vault
-// is touched. A value it reads is compared, never printed.
-func TestLive_OnePassword(t *testing.T) {
-	token, vault := os.Getenv("TENANT_LIVE_OP_TOKEN"), os.Getenv("TENANT_LIVE_OP_VAULT")
-	if token == "" || vault == "" {
-		t.Skip("set TENANT_LIVE_OP_TOKEN and TENANT_LIVE_OP_VAULT to run against 1Password")
+// TENANT_LIVE_OP_PATH is the op binary when it is not on PATH.
+func liveBackend(t *testing.T) Backend {
+	t.Helper()
+	var be Backend
+	var err error
+	switch {
+	case os.Getenv("TENANT_LIVE_OP_CONNECT_HOST") != "":
+		be, err = NewConnect(os.Getenv("TENANT_LIVE_OP_CONNECT_HOST"), os.Getenv("TENANT_LIVE_OP_CONNECT_TOKEN"))
+	case os.Getenv("TENANT_LIVE_OP_DESKTOP") != "":
+		be, err = NewDesktopCLI(os.Getenv("TENANT_LIVE_OP_PATH"), os.Getenv("TENANT_LIVE_OP_ACCOUNT"))
+	case os.Getenv("TENANT_LIVE_OP_TOKEN") != "":
+		be, err = NewCLI(os.Getenv("TENANT_LIVE_OP_PATH"), os.Getenv("TENANT_LIVE_OP_TOKEN"))
+	default:
+		t.Skip("set TENANT_LIVE_OP_VAULT and one of TENANT_LIVE_OP_TOKEN, TENANT_LIVE_OP_CONNECT_HOST or TENANT_LIVE_OP_DESKTOP to run against 1Password")
 	}
-	cli, err := NewCLI(os.Getenv("TENANT_LIVE_OP_PATH"), token)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return be
+}
+
+// TestLive_OnePassword drives the dispatcher over a real backend (see
+// liveBackend) against a vault made for it, TENANT_LIVE_OP_VAULT. Without
+// those it is skipped. It creates items named tenant-live-<time>, reads them
+// back, edits them, and archives them; nothing else in the vault is touched.
+// A value it reads is compared, never printed.
+//
+// TENANT_LIVE_OP_READONLY=1 stops after signing in and finding the vault: no
+// item is listed, read or written. A Connect server cannot archive, so over
+// Connect the test's items stay in the vault and are named at the end.
+func TestLive_OnePassword(t *testing.T) {
+	vault, readOnly := os.Getenv("TENANT_LIVE_OP_VAULT"), os.Getenv("TENANT_LIVE_OP_READONLY") != ""
+	if vault == "" && !readOnly {
+		t.Skip("set TENANT_LIVE_OP_VAULT and one of TENANT_LIVE_OP_TOKEN, TENANT_LIVE_OP_CONNECT_HOST or TENANT_LIVE_OP_DESKTOP to run against 1Password")
+	}
+	cli := liveBackend(t)
+	_, overConnect := cli.(*Connect)
 	ctx := context.Background()
 
+	// The times tell a desktop run's story: the first call waits for the
+	// person's approval, and the ones after it ride on that approval.
+	start := time.Now()
 	id, err := cli.WhoAmI(ctx)
 	if err != nil {
 		t.Fatalf("whoami: %v", err)
 	}
-	t.Logf("whoami: type=%q url=%q id=%q email=%q", id.Type, id.URL, id.ID, id.Email)
+	// The account's address and the person's email stay out of the test log.
+	t.Logf("whoami in %s: type=%q, url set=%v, email set=%v", time.Since(start).Round(time.Millisecond), id.Type, id.URL != "", id.Email != "")
 
 	var actions []string
 	var revealed int
@@ -80,9 +108,17 @@ func TestLive_OnePassword(t *testing.T) {
 		}
 	}()
 
-	// The vault is listed.
-	if out := mustOK("op_vaults", nil); !strings.Contains(out, vault) {
-		t.Fatalf("op_vaults lacks %q:\n%s", vault, out)
+	// The vault is listed. The listing itself is not printed: with desktop
+	// sign-in it names every vault of a person's account.
+	start = time.Now()
+	listed := mustOK("op_vaults", nil)
+	count := strings.Count(listed, "\n") + 1
+	if vault != "" && !strings.Contains(listed, vault) {
+		t.Fatalf("op_vaults lists %d vault(s) and none is %q", count, vault)
+	}
+	if readOnly {
+		t.Logf("read-only: signed in and listed %d vault(s) in %s; no item was listed, read or written", count, time.Since(start).Round(time.Millisecond))
+		return
 	}
 
 	// A login with a generated password, a custom concealed field, notes,
@@ -196,6 +232,16 @@ func TestLive_OnePassword(t *testing.T) {
 	raw, _ = json.Marshal(map[string]any{"vault": "no-such-vault-" + stamp})
 	if out, isErr, _ := fenced.Dispatch(ctx, model.ToolCall{Name: "op_items", Arguments: raw}); !isErr || !strings.Contains(out, "refused") {
 		t.Errorf("an unknown vault is refused by the fence: %v %s", isErr, out)
+	}
+
+	// A Connect server cannot archive: the tool refuses, and the items stay.
+	if overConnect {
+		if out, isErr := call("op_delete", map[string]any{"vault": vault, "item": created[0]}); !isErr || !strings.Contains(out, "Connect") {
+			t.Errorf("op_delete over Connect: %v %s", isErr, out)
+		}
+		t.Logf("left in vault %q for you to archive: %s", vault, strings.Join(created, ", "))
+		created = nil
+		return
 	}
 
 	// Archiving asks and works; an archived item is gone from the listing.

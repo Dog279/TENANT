@@ -9,6 +9,7 @@ package onepassword
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -117,7 +118,17 @@ type Backend interface {
 // the log) what happened without quoting op's stderr.
 var (
 	ErrCLINotFound = errors.New("the 1Password CLI (op) was not found")
-	ErrAuth        = errors.New("1Password refused the service account token")
+	ErrAuth        = errors.New("1Password refused the sign-in")
+	// ErrAppUnavailable: desktop mode, and the 1Password app did not answer
+	// op: it is closed, or its CLI integration is switched off.
+	ErrAppUnavailable = errors.New("the 1Password app did not answer the CLI")
+	// errAppRefused is ErrAppUnavailable's passing kind: the app refused the
+	// connection outright, which it also does for a moment while busy, so the
+	// CLI asks again before reporting it.
+	errAppRefused = fmt.Errorf("%w", ErrAppUnavailable)
+	// ErrNotApproved: desktop mode, and the person dismissed the app's prompt
+	// or did not answer it in time.
+	ErrNotApproved = errors.New("the request was not approved in the 1Password app")
 	ErrRateLimited = errors.New("1Password's rate limit is reached; wait for the window to reset")
 	ErrNotFound    = errors.New("not found in 1Password")
 )

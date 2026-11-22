@@ -11,15 +11,23 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // CLI is the Backend over the op command-line tool. Every call is one op
-// process with the service account token in its environment, never in its
-// arguments, and --format json. A value the agent sets on an item travels
-// on stdin as a JSON template, so it is not in the process list either.
+// process and --format json. It signs in one of two ways: with a service
+// account token in the process's environment, never in its arguments
+// (NewCLI), or through the 1Password desktop app, which asks the person at
+// the machine (NewDesktopCLI). A value the agent sets on an item travels on
+// stdin as a JSON template, so it is not in the process list either.
 type CLI struct {
-	path    string
-	token   string
+	path  string
+	token string
+	// desktop: op signs in through the 1Password app, with no token.
+	desktop bool
+	// account, in desktop mode, is the account to use: its sign-in address or
+	// id. Empty leaves the choice to op, which works when the app holds one.
+	account string
 	timeout time.Duration
 	// run starts the process; tests replace it.
 	run func(ctx context.Context, path string, env []string, stdin string, args ...string) (stdout, stderr []byte, err error)
@@ -29,22 +37,50 @@ type CLI struct {
 // every call; a stall there must not hang the agent's turn.
 const DefaultTimeout = 20 * time.Second
 
-// NewCLI finds the op binary at path (empty: on PATH) and keeps the token.
-// A missing binary is ErrCLINotFound, so a misconfigured install fails at
-// launch, not on the first tool call.
-func NewCLI(path, token string) (*CLI, error) {
+// DesktopTimeout bounds one op call in desktop mode, where op may be waiting
+// for a person to answer the 1Password app's approval prompt.
+const DesktopTimeout = 2 * time.Minute
+
+func findOp(path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		path = "op"
 	}
 	resolved, err := exec.LookPath(path)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrCLINotFound, path)
+		return "", fmt.Errorf("%w: %s", ErrCLINotFound, path)
+	}
+	return resolved, nil
+}
+
+// NewCLI finds the op binary at path (empty: on PATH) and keeps the token.
+// A missing binary is ErrCLINotFound, so a misconfigured install fails at
+// launch, not on the first tool call.
+func NewCLI(path, token string) (*CLI, error) {
+	resolved, err := findOp(path)
+	if err != nil {
+		return nil, err
 	}
 	return &CLI{path: resolved, token: token, timeout: DefaultTimeout, run: runProcess}, nil
 }
 
+// NewDesktopCLI is the CLI signed in through the 1Password desktop app. The
+// app shows its own prompt (Touch ID, Windows Hello, the system password) and
+// one approval covers this process until ten idle minutes pass, twelve hours
+// pass, or the app locks. The approval reaches every vault the person can
+// see, so the caller must fence the agent with a vault allowlist.
+func NewDesktopCLI(path, account string) (*CLI, error) {
+	resolved, err := findOp(path)
+	if err != nil {
+		return nil, err
+	}
+	return &CLI{path: resolved, desktop: true, account: strings.TrimSpace(account), timeout: DesktopTimeout, run: runProcess}, nil
+}
+
 // Path is the binary the CLI runs.
 func (c *CLI) Path() string { return c.path }
+
+// Desktop reports whether the CLI signs in through the 1Password app.
+func (c *CLI) Desktop() bool { return c.desktop }
 
 func runProcess(ctx context.Context, path string, env []string, stdin string, args ...string) ([]byte, []byte, error) {
 	cmd := exec.CommandContext(ctx, path, args...)
@@ -59,15 +95,18 @@ func runProcess(ctx context.Context, path string, env []string, stdin string, ar
 	return out.Bytes(), errb.Bytes(), err
 }
 
-// env is the child's environment: the parent's without any op session or
-// token variable, plus this token. OP_FORMAT is not used; --format json is
-// passed per call so a reader of the arguments sees what was asked.
+// env is the child's environment: the parent's without any op session,
+// token or Connect variable, plus this token, or in desktop mode the switch
+// that sends op to the 1Password app. A parent's own token or Connect
+// variables never decide how the plugin signs in; its settings do. OP_FORMAT
+// is not used; --format json is passed per call so a reader of the arguments
+// sees what was asked.
 func (c *CLI) env() []string {
 	var env []string
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
 		switch strings.ToUpper(name) {
-		case "OP_SERVICE_ACCOUNT_TOKEN", "OP_SESSION", "OP_CONNECT_HOST", "OP_CONNECT_TOKEN":
+		case "OP_SERVICE_ACCOUNT_TOKEN", "OP_SESSION", "OP_CONNECT_HOST", "OP_CONNECT_TOKEN", "OP_BIOMETRIC_UNLOCK_ENABLED":
 			continue
 		}
 		if strings.HasPrefix(strings.ToUpper(name), "OP_SESSION_") {
@@ -75,17 +114,49 @@ func (c *CLI) env() []string {
 		}
 		env = append(env, kv)
 	}
-	if c.token != "" {
+	switch {
+	case c.desktop:
+		env = append(env, "OP_BIOMETRIC_UNLOCK_ENABLED=true")
+	case c.token != "":
 		env = append(env, "OP_SERVICE_ACCOUNT_TOKEN="+c.token)
 	}
 	return env
 }
 
+// appRetry is how long call waits before asking the 1Password app again when
+// it refused a connection; tests shorten it.
+var appRetry = []time.Duration{500 * time.Millisecond, time.Second, 2 * time.Second}
+
 // call runs op with args and classifies a failure. stdin is sent when set.
+//
+// In desktop mode the app can refuse a new connection for a second or so.
+// Measured on Windows with op 2.42: it does for about a second after a call
+// that needs no session (whoami, account list), and not after a call that
+// used one, whether that call worked or failed. op gives up before it has
+// sent anything, so asking again repeats nothing, a write included.
 func (c *CLI) call(ctx context.Context, stdin string, args ...string) ([]byte, error) {
+	out, err := c.once(ctx, stdin, args...)
+	for _, wait := range appRetry {
+		if !c.desktop || !errors.Is(err, errAppRefused) {
+			break
+		}
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		out, err = c.once(ctx, stdin, args...)
+	}
+	return out, err
+}
+
+func (c *CLI) once(ctx context.Context, stdin string, args ...string) ([]byte, error) {
 	timeout := c.timeout
 	if timeout <= 0 {
 		timeout = DefaultTimeout
+	}
+	if c.desktop && c.account != "" && opName(args) != "account list" {
+		args = append(args, "--account", c.account)
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -94,6 +165,9 @@ func (c *CLI) call(ctx context.Context, stdin string, args ...string) ([]byte, e
 		return out, nil
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if c.desktop {
+			return nil, fmt.Errorf("%w: op %s waited %s for an answer", ErrNotApproved, opName(args), timeout)
+		}
 		return nil, fmt.Errorf("op %s timed out after %s", opName(args), timeout)
 	}
 	var ee *exec.Error
@@ -132,6 +206,17 @@ func classify(op, stderr string, err error) error {
 	}
 	lower := strings.ToLower(msg)
 	switch {
+	case strings.Contains(lower, "cannot connect to 1password app"):
+		// The app is closed, or it is refusing connections for a moment: call
+		// asks again before giving up.
+		return fmt.Errorf("%w (%s): %s", errAppRefused, op, cut(msg, 160))
+	case strings.Contains(lower, "connecting to desktop app") || strings.Contains(lower, "no accounts configured"):
+		// The app's "Integrate with 1Password CLI" setting is off. op's own
+		// text names the menu path; one line of it is enough.
+		return fmt.Errorf("%w (%s): %s", ErrAppUnavailable, op, cut(msg, 160))
+	case strings.Contains(lower, "authorization prompt dismissed") || strings.Contains(lower, "authorization denied") ||
+		strings.Contains(lower, "authorization timeout") || strings.Contains(lower, "authorization was cancel"):
+		return fmt.Errorf("%w (%s): %s", ErrNotApproved, op, msg)
 	case strings.Contains(lower, "(429)") || strings.Contains(lower, "too many requests") || strings.Contains(lower, "rate limit"):
 		return fmt.Errorf("%w (%s): %s", ErrRateLimited, op, msg)
 	case strings.Contains(lower, "(401)") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "token") && (strings.Contains(lower, "invalid") || strings.Contains(lower, "expired") || strings.Contains(lower, "revoked")) ||
@@ -145,6 +230,17 @@ func classify(op, stderr string, err error) error {
 	return fmt.Errorf("op %s failed: %s", op, msg)
 }
 
+// cut shortens s to at most n bytes on a rune boundary.
+func cut(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "..."
+}
+
 func firstLine(s string) string {
 	s = strings.TrimSpace(s)
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
@@ -155,7 +251,53 @@ func firstLine(s string) string {
 
 // --- the Backend ---
 
+// Account is one account op can sign in to.
+type Account struct {
+	URL    string `json:"url"`
+	Email  string `json:"email"`
+	ID     string `json:"account_uuid"`
+	UserID string `json:"user_uuid"`
+}
+
+// Accounts lists the accounts op can use. In desktop mode they are the
+// accounts the 1Password app holds, and listing them asks for no approval:
+// it is the probe that never puts a prompt on someone's screen.
+func (c *CLI) Accounts(ctx context.Context) ([]Account, error) {
+	out, err := c.call(ctx, "", "account", "list", "--format", "json")
+	if err != nil {
+		return nil, err
+	}
+	var accounts []Account
+	if err := json.Unmarshal(out, &accounts); err != nil {
+		return nil, fmt.Errorf("op account list: unreadable answer: %w", err)
+	}
+	return accounts, nil
+}
+
+// WhoAmI is who op is signed in as. In desktop mode it asks 1Password for the
+// user, which brings up the app's prompt when this process holds no approval
+// yet, so a passing probe proves the whole chain. It does not run op whoami
+// there: with the app, whoami always answers "account is not signed in".
 func (c *CLI) WhoAmI(ctx context.Context) (Identity, error) {
+	if !c.desktop {
+		return c.whoami(ctx)
+	}
+	out, err := c.call(ctx, "", "user", "get", "--me", "--format", "json")
+	if err != nil {
+		return Identity{}, err
+	}
+	var u struct {
+		ID    string `json:"id"`
+		Email string `json:"email"`
+		Type  string `json:"type"`
+	}
+	if err := json.Unmarshal(out, &u); err != nil {
+		return Identity{}, fmt.Errorf("op user get: unreadable answer: %w", err)
+	}
+	return Identity{URL: c.account, Email: u.Email, Type: u.Type, ID: u.ID}, nil
+}
+
+func (c *CLI) whoami(ctx context.Context) (Identity, error) {
 	out, err := c.call(ctx, "", "whoami", "--format", "json")
 	if err != nil {
 		return Identity{}, err

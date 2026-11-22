@@ -688,8 +688,14 @@ func (sc *skillCfgControl) isConfigured(id string, k skillKind) bool {
 		return false
 	}
 	creds, _ := loadCredentials(sc.cfgDir)
+	// A required field hidden by the saved answers (another sign-in mode's
+	// token) is not missing: SkillConfigure skips it the same way.
+	var saved map[string]string
+	if lc.Skills != nil && lc.Skills[id] != nil {
+		saved = lc.Skills[id].Settings
+	}
 	for _, f := range k.Fields {
-		if !f.Required {
+		if !f.Required || (f.ShowIf != nil && !f.ShowIf(saved)) {
 			continue
 		}
 		v := ""

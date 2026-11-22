@@ -111,6 +111,10 @@ service account's name. Doctor repeats it and lists the vaults it can see.
 
 ## Later
 
+Continued in [onepassword-enterprise-plan.md](onepassword-enterprise-plan.md):
+the Connect and desktop-app sign-in modes are built, and the items below are
+its phases 2 and 3.
+
 - **`os_exec` secret environment** (phase 2): `os_exec` takes
   `secret_env: {"NAME": "op://..."}`; the host resolves each reference through
   the plugin, puts the value in the child's environment and in the scrubber,

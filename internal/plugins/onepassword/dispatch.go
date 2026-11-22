@@ -44,6 +44,11 @@ type Policy struct {
 	// the host can hand it to the log scrubber. The value is never logged by
 	// the plugin itself.
 	Revealed func(reference, value string)
+	// Present, when set, reports whether a person is at this machine for the
+	// turn in ctx. Desktop sign-in sets it: the 1Password app asks that
+	// person, so a scheduled or remote turn is refused before op is started
+	// and no prompt appears on an empty desk.
+	Present func(ctx context.Context) bool
 }
 
 // Dispatcher implements the agent tool dispatcher for 1Password.
@@ -62,7 +67,11 @@ func NewDispatcher(be Backend, policy Policy) *Dispatcher {
 	return &Dispatcher{be: be, policy: policy}
 }
 
-const notConfigured = "1Password is not configured - run `/configure onepassword` (a service account token) and `/enable onepassword`"
+const notConfigured = "1Password is not configured - run `/configure onepassword` and `/enable onepassword`"
+
+const nobodyPresent = "1Password is signed in through the desktop app on this machine, which asks the person there to approve. " +
+	"This turn has nobody at the machine (a scheduled or remote run), so the call was not made. " +
+	"This is the operator's boundary, not a bug - a scheduled or remote run needs a service account or a Connect server"
 
 var sensitive = []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceVault}}
 
@@ -90,9 +99,9 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 			Parameters: obj(`"reference":{"type":"string","description":"op://vault/item/field, as op_item reports it"}`, "reference"), Gated: true, ResultLabels: sensitive},
 		{Name: "op_create", Description: "Create an item in a vault: a login (username + password), a password, an api_credential (username + credential) or a secure_note. GATED (write). Set generate_password true to have 1Password make a strong password you never see; prefer that for a new account.",
 			Parameters: obj(vaultArg+`,"title":{"type":"string"},"category":{"type":"string","description":"login (default), password, api_credential or secure_note"},"username":{"type":"string"},"password":{"type":"string","description":"the secret; omit it and set generate_password instead when possible"},"generate_password":{"type":"boolean"},"url":{"type":"string"},"notes":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}},`+fieldsArg, "vault", "title"), Gated: true, ResultLabels: sensitive},
-		{Name: "op_edit", Description: "Change an item: its title, URL, tags, or fields by label (a new label adds a field). GATED (write). A field value you give travels through the op process's arguments, so set generate_password true for a new password instead of writing one.",
+		{Name: "op_edit", Description: "Change an item: its title, URL, tags, or fields by label (a new label adds a field). GATED (write). For a new password set generate_password true instead of writing one, so the value never passes through you.",
 			Parameters: obj(vaultArg+`,"item":{"type":"string","description":"the item's id or exact title"},"title":{"type":"string"},"url":{"type":"string"},"tags":{"type":"array","items":{"type":"string"},"description":"replaces the tags"},"generate_password":{"type":"boolean"},`+fieldsArg, "vault", "item"), Gated: true, ResultLabels: sensitive},
-		{Name: "op_delete", Description: "Archive an item (1Password keeps it in the vault's Archive). GATED and destructive: it asks every time.",
+		{Name: "op_delete", Description: "Archive an item (1Password keeps it in the vault's Archive). GATED and destructive: it asks every time. Not available when 1Password is reached through a Connect server.",
 			Parameters: obj(vaultArg+`,"item":{"type":"string","description":"the item's id or exact title"}`, "vault", "item"), Gated: true, ResultLabels: sensitive},
 	}
 }
@@ -100,6 +109,9 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string, bool, error) {
 	if d.be == nil {
 		return notConfigured, true, nil
+	}
+	if d.policy.Present != nil && !d.policy.Present(ctx) {
+		return nobodyPresent, true, nil
 	}
 	switch call.Name {
 	case "op_vaults":
@@ -132,6 +144,12 @@ func (d *Dispatcher) fail(ctx context.Context, op string, err error) (string, bo
 		RateLimited.Log(ctx, "op", op)
 	case errors.Is(err, ErrAuth):
 		AuthFailed.Log(ctx, "err", err.Error())
+	case errors.Is(err, ErrAppUnavailable):
+		AppUnavailable.Log(ctx, "err", err.Error())
+	case errors.Is(err, ErrNotApproved):
+		NotApproved.Log(ctx, "op", op)
+	case errors.Is(err, ErrConnectUnreachable):
+		ConnectUnreachable.Log(ctx, "err", err.Error())
 	}
 	return err.Error(), true, nil
 }
@@ -207,7 +225,7 @@ func (d *Dispatcher) listVaults(ctx context.Context) (string, bool, error) {
 		n++
 	}
 	if n == 0 {
-		return "no vaults: the service account sees none the agent may use", true, nil
+		return "no vaults: this sign-in sees none the agent may use", true, nil
 	}
 	return strings.TrimRight(b.String(), "\n"), false, nil
 }
@@ -489,6 +507,11 @@ func (d *Dispatcher) archive(ctx context.Context, raw json.RawMessage) (string, 
 	}
 	if strings.TrimSpace(a.Item) == "" {
 		return "item is required", true, nil
+	}
+	// A Connect server cannot archive. Say so before asking anyone to approve
+	// something that will not happen.
+	if _, ok := d.be.(*Connect); ok {
+		return d.be.Archive(ctx, a.Vault, a.Item).Error(), true, nil
 	}
 	detail := fmt.Sprintf("archive %q in vault %s", a.Item, a.Vault)
 	if d.policy.Confirm == nil || !d.policy.Confirm(ctx, ActionArchive, detail) {

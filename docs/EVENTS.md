@@ -3587,9 +3587,12 @@ Writes the `plugin.onepassword` log.
 | [1103](#pluginonepassword-1103) | info | Items | `item edited: {item}` |
 | [1104](#pluginonepassword-1104) | info | Items | `item archived: {item}` |
 | [2101](#pluginonepassword-2101) | warning | API | `1Password rate limit reached on {op}` |
+| [2102](#pluginonepassword-2102) | warning | Auth | `a 1Password request was not approved in the app: {op}` |
 | [3001](#pluginonepassword-3001) | error | Lifecycle | `1Password could not start: {err}` |
 | [3101](#pluginonepassword-3101) | error | CLI | `the 1Password CLI was not found: {err}` |
-| [3102](#pluginonepassword-3102) | error | Auth | `1Password refused the service account token: {err}` |
+| [3102](#pluginonepassword-3102) | error | Auth | `1Password refused the sign-in: {err}` |
+| [3103](#pluginonepassword-3103) | error | Auth | `the 1Password app did not answer the CLI: {err}` |
+| [3104](#pluginonepassword-3104) | error | API | `the 1Password Connect server did not answer: {err}` |
 
 ### plugin.onepassword 1
 
@@ -3698,9 +3701,23 @@ Writes the `plugin.onepassword` log.
 
 **What it means.** A call was refused because the service account's hourly or daily request limit is used up.
 
-**Why it happens.** The agent made more calls than the plan allows (Teams and Individual: 1,000 reads and 100 writes an hour per token, 1,000 requests a day).
+**Why it happens.** The agent made more calls than the plan allows (individual, Families and Teams: 1,000 reads and 100 writes an hour per token, and 1,000 requests a day, 5,000 on Teams; Business: 10,000, 1,000 and 50,000).
 
-**What to do.** Wait for the window to reset; cut the calls per turn; or move to a plan with a higher limit.
+**What to do.** Wait for the window to reset; cut the calls per turn; move to a plan with a higher limit; or use a Connect server, which has no such limit.
+
+### plugin.onepassword 2102
+
+`a 1Password request was not approved in the app: {op}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Auth · **Log:** plugin.onepassword
+- **Fields:** `op`
+- **Find it:** `provider:plugin.onepassword id:2102`
+
+**What it means.** The 1Password app asked the person at the machine to approve the agent's call, and the prompt was dismissed or timed out.
+
+**Why it happens.** Nobody answered within two minutes, or the person chose not to approve.
+
+**What to do.** Nothing to do if that was the intent. Otherwise ask the agent again and approve the prompt; one approval lasts until ten idle minutes pass or the app locks.
 
 ### plugin.onepassword 3001
 
@@ -3732,17 +3749,45 @@ Writes the `plugin.onepassword` log.
 
 ### plugin.onepassword 3102
 
-`1Password refused the service account token: {err}`
+`1Password refused the sign-in: {err}`
 
 - **Level:** error · **Channel:** operational · **Task:** Auth · **Log:** plugin.onepassword
 - **Fields:** `err`
 - **Find it:** `provider:plugin.onepassword id:3102`
 
-**What it means.** Every call failed because 1Password did not accept the token.
+**What it means.** Every call failed because 1Password did not accept the plugin's sign-in.
 
-**Why it happens.** The token was revoked, expired, mistyped, or belongs to another account.
+**Why it happens.** The service account or Connect token was revoked, expired, mistyped, or belongs to another account; or, with desktop sign-in, the account is not signed in to the 1Password app.
 
-**What to do.** Create a service account token for the vault the agent should use and store it with `/configure onepassword`.
+**What to do.** Store a current token with `/configure onepassword`, or sign in to the account in the 1Password app.
+
+### plugin.onepassword 3103
+
+`the 1Password app did not answer the CLI: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Auth · **Log:** plugin.onepassword
+- **Fields:** `err`
+- **Find it:** `provider:plugin.onepassword id:3103`
+
+**What it means.** The plugin signs in through the 1Password desktop app, and op could not reach it, so no 1Password tool works.
+
+**Why it happens.** The app is closed or locked out of reach, its `Integrate with 1Password CLI` setting is off, or Tenant runs in a session the app is not in (a service, a scheduled task, an SSH login).
+
+**What to do.** Open 1Password on this machine and turn on Settings, Developer, `Integrate with 1Password CLI`; run Tenant in the same desktop session; or switch the plugin to a service account or a Connect server.
+
+### plugin.onepassword 3104
+
+`the 1Password Connect server did not answer: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** API · **Log:** plugin.onepassword
+- **Fields:** `err`
+- **Find it:** `provider:plugin.onepassword id:3104`
+
+**What it means.** The plugin reaches 1Password through a Connect server, and a call to it got no answer, so no 1Password tool works.
+
+**Why it happens.** The Connect containers are stopped, the address in the settings is wrong, or the network or a firewall is in the way.
+
+**What to do.** Start the Connect server (its API and sync containers), check `connect_host` in `/configure onepassword`, and run `tenant doctor`.
 
 ## plugin.os
 
