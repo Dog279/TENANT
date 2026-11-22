@@ -43,13 +43,17 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # The limits are per package, and cmd/tenant is the long one: with the
+      # fleet's real-process tests it takes about 9 minutes without the race
+      # detector and about 19 with it on four fast cores (the tests run one
+      # after another), so more on this runner.
       - name: Test with race detector
         if: runner.os == 'Linux'
-        run: go test -race -timeout 10m ./...
+        run: go test -race -timeout 60m ./...
 
       - name: Test
         if: runner.os != 'Linux'
-        run: go test -timeout 10m ./...
+        run: go test -timeout 20m ./...
 
       - name: Offline smoke eval
         run: go run ./cmd/tenant eval --subset smoke --backend echo --baseline-check baselines/smoke.json --quiet
