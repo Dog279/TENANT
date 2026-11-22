@@ -49,6 +49,7 @@ func (c *CLI) Path() string { return c.path }
 func runProcess(ctx context.Context, path string, env []string, stdin string, args ...string) ([]byte, []byte, error) {
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Env = env
+	noWindow(cmd)
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
