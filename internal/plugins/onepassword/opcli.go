@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"tenant/internal/procprotect"
 )
 
 // CLI is the Backend over the op command-line tool. Every call is one op
@@ -85,13 +87,17 @@ func (c *CLI) Desktop() bool { return c.desktop }
 func runProcess(ctx context.Context, path string, env []string, stdin string, args ...string) ([]byte, []byte, error) {
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Env = env
-	noWindow(cmd)
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
-	err := cmd.Run()
+	// procprotect starts op as an ordinary process of the user, which it must
+	// be to open its own pipes and the 1Password app's, and with no console
+	// window when Tenant has no console of its own (a service, a scheduled
+	// task): op is a console program, and Windows would otherwise open a
+	// window for it on every call.
+	err := procprotect.Run(cmd)
 	return out.Bytes(), errb.Bytes(), err
 }
 
