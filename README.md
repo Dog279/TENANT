@@ -123,7 +123,8 @@ printf 'remember I prefer Go\nwhat do I prefer?\n' | tenant chat
   search, read, screenshot, click), SQL (SQLite), a plain-Markdown wiki, Google
   Workspace (Gmail, Calendar, Drive), X, iMessage (Messages on a Mac, or
   BlueBubbles), Discord, GitHub (branches, PRs, issues, CI, a gated merge),
-  Atlassian (Jira), SimpleFIN (bank balances), cron. Anything that changes the
+  Atlassian (Jira), SimpleFIN (bank balances), 1Password (vaults, items and
+  one secret at a time, through the `op` CLI), cron. Anything that changes the
   world is gated.
 - **MCP, two ways.** Connect a **remote** MCP server with a browser sign-in
   (`/mcp add <url>`), or declare a **local** one in `config.json` that Tenant
@@ -222,7 +223,7 @@ The identity files live under `cmd/tenant/builtinsouls/agents/`, with a sixth,
 | `permissions <effective\|preset>` / `security audit` / `sandbox <probe\|selftest\|run\|redteam>` | the safety posture |
 | `logs <query\|show\|trace\|stats\|export\|verify\|config\|alerts\|…>` / `log <source> "<msg>"` / `attach` | the log book |
 | `backup <create\|verify\|restore>` / `privacy <status\|retention\|prune\|forget\|export>` / `runs export` | your data |
-| `web` / `os` / `sql` / `wiki` / `gsuite` / `x` / `imessage` / `simplefin` | one-shot turns scoped to one plugin (read by default; `--allow-*` to act) |
+| `web` / `os` / `sql` / `wiki` / `gsuite` / `x` / `imessage` / `simplefin` / `onepassword` | one-shot turns scoped to one plugin (read by default; `--allow-*` to act) |
 | `eval` | the eval harness |
 
 `tenant help` lists the jobs to start with, `tenant help all` every command,
@@ -240,7 +241,7 @@ cmd/tenant/            # the binary: CLI commands, TUI wiring, plugins' command 
 internal/agent/        # agent runtime: planner loop, tool dispatch, compaction trigger
 internal/memory/       # working / episodic / semantic / skills / archive / soul / compress
 internal/model/        # model router + backends (OpenAI-compatible, anthropic, claudecode, echo) + tool formats
-internal/plugins/      # first-party tools: osys, web, sql, wiki, gsuite, x, imessage, discord, github, atlassian, simplefin, crm, cron, mcpremote
+internal/plugins/      # first-party tools: osys, web, sql, wiki, gsuite, x, imessage, discord, github, atlassian, simplefin, onepassword, crm, cron, mcpremote
 internal/mcp/          # the MCP client; internal/mcpserver is the memory server
 internal/approval/     # the control plane's decision point for dangerous actions
 internal/sandbox/      # the execution sandbox (host, restricted, jobobject backends)

@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"unicode/utf8"
 )
@@ -35,6 +36,11 @@ const scrubWindow = 8 << 10
 // for concurrent use, SetSecrets included.
 type Scrubber struct {
 	known atomic.Pointer[knownSecrets]
+
+	mu    sync.Mutex        // the builders: SetSecrets and AddSecrets
+	base  map[string]string // SetSecrets's values, replaced as a whole
+	extra map[string]string // AddSecrets's values, kept across SetSecrets
+	order []string          // extra's names, oldest first, for the cap
 }
 
 type knownSecrets struct {
@@ -43,11 +49,50 @@ type knownSecrets struct {
 	min   int               // the shortest needle: shorter text skips r
 }
 
+// maxExtraSecrets caps what AddSecrets keeps: when a new value would exceed
+// it, the oldest is forgotten.
+const maxExtraSecrets = 256
+
 // SetSecrets replaces the known values, name → value. Values shorter than
 // minSecretLen are ignored. Each is matched raw, JSON-escaped, URL-encoded and
 // base64-encoded (standard and URL alphabets, padded or not, and inside a
-// longer encoded value), and replaced with «secret:<name>».
+// longer encoded value), and replaced with «secret:<name>». Values added with
+// AddSecrets stay.
 func (s *Scrubber) SetSecrets(named map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.base = maps.Clone(named)
+	s.rebuild()
+}
+
+// AddSecrets adds values the process learned while running (a secret a plugin
+// read for the agent), name → value, and keeps them through later SetSecrets
+// calls. Values shorter than minSecretLen are ignored, as in SetSecrets.
+func (s *Scrubber) AddSecrets(named map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.extra == nil {
+		s.extra = map[string]string{}
+	}
+	for _, name := range slices.Sorted(maps.Keys(named)) {
+		if _, seen := s.extra[name]; !seen {
+			s.order = append(s.order, name)
+		}
+		s.extra[name] = named[name]
+	}
+	for len(s.order) > maxExtraSecrets {
+		delete(s.extra, s.order[0])
+		s.order = s.order[1:]
+	}
+	s.rebuild()
+}
+
+// rebuild installs the replacer for base and extra together; an unchanged
+// set skips it. Called with mu held.
+func (s *Scrubber) rebuild() {
+	named := make(map[string]string, len(s.base)+len(s.extra))
+	maps.Copy(named, s.extra)
+	maps.Copy(named, s.base) // a name both hold keeps the base's value
 	if cur := s.known.Load(); cur != nil && maps.Equal(cur.named, named) {
 		return
 	}
@@ -278,6 +323,19 @@ func (s *Scrubber) Field(key, v string, max int) string {
 // appear (see Scrubber.SetSecrets). The composition root collects them from
 // the secrets layer and calls this again whenever one changes.
 func (h *Hub) SetSecrets(named map[string]string) { h.scrub.SetSecrets(named) }
+
+// AddSecrets adds values the process learned while running to the hub's
+// scrubber (see Scrubber.AddSecrets): a secret a plugin resolved for the
+// agent, so no log line carries it.
+func (h *Hub) AddSecrets(named map[string]string) { h.scrub.AddSecrets(named) }
+
+// AddSecrets hands values the process just learned to the installed hub's
+// scrubber. Before Install there is no hub, and nothing to protect yet.
+func AddSecrets(named map[string]string) {
+	if h := Default(); h != nil {
+		h.AddSecrets(named)
+	}
+}
 
 // shapesOnly scrubs for Scrub before a hub is installed.
 var shapesOnly Scrubber

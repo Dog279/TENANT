@@ -319,3 +319,46 @@ func TestCronHistoryAppendsSurviveCompaction(t *testing.T) {
 		t.Fatalf("history holds %d records (%d distinct), want %d", len(h), len(seen), cronHistoryKeep)
 	}
 }
+
+// With nobody to ask, a vault secret leaves a run only into a web form or a
+// command line; a sensitive read from anywhere else may be quoted where the
+// run reports; a detail that names no vault secret passes.
+func TestUnattendedEgress(t *testing.T) {
+	detail := func(tool, sensitivity, provenance string) string {
+		return tool + " arguments contain " + sensitivity + " data from " + provenance + ". This check is separate from " + tool + "'s own permission: it asks whether that data may leave, not whether the tool may run."
+	}
+	cases := []struct {
+		tool, sensitivity, provenance string
+		want                          bool
+	}{
+		{"web_fill", "sensitive", "vault", true}, // a login or a checkout
+		{"os_exec", "sensitive", "vault", true},  // an API call with its key
+		{"discord_send_message", "sensitive", "vault", false},
+		{"gmail_send", "sensitive", "vault", false},
+		{"x_post", "sensitive", "vault", false},
+		{"web_search", "sensitive", "vault", false},
+		{"web_navigate", "sensitive", "vault", false},
+		{"spawn_agent", "sensitive", "vault", false},
+		{"fleet_exec", "sensitive", "vault", false},
+		{"twenty:create_person", "sensitive", "vault", false},
+		{"discord_send_message", "sensitive", "service", true}, // a mail quoted in a report
+		{"discord_send_message", "sensitive", "wiki", true},
+		{"gmail_send", "untrusted", "log", true},
+	}
+	for _, c := range cases {
+		if got := unattendedEgress(detail(c.tool, c.sensitivity, c.provenance)); got != c.want {
+			t.Errorf("%s <- %s/%s: got %v, want %v", c.tool, c.sensitivity, c.provenance, got, c.want)
+		}
+	}
+	if !unattendedEgress("discord_send_message quotes wiki") {
+		t.Error("a detail that names no vault secret passes")
+	}
+	// The real approver refuses the same flows.
+	approve := cronExecApprover(t.TempDir(), t.TempDir())
+	if approve(context.Background(), "sensitive_egress", detail("discord_send_message", "sensitive", "vault")) {
+		t.Error("the unattended approver let a vault secret into a Discord message")
+	}
+	if !approve(context.Background(), "sensitive_egress", detail("web_fill", "sensitive", "vault")) {
+		t.Error("the unattended approver refused a vault secret into a web form")
+	}
+}

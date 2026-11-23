@@ -221,6 +221,7 @@ func plugins() *pluginreg.Registry[*pluginDescriptor] {
 		pluginsReg = pluginreg.MustNew(pluginreg.Rules{Categories: catOrder, Reserved: hostToolLabels},
 			sqlPlugin(), wikiPlugin(), webPlugin(), gsuitePlugin(), atlassianPlugin(), githubPlugin(),
 			xPlugin(), imessagePlugin(), discordPlugin(), osPlugin(), crmPlugin(), simplefinPlugin(),
+			onepasswordPlugin(),
 		)
 	})
 	return pluginsReg

@@ -116,7 +116,7 @@ func TestTheConfigureSurfacesAreTheRegistry(t *testing.T) {
 	for _, k := range wizardCatalog(t.TempDir()) {
 		ids = append(ids, k.ID)
 	}
-	if got := strings.Join(ids, ","); got != "wiki,sql,gsuite,x,imessage,discord,github,web,os" {
+	if got := strings.Join(ids, ","); got != "wiki,sql,gsuite,x,imessage,discord,github,web,os,onepassword" {
 		t.Errorf("tenant setup order = %s", got)
 	}
 }
@@ -278,20 +278,20 @@ func TestConnectorsAndKeysComeFromTheRegistry(t *testing.T) {
 		names = append(names, c.name)
 	}
 	slices.Sort(names)
-	if got := strings.Join(names, ","); got != "atlassian,discord,github,gsuite,imessage,mcp,simplefin,web,x" {
+	if got := strings.Join(names, ","); got != "atlassian,discord,github,gsuite,imessage,mcp,onepassword,simplefin,web,x" {
 		t.Errorf("connectors = %s", got)
 	}
 	var ids []string
 	for _, k := range keyCatalog() {
 		ids = append(ids, k.CredID)
 	}
-	for _, want := range []string{"openai", "sakana", "tavily", "brave_search", "jina", "skill:discord:token", "skill:simplefin:access_url", "skill:github:token"} {
+	for _, want := range []string{"openai", "sakana", "tavily", "brave_search", "jina", "skill:discord:token", "skill:simplefin:access_url", "skill:github:token", "skill:onepassword:token", "skill:onepassword:connect_token"} {
 		if !slices.Contains(ids, want) {
 			t.Errorf("keys page %v lacks %s", ids, want)
 		}
 	}
-	if len(ids) != len(providerKeys)+6 {
-		t.Errorf("keys page has %d keys, want the %d providers and 6 plugin keys", len(ids), len(providerKeys))
+	if len(ids) != len(providerKeys)+8 {
+		t.Errorf("keys page has %d keys, want the %d providers and 8 plugin keys", len(ids), len(providerKeys))
 	}
 }
 

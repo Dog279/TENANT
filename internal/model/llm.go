@@ -145,6 +145,9 @@ const (
 	ProvenanceRemoteMCP    = "remote_mcp"
 	ProvenancePeer         = "peer"
 	ProvenanceLog          = "log" // the log book: any process, plugin or outside writer (TEN-400)
+	// ProvenanceVault is the password manager: a secret, which an unattended
+	// run may type into a form or a command but never quote into a message.
+	ProvenanceVault = "vault"
 )
 
 // Tracked reports whether the flow rules follow data labelled l: sensitive or

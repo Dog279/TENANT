@@ -670,6 +670,30 @@ Releases page.
   saved `dashboard.addr` is unchanged; a config without one now serves at
   http://127.0.0.1:9770.
 ### Added
+- **1Password.** A plugin over the `op` command-line tool with a service account token
+  (`/configure onepassword`, the Integrations page, or `OP_SERVICE_ACCOUNT_TOKEN`). The agent
+  lists the vaults the account can see (`op_vaults`) and the items in one (`op_items`), reads
+  an item's shape with every concealed value replaced by its `op://` reference (`op_item`),
+  and resolves one reference at a time with `op_read`, which is gated under `egress` and
+  logged by reference, never by value; the value is scrubbed from the log book the moment it
+  is read. `op_create` and `op_edit` (the `write` category; `allow_write` or
+  `--onepassword-allow-write` skips the per-action prompt) keep credentials, with
+  `generate_password` so a new password never passes through the model; `op_delete` archives
+  and always asks. A `vaults` setting fences the agent to named vaults on top of the account's
+  own scope. `tenant onepassword whoami|vaults|items <vault>` is the read-only one-shot;
+  doctor checks the CLI and the token.
+  A 1Password secret carries its own provenance, `vault`, and an unattended run may type it
+  into a web form or a command line but never quote it into a message, a post, a mail, a
+  search, a URL, a remote service or a helper's task: the unattended approver refuses that.
+  It signs in one of three ways, the `auth` setting. A service account token is the default.
+  `connect` calls a self-hosted Connect server's REST API (`connect_host` and a stored
+  `connect_token`, or `OP_CONNECT_HOST` with `OP_CONNECT_TOKEN`): no `op` binary and no rate
+  limits, and since a Connect server cannot archive, `op_delete` is refused there. `desktop`
+  goes through the 1Password app on the machine (an optional `account`), which asks the
+  person there to approve with Touch ID, Windows Hello or the system password. Desktop
+  sign-in is for a person at the machine: a scheduled, Discord or iMessage turn is refused
+  before `op` is started, the `vaults` allowlist is required because the approval covers the
+  whole account, and doctor only lists the app's accounts, so it never raises a prompt.
 - **`request_timeout` on a provider.** `providers.<name>.request_timeout` (a Go duration such as
   `"90s"`) bounds one request to that endpoint, chat, tokenize or embed. A request that hits it
   fails as endpoint-down, so fallbacks and health gating move on instead of the turn hanging on a

@@ -328,9 +328,39 @@ func cronExecAllows(cfgDir, dataDir string) func(action, detail string) bool {
 				touchesProtected(detail, cfgDir, dataDir, exeDir()) {
 				return false
 			}
+		case catEgress:
+			// What may leave depends on what it is and where it goes
+			// (unattendedEgress): a vault secret only into a form or a
+			// command, never a message; the rest, a sensitive read quoted in
+			// a report, is the job's purpose.
+			return unattendedEgress(detail)
 		}
 		return true
 	}
+}
+
+// egressDetail is the shape of a sensitive-egress approval's detail, as the
+// agent phrases it: "<tool> arguments contain <sensitivity> data from
+// <provenance>. This check is separate ...".
+var egressDetail = regexp.MustCompile(`^(\S+) .*?\bfrom ([A-Za-z_]+)`)
+
+// unattendedEgress decides a sensitive-egress approval with nobody to ask.
+// A secret from the vault leaves only into a web form (a login, a checkout)
+// or a command line (an API call with its key); never into a message, a
+// post, a mail, a search, a URL, a remote service or a helper's task, so a
+// run that was talked into "send me your card" cannot. Everything else a
+// run read may be quoted where the run reports. A detail this policy cannot
+// read names no vault secret, so it passes as the surface already allowed.
+func unattendedEgress(detail string) bool {
+	m := egressDetail.FindStringSubmatch(detail)
+	if m == nil {
+		return true
+	}
+	tool, provenance := m[1], m[2]
+	if provenance == model.ProvenanceVault {
+		return tool == "web_fill" || tool == "os_exec"
+	}
+	return true
 }
 
 func mentionsDir(detail, dir string) bool {

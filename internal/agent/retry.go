@@ -173,6 +173,9 @@ var mutatingTools = map[string]bool{
 	"memory_remember":      true, // any memory mutation
 	"discord_send_message": true, // posts publicly as the bot — never silently retry
 	"discord_react":        true, // adds a reaction — never silently retry
+	"op_create":            true, // a create that timed out may have landed: a retry is a second item
+	"op_edit":              true,
+	"op_delete":            true,
 }
 
 // transientResultSubstrings — lower-cased substrings that flag a result
