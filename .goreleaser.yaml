@@ -101,20 +101,23 @@ changelog:
 release:
   prerelease: auto
   name_template: "Tenant v{{ .Version }}"
-  # Stamped by release.yml from scripts/install.* (__REPO__ -> the repository).
-  # Only read at publish time, so local snapshots do not need them.
+  # Stamped by release.yml from scripts/install.* (__REPO__ -> the repository,
+  # __VERSION__ -> this release). Only read at publish time, so local snapshots
+  # do not need them.
   extra_files:
     - glob: dist-scripts/install.sh
     - glob: dist-scripts/install.ps1
+  # The lines name this tag, not releases/latest: `latest` skips prereleases,
+  # so on a prerelease it would hand out an older release's script.
   header: |
-    Install or upgrade with one line. macOS and Linux:
+    Install or upgrade to this release with one line. macOS and Linux:
 
     ```sh
-    curl -fsSL https://github.com/{{ envOrDefault "GITHUB_REPOSITORY" "OWNER/REPO" }}/releases/latest/download/install.sh | sh
+    curl -fsSL https://github.com/{{ envOrDefault "GITHUB_REPOSITORY" "OWNER/REPO" }}/releases/download/{{ .Tag }}/install.sh | sh
     ```
 
     Windows (PowerShell):
 
     ```powershell
-    irm https://github.com/{{ envOrDefault "GITHUB_REPOSITORY" "OWNER/REPO" }}/releases/latest/download/install.ps1 | iex
+    irm https://github.com/{{ envOrDefault "GITHUB_REPOSITORY" "OWNER/REPO" }}/releases/download/{{ .Tag }}/install.ps1 | iex
     ```

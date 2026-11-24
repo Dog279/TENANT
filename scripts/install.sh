@@ -3,13 +3,16 @@
 # SHA-256 against the release's checksums.txt, and install the binary to a
 # user-writable directory (no sudo). On macOS the binary is signed on this
 # machine with the hardened runtime before it is moved into place. The release
-# workflow stamps the repository name in; the tracked copy carries the
-# __REPO__ placeholder.
+# workflow stamps the repository name and the release's own version in; the
+# tracked copy carries the __REPO__ and __VERSION__ placeholders, and asks for
+# the latest release instead.
 #
-#   curl -fsSL https://github.com/OWNER/REPO/releases/latest/download/install.sh | sh
+#   curl -fsSL https://github.com/OWNER/REPO/releases/download/vX.Y.Z/install.sh | sh
 #
 # Environment overrides:
-#   TENANT_VERSION      version to install, without the leading v (default: latest release)
+#   TENANT_VERSION      version to install, without the leading v (default: the
+#                       release this script came from; the latest release for
+#                       the tracked copy)
 #   TENANT_REPO         GitHub owner/name asked for the latest release
 #   TENANT_BASE_URL     directory URL that holds the archive and checksums.txt
 #   TENANT_INSTALL_DIR  where the tenant binary goes (default: $HOME/.local/bin)
@@ -87,8 +90,10 @@ fi
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP" "$DIR/.tenant.$$"' EXIT
 
-VERSION="${TENANT_VERSION:-}"
-if [ -z "$VERSION" ]; then
+VERSION="${TENANT_VERSION:-__VERSION__}"
+# Unstamped: the tracked copy. `latest` skips prereleases, so a script taken
+# from a prerelease must never get here, or it installs an older binary.
+if case $VERSION in __*) true ;; *) false ;; esac; then
   API="https://api.github.com/repos/$REPO/releases/latest"
   fetch "$API" "$TMP/release.json" || die "could not query $API"
   VERSION=$(sed -n 's/.*"tag_name":[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' "$TMP/release.json" | head -n 1)

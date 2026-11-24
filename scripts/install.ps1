@@ -1,12 +1,15 @@
 # install.ps1 - download the Tenant release for this CPU, verify its SHA-256
 # against the release's checksums.txt, and install tenant.exe for the current
 # user (no administrator rights). The release workflow stamps the repository
-# name in; the tracked copy carries the __REPO__ placeholder.
+# name and the release's own version in; the tracked copy carries the __REPO__
+# and __VERSION__ placeholders, and asks for the latest release instead.
 #
-#   irm https://github.com/OWNER/REPO/releases/latest/download/install.ps1 | iex
+#   irm https://github.com/OWNER/REPO/releases/download/vX.Y.Z/install.ps1 | iex
 #
 # Environment overrides:
-#   TENANT_VERSION      version to install, without the leading v (default: latest release)
+#   TENANT_VERSION      version to install, without the leading v (default: the
+#                       release this script came from; the latest release for
+#                       the tracked copy)
 #   TENANT_REPO         GitHub owner/name asked for the latest release
 #   TENANT_BASE_URL     directory URL that holds the archive and checksums.txt
 #   TENANT_INSTALL_DIR  where tenant.exe goes (default: %LOCALAPPDATA%\Programs\tenant)
@@ -50,7 +53,10 @@ $Arch = switch ($env:PROCESSOR_ARCHITECTURE) {
 }
 
 $Version = $env:TENANT_VERSION
-if (-not $Version) {
+if (-not $Version) { $Version = '__VERSION__' }
+# Unstamped: the tracked copy. `latest` skips prereleases, so a script taken
+# from a prerelease must never get here, or it installs an older binary.
+if ($Version -like '__*') {
   $Api = "https://api.github.com/repos/$Repo/releases/latest"
   $Version = (Invoke-RestMethod -UseBasicParsing $Api).tag_name -replace '^v', ''
 }

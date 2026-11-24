@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"tenant/internal/fleet"
+	"tenant/internal/version"
 )
 
 // pasteCodes are codes of every shape CreateEnrollment can make, and the
@@ -283,5 +284,28 @@ func TestOnlyTheOperatorMakesACode(t *testing.T) {
 	}
 	if want := []site{{"internal/tui/cmd_fleet.go", "slashFleet"}}; !slices.Equal(tui, want) {
 		t.Errorf("the terminal app makes a code from %v, want only %v", tui, want)
+	}
+}
+
+// A release master hands out the scripts of its own release, which install
+// that release: releases/latest skips prereleases, and from a prerelease
+// master it installed an older Tenant that has no `tenant child`.
+func TestInstallScriptsPinTheMastersRelease(t *testing.T) {
+	t.Setenv("TENANT_UPDATE_REPO", "acme/tenant")
+	for _, c := range []struct{ ver, dirty, want string }{
+		{"0.2.0-rc.6", "false", "https://github.com/acme/tenant/releases/download/v0.2.0-rc.6/"},
+		{"0.2.0", "false", "https://github.com/acme/tenant/releases/download/v0.2.0/"},
+		{"0.2.0", "true", "https://github.com/acme/tenant/releases/latest/download/"},
+		{"0.0.1", "false", "https://github.com/acme/tenant/releases/latest/download/"},
+		{"0.2.0/../x", "false", "https://github.com/acme/tenant/releases/latest/download/"},
+		{"0.2.0-rc.6 | iex", "false", "https://github.com/acme/tenant/releases/latest/download/"},
+	} {
+		oldV, oldD := version.Version, version.Dirty
+		version.Version, version.Dirty = c.ver, c.dirty
+		got := installScripts()
+		version.Version, version.Dirty = oldV, oldD
+		if got != c.want {
+			t.Errorf("version %q dirty %s: got %q, want %q", c.ver, c.dirty, got, c.want)
+		}
 	}
 }

@@ -5,6 +5,14 @@ Releases page.
 
 ## Unreleased
 
+- **An install script installs its own release.** The scripts asked GitHub for the latest
+  release, which skips prereleases, so `install.ps1` or `install.sh` taken from a prerelease
+  installed 0.1.0, and the fleet's paste line then failed with `unknown command: child`. The
+  release workflow now stamps each release's version into its scripts (`TENANT_VERSION` still
+  overrides; the tracked copy still asks for the latest), the release notes give the line for
+  that tag, and the fleet's paste lines fetch the master's own release, so a new machine runs
+  the master's version. The release smoke test installs without `TENANT_VERSION`, as a user does.
+
 - **The fleet has its own log.** A master's fleet wrote four audit records to the Security log
   and a few free-form lines; setting up a fleet, its port opening and a machine connecting left
   nothing where an operator looks. The fleet is now a catalogued log (`fleet`, 50 events; `tenant

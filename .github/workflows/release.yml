@@ -37,14 +37,21 @@ jobs:
         if: ${{ !github.event.repository.private }}
         uses: sigstore/cosign-installer@v3
 
-      # The tracked scripts carry a __REPO__ placeholder; the stamped copies
-      # ship as release assets (release.extra_files in .goreleaser.yaml). Comment
-      # lines are left alone: the scripts' own header names the placeholder.
-      - name: Stamp the install scripts with the repository name
+      # The tracked scripts carry __REPO__ and __VERSION__ placeholders; the
+      # stamped copies ship as release assets (release.extra_files in
+      # .goreleaser.yaml). __VERSION__ becomes this tag, so a script taken from
+      # a release installs that release, a prerelease included: `latest` skips
+      # prereleases. Comment lines are left alone: the scripts' own header
+      # names the placeholders.
+      - name: Stamp the install scripts with the repository and version
         run: |
           mkdir -p dist-scripts
           for f in install.sh install.ps1; do
-            sed "/^#/!s|__REPO__|$GITHUB_REPOSITORY|g" "scripts/$f" > "dist-scripts/$f"
+            sed -e "/^#/!s|__REPO__|$GITHUB_REPOSITORY|g" \
+                -e "/^#/!s|__VERSION__|${GITHUB_REF_NAME#v}|g" "scripts/$f" > "dist-scripts/$f"
+            if grep -v '^#' "dist-scripts/$f" | grep -q '__REPO__\|__VERSION__'; then
+              echo "::error::dist-scripts/$f still has a placeholder"; exit 1
+            fi
           done
 
       # The project key (TEN-542). The main releases also sign checksums.txt
@@ -114,18 +121,20 @@ jobs:
 
     steps:
       # The assets belong to this tag, which `latest` skips for a prerelease.
+      # No TENANT_VERSION: the script must install its own release by itself,
+      # as it does for someone who pastes the line from the release notes or
+      # the fleet's Add machine.
       - name: Install with install.sh from the release
         if: runner.os != 'Windows'
         run: |
           curl -fsSL "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/install.sh" \
-            | TENANT_VERSION="${GITHUB_REF_NAME#v}" TENANT_INSTALL_DIR="$RUNNER_TEMP/bin" sh
+            | TENANT_INSTALL_DIR="$RUNNER_TEMP/bin" sh
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: Install with install.ps1 from the release
         if: runner.os == 'Windows'
         shell: powershell
         run: |
-          $env:TENANT_VERSION = $env:GITHUB_REF_NAME -replace '^v', ''
           $env:TENANT_INSTALL_DIR = "$env:RUNNER_TEMP\bin"
           irm "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/install.ps1" | iex
           Add-Content $env:GITHUB_PATH "$env:RUNNER_TEMP\bin"
