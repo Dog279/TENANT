@@ -14,7 +14,17 @@
 {{if not .Configured}}
 {{template "ui-off" "The fleet isn't available on this Tenant."}}
 {{else if not .View.Master}}
-<div class="empty">This Tenant has no fleet yet. A fleet is the other computers your agent can work on from here: each runs a small Tenant service that connects to this one, and every approval is decided here. To add the first machine, run <code>tenant fleet enroll</code> and a name for it in a terminal on the computer running Tenant, then paste the line it prints on the new machine.</div>
+<div class="empty">This Tenant has no fleet yet. A fleet is the other computers your agent can work on from here: each runs a small Tenant service that connects to this one, and every approval is decided here.</div>
+<div class="card">
+  <div class="card-head">Set up the fleet</div>
+  <form method="POST" action="/fleet/init" data-on:submit__prevent__throttle.1s="@post('/fleet/init', {contentType:'form', retryMaxCount:0})">
+    <div><label class="dim">The fleet port listens on <input type="text" name="listen" class="cinput" maxlength="255" value="{{.View.Listen}}" placeholder="host:port" aria-label="The address the fleet port listens on"></label></div>
+    <div class="mt"><label class="dim">Machines dial, in this order <input type="text" name="addresses" class="cinput wide" maxlength="2048" value="{{.View.Dial}}" placeholder="host:port, host:port" aria-label="The addresses a new machine dials to reach this Tenant, separated by commas"></label></div>
+    <div class="mt"><button type="submit" class="btn sm">Make this Tenant a fleet master</button></div>
+  </form>
+  <div class="dim mt">This makes the fleet's certificate and key and opens the fleet port on this computer. No machine joins by that alone: each needs a one-time code from this page, and its six digits typed on the computer running Tenant. List an address every machine can reach.</div>
+  <div class="dim mt">The recovery key is not made here. Its identity is shown once and typed back in a terminal on the computer running Tenant: run <code>tenant fleet init</code> there, or the terminal app's own fleet init command. Until then the fleet works and no machine's memory is kept.</div>
+</div>
 {{else if .One}}
 {{template "fleet-machine" .}}
 {{else}}
@@ -28,6 +38,7 @@
 
 {{define "fleet-list"}}
 {{with .Added}}{{template "fleet-added" .}}{{end}}
+{{if .View.NoRecovery}}<div class="banner warn" role="status"><span>This fleet has no recovery key yet, so no machine's memory is kept. Make it in a terminal on the computer running Tenant, where its identity is shown once: run <code>tenant fleet init</code> there, or the terminal app's own fleet init command.</span></div>{{end}}
 <div class="card">
   <div class="card-head">Who holds the fleet</div>
   <div>{{.View.Holder}}</div>

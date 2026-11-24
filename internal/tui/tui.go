@@ -1553,6 +1553,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sysChat(sc.text)
 		return m, nil
 	}
+	if in, ok := msg.(fleetInitMsg); ok {
+		return m, in.next()
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.resize(msg.Width, msg.Height)

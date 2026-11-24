@@ -15,6 +15,17 @@ type fakeFleet struct {
 	calls    []string
 	perms    map[string]*fakeFleetPerms
 	defaults *fakeFleetPerms
+	// init is what Init answers with; recovered counts its recovery step's runs.
+	init      FleetInit
+	recovered int
+}
+
+func (f *fakeFleet) Init(listen string, addresses []string) (FleetInit, error) {
+	if listen == "bad" {
+		return FleetInit{}, errors.New("--listen bad is not a host:port address")
+	}
+	f.note(append([]string{"init", "listen=" + listen}, addresses...)...)
+	return f.init, nil
 }
 
 type fakeFleetPerms struct {
@@ -306,5 +317,90 @@ func TestSlashCronFleet(t *testing.T) {
 	plain.handleSlash("/cron fleet j1 web1")
 	if !strings.Contains(lastMsg(plain), "usage: /cron fleet") {
 		t.Errorf("no fleet support: %q", lastMsg(plain))
+	}
+}
+
+// /fleet init is the operator's act at this keyboard, takes the command
+// line's flags, and says what the fleet's init says. A fleet whose recovery
+// key is still to be made gets that step on the terminal itself, with the app
+// out of the way, before anything is said: the identity never reaches the
+// chat.
+func TestSlashFleetInit(t *testing.T) {
+	f := newFakeFleet()
+	f.init = FleetInit{Done: func(err error) string {
+		if err != nil {
+			return "master, recovery: " + err.Error()
+		}
+		return "this Tenant is now a fleet master"
+	}}
+	m := newFleetModel(f)
+
+	slash(m, "/fleet init")
+	if len(f.calls) != 0 || !strings.Contains(lastMsg(m), "type this command here yourself") {
+		t.Fatalf("/fleet init, not typed: calls %v, answered %q", f.calls, lastMsg(m))
+	}
+	for _, line := range []string{"/fleet init web1", "/fleet init --listen", "/fleet init --port 9777"} {
+		typeLine(m, line)
+		if len(f.calls) != 0 || !strings.Contains(lastMsg(m), "usage: /fleet") {
+			t.Fatalf("%q: calls %v, answered %q", line, f.calls, lastMsg(m))
+		}
+	}
+
+	// run types a line and follows /fleet init to its end, but for the step
+	// that takes the terminal: handed says the app was about to give it away.
+	run := func(line string) (handed bool) {
+		t.Helper()
+		m.ta.SetValue(line)
+		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		for _, msg := range drain(cmd) {
+			in, ok := msg.(fleetInitMsg)
+			if !ok {
+				m.Update(msg)
+				continue
+			}
+			_, next := m.Update(in)
+			if in.Recovery != nil {
+				return next != nil
+			}
+			for _, said := range drain(next) {
+				m.Update(said)
+			}
+		}
+		return false
+	}
+
+	// The recovery key is proven already: nothing takes the terminal.
+	if run("/fleet init --listen 127.0.0.1:9777 --address a.example:9777 --address=10.0.0.1:9777") {
+		t.Fatal("an init with nothing to prove took the terminal")
+	}
+	if want := "init listen=127.0.0.1:9777 a.example:9777 10.0.0.1:9777"; len(f.calls) != 1 || f.calls[0] != want {
+		t.Fatalf("the fleet was asked for %v, want %q", f.calls, want)
+	}
+	if !strings.Contains(lastMsg(m), "now a fleet master") {
+		t.Fatalf("init said %q", lastMsg(m))
+	}
+	run("/fleet init --listen bad")
+	if !strings.Contains(lastMsg(m), "fleet: --listen bad is not a host:port address") {
+		t.Fatalf("a refused init said %q", lastMsg(m))
+	}
+
+	// A recovery key to make: the terminal is handed over first, and what init
+	// says waits for it.
+	f.init.Recovery = func() error { f.recovered++; return errors.New("cancelled") }
+	said := lastMsg(m)
+	if !run("/fleet init") || lastMsg(m) != said || f.recovered != 0 {
+		t.Fatalf("an init with a recovery key to make did not wait for the terminal step: said %q, ran %d", lastMsg(m), f.recovered)
+	}
+	// The step itself is the control's function, run as it stands.
+	if err := terminalStep(f.init.Recovery).Run(); err == nil || f.recovered != 1 {
+		t.Fatalf("the terminal step: %v, ran %d", err, f.recovered)
+	}
+	// Back in the app: what init says, the step's outcome with it.
+	_, next := m.Update(fleetInitMsg{FleetInit: f.init, ran: true, err: errors.New("cancelled")})
+	for _, msg := range drain(next) {
+		m.Update(msg)
+	}
+	if !strings.Contains(lastMsg(m), "master, recovery: cancelled") || f.recovered != 1 {
+		t.Fatalf("after the terminal step init said %q (step ran %d)", lastMsg(m), f.recovered)
 	}
 }

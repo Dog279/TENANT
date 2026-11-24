@@ -622,8 +622,9 @@ func fileFleetSchemes(cfgDir, agent string) (*approval.Fleet, error) {
 
 // fleetNotes is where a command writes what is not its result: instructions,
 // notes, a prompt. A person reads them; a script that takes the command's
-// standard output (the enrollment code) does not get them. Only the
-// command-line process writes here: serve and the terminal app never do.
+// standard output (the enrollment code) does not get them. The command-line
+// process writes here, and the terminal app only while it has handed the
+// terminal to init's recovery step (/fleet init); serve never does.
 var fleetNotes io.Writer = os.Stderr
 
 // fleetAsk is how a command asks the operator; tests replace it.
@@ -698,28 +699,38 @@ func fleetDefaultAddresses(listen string) []string {
 }
 
 // initFleet makes this Tenant a master if it is not one, and sets what the
-// operator passed. It is what `tenant fleet init` does, and what enroll does
-// first. created reports that the identity was made now.
-func initFleet(cli *fleetCLI, listen string, addresses []string) (id fleet.Identity, created bool, err error) {
-	c := cli.c
+// operator passed. It is what `tenant fleet init` does, what enroll does
+// first, and what /fleet init and the Fleet page's Set up the fleet do in a
+// running Tenant (o and lc are then its own). by says who asked, for the
+// Security record ("" at a terminal). created reports that the identity was
+// made now.
+func initFleet(o fleetOps, lc *launchConfig, listen string, addresses []string, by string) (id fleet.Identity, created bool, err error) {
+	// Before anything is made: a refused address leaves no half-made fleet.
+	if err := fleet.CheckAddresses(addresses); err != nil {
+		return id, false, err
+	}
 	if listen != "" {
 		if _, _, err := net.SplitHostPort(listen); err != nil {
 			return id, false, fmt.Errorf("--listen %s is not a host:port address", fleetQuote(listen))
 		}
 		// Before the identity: a running master starts its listener the moment
 		// it sees one, on the address config.json names then.
-		if err := persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Fleet.Listen = listen }); err != nil {
+		if err := persistLaunchConfig(o.cfgDir, lc, func(lc *launchConfig) { lc.Fleet.Listen = listen }); err != nil {
 			return id, false, err
 		}
 	}
-	path := fleet.MasterIdentityPath(c.cfgDir)
+	path := fleet.MasterIdentityPath(o.cfgDir)
 	// ponytail: two inits at the same instant could each mint an identity and
 	// the second replace the first; take fleet.json's lock around this if
 	// init is ever scripted in parallel.
 	if id, err = fleet.LoadIdentity(path); errors.Is(err, fs.ErrNotExist) {
 		if id, err = fleet.MintIdentity(path); err == nil {
 			created = true
-			cli.ops.audit(fleet.Machine{Name: "(this master)"}, "initialised", "certificate "+id.Fingerprint)
+			detail := "certificate " + id.Fingerprint
+			if by != "" {
+				detail += "; asked by " + by
+			}
+			o.audit(fleet.Machine{Name: "(this master)"}, "initialised", detail)
 		}
 	}
 	if err != nil {
@@ -727,23 +738,44 @@ func initFleet(cli *fleetCLI, listen string, addresses []string) (id fleet.Ident
 	}
 	// The fleet key every machine's memory is encrypted to (TEN-532). A fleet
 	// made before there was one gets it now. The recovery key needs a person
-	// at a terminal and is init's own step (fleetInitCmd), not enroll's.
-	if err := ensureFleetKey(c.cfgDir); err != nil {
+	// at a terminal and is init's own step (ensureRecovery), not enroll's.
+	if err := ensureFleetKey(o.cfgDir); err != nil {
 		return id, created, err
 	}
 	if len(addresses) == 0 {
-		if have, err := cli.store.Addresses(); err != nil {
+		if have, err := o.store.Addresses(); err != nil {
 			return id, created, err
 		} else if len(have) == 0 {
-			addresses = fleetDefaultAddresses(cmp.Or(c.lc.Fleet.Listen, defaultFleetListen))
+			addresses = fleetDefaultAddresses(cmp.Or(lc.Fleet.Listen, defaultFleetListen))
 		}
 	}
 	if len(addresses) > 0 {
-		if err := cli.store.SetAddresses(addresses); err != nil {
+		if err := o.store.SetAddresses(addresses); err != nil {
 			return id, created, err
 		}
 	}
 	return id, created, nil
+}
+
+// initSaid is what init says of the fleet it made or found: its certificate,
+// where its port listens, what its machines dial and how its key is kept.
+func initSaid(o fleetOps, lc *launchConfig, id fleet.Identity, created bool) string {
+	var b strings.Builder
+	if created {
+		b.WriteString("this Tenant is now a fleet master\n")
+	} else {
+		b.WriteString("this Tenant is a fleet master already; nothing was replaced\n")
+	}
+	fmt.Fprintf(&b, "  certificate    %s\n  listens on     %s   (fleet.listen)\n", id.Fingerprint, cmp.Or(lc.Fleet.Listen, defaultFleetListen))
+	if addrs, _ := o.store.Addresses(); len(addrs) == 0 {
+		b.WriteString("  machines dial  nothing yet: tenant fleet address add HOST:PORT\n")
+	} else {
+		fmt.Fprintf(&b, "  machines dial  %s   (change: tenant fleet address add|remove HOST:PORT)\n", strings.Join(addrs, ", "))
+		if w := addressWarning(addrs); w != "" {
+			b.WriteString("  " + w + "\n")
+		}
+	}
+	return b.String() + "  fleet key      " + fleetKeyWords(o.cfgDir)
 }
 
 func fleetInitCmd(args []string) error {
@@ -759,26 +791,11 @@ func fleetInitCmd(args []string) error {
 	if len(cli.pos) != 0 {
 		return errors.New("usage: tenant fleet init [--listen ADDR] [--address HOST:PORT]...")
 	}
-	id, created, err := initFleet(cli, *listen, addresses)
+	id, created, err := initFleet(cli.ops, cli.c.lc, *listen, addresses, "")
 	if err != nil {
 		return err
 	}
-	if created {
-		fmt.Println("this Tenant is now a fleet master")
-	} else {
-		fmt.Println("this Tenant is a fleet master already; nothing was replaced")
-	}
-	addrs, _ := cli.store.Addresses()
-	fmt.Printf("  certificate    %s\n  listens on     %s   (fleet.listen)\n", id.Fingerprint, cmp.Or(cli.c.lc.Fleet.Listen, defaultFleetListen))
-	if len(addrs) == 0 {
-		fmt.Println("  machines dial  nothing yet: tenant fleet address add HOST:PORT")
-	} else {
-		fmt.Printf("  machines dial  %s   (change: tenant fleet address add|remove HOST:PORT)\n", strings.Join(addrs, ", "))
-		if w := addressWarning(addrs); w != "" {
-			fmt.Println("  " + w)
-		}
-	}
-	fmt.Println("  fleet key      " + fleetKeyWords(cli.c.cfgDir))
+	fmt.Println(initSaid(cli.ops, cli.c.lc, id, created))
 	recErr := ensureRecovery(cli.store)
 	if rec, proven, err := cli.store.Recovery(); err == nil && rec != "" {
 		fmt.Printf("  recovery key   proven %s; its identity is yours to keep, Tenant has only its public half\n", fleetTime(proven))
@@ -1089,7 +1106,7 @@ func fleetEnrollCmd(args []string) error {
 		return errors.New("usage: tenant fleet enroll <name> [--ttl 15m] [--adopt ID]")
 	}
 	name := cli.pos[0]
-	if _, _, err := initFleet(cli, "", nil); err != nil {
+	if _, _, err := initFleet(cli.ops, cli.c.lc, "", nil, ""); err != nil {
 		return err
 	}
 	e, err := cli.ops.issueCode(name, *ttl, *adopt, "")

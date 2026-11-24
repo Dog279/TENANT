@@ -295,6 +295,7 @@ var reviewedMutations = map[string]confirmGate{
 	// replacing a machine's settings and letting the agent do more on it ask.
 	"POST /fleet/confirm":      noStep,
 	"POST /fleet/add":          noStep, // a code joins nothing until its machine's six digits are typed (TEN-541)
+	"POST /fleet/init":         noStep, // opens the fleet port and nothing else: no machine joins without a code and its six digits
 	"POST /fleet/rename":       noStep,
 	"POST /fleet/revoke":       always,
 	"POST /fleet/permission":   unless("mode", "ask", "deny"),

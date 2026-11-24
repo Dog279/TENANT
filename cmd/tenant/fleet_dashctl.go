@@ -12,9 +12,11 @@ package main
 // dashboard, no relay and no tool reaches it (fleet_reach_test.go).
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"maps"
+	"net"
 	"os"
 	"regexp"
 	"slices"
@@ -28,12 +30,40 @@ import (
 	"tenant/internal/secrets"
 )
 
-type dashFleet struct{ ops fleetOps }
+type dashFleet struct {
+	ops fleetOps
+	lc  *launchConfig
+}
 
 // newDashFleet builds the dashboard's fleet control over the live settings
 // stg, read under mu, as the terminal's is (newFleetTUIControl).
 func newDashFleet(c *commonFlags, stg *settings, mu *sync.Mutex) dashFleet {
-	return dashFleet{ops: liveFleetOps(c, stg, mu, surfaceDashboard)}
+	lc := c.lc
+	if lc == nil {
+		lc = &launchConfig{}
+	}
+	return dashFleet{lc: lc, ops: liveFleetOps(c, stg, mu, surfaceDashboard)}
+}
+
+// Init is Set up the fleet: what `tenant fleet init` does but for the
+// recovery key, in this process, whose hub then starts the fleet port by
+// itself. An address that is not one is the page's own plain words.
+func (d dashFleet) Init(listen string, addresses []string, by string) error {
+	if listen != "" {
+		if _, _, err := net.SplitHostPort(listen); err != nil {
+			return dashboard.PlainError("Nothing changed: the fleet port listens on a host:port address, like 0.0.0.0:9777.")
+		}
+	}
+	if fleet.CheckAddresses(addresses) != nil {
+		return dashboard.PlainError("Nothing changed: each address a machine dials is a host:port it can reach, like master.example:9777.")
+	}
+	if _, _, err := initFleet(d.ops, d.lc, listen, addresses, by); err != nil {
+		return err
+	}
+	// The page that answers shows who holds the fleet: give this process's
+	// hub its next look, as the command line's init waits for it.
+	liveHolderLine(fleetInitWait)
+	return nil
 }
 
 // dashTime is a time as the page shows it, "" for none.
@@ -63,9 +93,15 @@ func (d dashFleet) View() dashboard.FleetView {
 	// Never made a master. (An identity that is there and does not load is a
 	// listener that is not up, which Holder says.)
 	if _, err := os.Lstat(fleet.MasterIdentityPath(d.ops.cfgDir)); err != nil {
+		// What Set up the fleet starts from: what init itself would choose.
+		v.Listen = cmp.Or(d.lc.Fleet.Listen, defaultFleetListen)
+		v.Dial = strings.Join(fleetDefaultAddresses(v.Listen), ", ")
 		return v
 	}
 	v.Master = true
+	if rec, _, err := d.ops.store.Recovery(); err == nil && rec == "" {
+		v.NoRecovery = true
+	}
 	v.Holder, v.Here = fleetHolding()
 	machines, err := d.ops.store.Machines()
 	if err != nil {
@@ -286,7 +322,7 @@ func (d dashFleet) Recopy(id, from string) error {
 // not take is the page's own plain words.
 func (d dashFleet) Enroll(name string, boot bool, by string) (dashboard.FleetEnrollment, error) {
 	if _, err := fleetIdentity(d.ops.cfgDir); err != nil {
-		return dashboard.FleetEnrollment{}, dashboard.PlainError("No code was made: this Tenant has no fleet yet. Run tenant fleet init in a terminal on the computer running Tenant.")
+		return dashboard.FleetEnrollment{}, dashboard.PlainError("No code was made: this Tenant has no fleet yet. Set it up on this page first, or run tenant fleet init in a terminal on the computer running Tenant.")
 	}
 	if addrs, err := d.ops.store.Addresses(); err == nil && len(addrs) == 0 {
 		return dashboard.FleetEnrollment{}, dashboard.PlainError("No code was made: the fleet has no address for a machine to dial. Add one in a terminal: tenant fleet address add HOST:PORT")

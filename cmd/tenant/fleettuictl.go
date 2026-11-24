@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"tenant/internal/approval"
 	"tenant/internal/fleet"
@@ -91,11 +92,56 @@ func fleetLinks() map[string]fleet.MachineStatus {
 	return out
 }
 
+// liveHolderLine says which process holds the fleet, for a process that may
+// take it itself: its hub sees a new fleet at its next look, so the line waits
+// up to wait for this process or another to hold it.
+func liveHolderLine(wait time.Duration) string {
+	deadline := time.Now().Add(wait)
+	for {
+		head, here := fleetHolding()
+		if here || theFleet.Load() == nil || fleetHeldElsewhere() != "" || !time.Now().Before(deadline) {
+			return head
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// Init is /fleet init: what `tenant fleet init` does, in this process, whose
+// hub then starts the fleet port by itself. The recovery key is the step the
+// app hands the terminal to (ensureRecovery, unchanged): made, shown once and
+// proven there, or proven if it was recorded and never proven.
+func (f fleetTUIControl) Init(listen string, addresses []string) (tui.FleetInit, error) {
+	id, created, err := initFleet(f.ops, f.lc, listen, addresses, "")
+	if err != nil {
+		return tui.FleetInit{}, err
+	}
+	store := f.ops.store
+	in := tui.FleetInit{Done: func(recErr error) string {
+		said := initSaid(f.ops, f.lc, id, created)
+		switch rec, proven, _ := store.Recovery(); {
+		case rec != "" && !proven.IsZero():
+			said += fmt.Sprintf("\n  recovery key   proven %s; its identity is yours to keep, Tenant has only its public half", fleetTime(proven))
+		case rec != "":
+			said += "\n  recovery key   recorded and never proven: /fleet init asks for the identity you kept"
+		default:
+			said += "\n  recovery key   not made, so no machine's memory is kept yet. Nothing was recorded, and an identity the terminal showed is void: /fleet init makes one when you are ready to save it"
+		}
+		if recErr != nil && !errors.Is(recErr, errRecoveryNotSetUp) {
+			said += "\n  " + recErr.Error()
+		}
+		return said + "\n  " + liveHolderLine(fleetInitWait)
+	}}
+	if rec, proven, err := store.Recovery(); err != nil || rec == "" || proven.IsZero() {
+		in.Recovery = func() error { return ensureRecovery(store) }
+	}
+	return in, nil
+}
+
 func (f fleetTUIControl) Status() string {
 	// Never made a master. (An identity that is there and does not load is a
 	// listener that is not up, told below.)
 	if _, err := os.Lstat(fleet.MasterIdentityPath(f.ops.cfgDir)); err != nil {
-		return "Fleet: this Tenant has no fleet yet: run `tenant fleet init`"
+		return "Fleet: this Tenant has no fleet yet: /fleet init"
 	}
 	machines, err := f.ops.store.Machines()
 	if err != nil {
@@ -175,7 +221,8 @@ func (f fleetTUIControl) Confirm(name, code string, pairs []string) (string, err
 func (f fleetTUIControl) Enroll(name string) (string, error) {
 	e, err := f.ops.issueCode(name, 0, "", "")
 	if err != nil {
-		return "", err
+		// The same words as the command line's, with this app's command.
+		return "", errors.New(strings.ReplaceAll(err.Error(), "run `tenant fleet init`", "/fleet init"))
 	}
 	text := strings.ReplaceAll(enrollText(e), "tenant fleet confirm ", "/fleet confirm ")
 	return e.Code + "\n\n" + text, nil

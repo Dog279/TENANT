@@ -192,7 +192,7 @@ func TestFleetEnrollPrintsEveryLine(t *testing.T) {
 		t.Errorf("/fleet enroll with a name that is not one: %v", err)
 	}
 	lone := newFleetLab(t)
-	if _, err := newFleetTUIControl(lone.c, &settings{}, &lone.stgMu).Enroll("web1"); err == nil || !strings.Contains(err.Error(), "tenant fleet init") {
+	if _, err := newFleetTUIControl(lone.c, &settings{}, &lone.stgMu).Enroll("web1"); err == nil || !strings.Contains(err.Error(), "no fleet yet: /fleet init") {
 		t.Errorf("/fleet enroll without a fleet: %v", err)
 	}
 }

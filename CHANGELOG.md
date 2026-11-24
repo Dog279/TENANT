@@ -5,6 +5,17 @@ Releases page.
 
 ## Unreleased
 
+- **A fleet can be set up from the terminal app and from the dashboard.** Until now only
+  `tenant fleet init` made a Tenant a fleet master, and `/fleet` and the Fleet page told you to
+  run it. `/fleet init [--listen ADDR] [--address HOST:PORT]...` now does the same in the
+  terminal app: the app steps aside while the recovery identity is shown on the terminal and
+  typed back, so the identity is never in the app's chat, its transcript or a log. The Fleet
+  page of a Tenant with no fleet has **Set up the fleet**, with the fleet port's address and
+  the addresses machines dial filled in as `init` would choose them. It takes a signed-in
+  browser, never the API key, and does not make the recovery key: the page says no machine's
+  memory is kept until `tenant fleet init` or `/fleet init` at a terminal makes it. The running
+  Tenant takes the new fleet within a few seconds, with no restart. On all three, `init` now
+  refuses an address that is not a `host:port` before it makes anything.
 - **Process protection: other programs running as you are kept out of a running Tenant.** Until
   now a program running as the same user (malware, a tool, a command the agent was talked into
   running) could read Tenant's memory, where its keys are while it runs. Tenant now asks the
