@@ -487,6 +487,17 @@ type Dashboard struct {
 	TLSKey       string   `json:"tls_key,omitempty"`
 	Auth         string   `json:"auth,omitempty"`          // explicit override; empty uses dashboard-auth-token
 	AllowedHosts []string `json:"allowed_hosts,omitempty"` // trusted reverse-proxy Host values
+	// LAN serves the dashboard a second time, to the local network (TEN-544).
+	LAN DashboardLAN `json:"lan,omitempty"`
+}
+
+// DashboardLAN is the dashboard's second listener, for the local network
+// (TEN-544): off unless Enabled, HTTPS always, beside the loopback listener
+// and never in place of it.
+type DashboardLAN struct {
+	Enabled bool     `json:"enabled,omitempty"`
+	Addr    string   `json:"addr,omitempty"`  // listen address (default 0.0.0.0:9771)
+	Allow   []string `json:"allow,omitempty"` // networks (CIDR) that may connect besides private and link-local ones
 }
 
 // IsEnabled resolves the tri-state Enabled to a concrete on/off: nil

@@ -395,7 +395,12 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) (err error) {
 	// CORS; observe() records each request, rejected ones too.
 	srv := newDashboardHTTPServer(s.cfg.Addr, s.served(), tlsCfg)
 	srv.ErrorLog = log.New(serverErrors{ctx}, "", 0)
+	return serveUntil(ctx, srv, ln, tlsCfg != nil)
+}
 
+// serveUntil serves srv on ln until ctx is cancelled, then drains it. A
+// server closed that way is no error.
+func serveUntil(ctx context.Context, srv *http.Server, ln net.Listener, overTLS bool) (err error) {
 	shutdownDone := make(chan struct{})
 	go func() {
 		<-ctx.Done()
@@ -406,7 +411,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) (err error) {
 		close(shutdownDone)
 	}()
 
-	if tlsCfg != nil {
+	if overTLS {
 		err = srv.ServeTLS(ln, "", "") // cert+key already in TLSConfig
 	} else {
 		err = srv.Serve(ln)

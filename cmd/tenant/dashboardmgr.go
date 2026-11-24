@@ -67,6 +67,9 @@ type dashboardManager struct {
 	// tailnetHost is the tailnet DNS name `tailscale serve` publishes the
 	// dashboard under (TEN-332). Kept here so a stop/start still trusts it.
 	tailnetHost string
+	// lan is the dashboard's second listener, for the local network
+	// (dashboardlan.go); nil where it is not offered.
+	lan *dashLAN
 }
 
 // dashBootWait is how long a serve that has just started waits for the
@@ -188,6 +191,7 @@ func (m *dashboardManager) enable(wait time.Duration) (string, error) {
 			m.mu.Lock()
 			current := m.done == done
 			if current {
+				m.stopLANLocked() // it served this server, which is gone
 				m.running = false
 				m.cancel = nil
 				m.done = nil
@@ -208,6 +212,20 @@ func (m *dashboardManager) enable(wait time.Duration) (string, error) {
 	m.srv = srv
 	m.addr = ln.Addr().String()
 	m.track(lifecycle.Running, nil)
+	// The local network is served while the dashboard is, when the operator
+	// asked for it (config.json, --dashboard-lan, /dashboard serve lan).
+	if m.lan != nil && m.lan.want {
+		said := ""
+		if err := m.startLANLocked(); err != nil {
+			said = "dashboard: not served to the local network: " + err.Error()
+		} else {
+			lanRecord("on", m.lan.bound, surfaceCLI)
+			said = m.lanSaidLocked()
+		}
+		if m.notify != nil {
+			go m.notify(said)
+		}
+	}
 	if m.persist != nil {
 		if err := m.persist(true); err != nil {
 			return m.addr, err
@@ -244,6 +262,7 @@ func (m *dashboardManager) Shutdown() error {
 // stopLocked halts a running server. Caller must hold m.mu.
 func (m *dashboardManager) stopLocked() {
 	if m.running {
+		m.stopLANLocked() // the second listener never outlives the dashboard
 		m.cancel()
 		<-m.done
 		m.running = false

@@ -1397,6 +1397,90 @@ func TestSlash_Dashboard(t *testing.T) {
 }
 
 // An Enable error surfaces to the feed instead of a bogus URL.
+// fakeDashLAN is a dashboard that can also be served to the local network.
+type fakeDashLAN struct {
+	*fakeDash
+	calls []string
+	on    string
+}
+
+func (f *fakeDashLAN) ServeLAN(addr string) (string, error) {
+	f.calls = append(f.calls, "serve "+addr)
+	if addr == "nine" {
+		return "", errors.New("nine is not a host:port address")
+	}
+	f.on = "dashboard: also serving the local network at https://192.168.1.5:9771"
+	return f.on, nil
+}
+
+func (f *fakeDashLAN) StopLAN() (string, error) {
+	f.calls, f.on = append(f.calls, "stop"), ""
+	return "dashboard: no longer served to the local network", nil
+}
+
+func (f *fakeDashLAN) LANStatus() string { return f.on }
+
+// /dashboard serve lan opens the dashboard to the local network, so it is the
+// operator's act at this keyboard: a line the app submits itself opens and
+// closes nothing. Typed, it takes an optional address, and /dashboard says
+// whether the network is served. A dashboard that cannot do it says so.
+func TestSlash_DashboardServeLAN(t *testing.T) {
+	d := &fakeDashLAN{fakeDash: &fakeDash{addr: "127.0.0.1:9770", running: true}}
+	m := newModel(context.Background(), Config{Dash: d})
+	m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+
+	for _, line := range []string{"/dashboard serve lan", "/dashboard serve lan 0.0.0.0:9771", "/dashboard serve off"} {
+		slash(m, line)
+		if len(d.calls) != 0 || !strings.Contains(lastMsg(m), "type this command here yourself") {
+			t.Fatalf("%q, not typed: calls %v, answered %q", line, d.calls, lastMsg(m))
+		}
+	}
+	slash(m, "/dashboard")
+	if !strings.Contains(lastMsg(m), "running at http://127.0.0.1:9770") || !strings.Contains(lastMsg(m), "not served to the local network") || !strings.Contains(lastMsg(m), "/dashboard serve lan") {
+		t.Fatalf("/dashboard with the LAN off said %q", lastMsg(m))
+	}
+
+	typeLine(m, "/dashboard serve lan")
+	typeLine(m, "/dashboard serve LAN 192.168.1.5:9443")
+	if got := strings.Join(d.calls, " | "); got != "serve  | serve 192.168.1.5:9443" {
+		t.Fatalf("the dashboard was asked for %q", got)
+	}
+	if !strings.Contains(lastMsg(m), "also serving the local network at https://192.168.1.5:9771") {
+		t.Fatalf("/dashboard serve lan said %q", lastMsg(m))
+	}
+	slash(m, "/dashboard status")
+	if !strings.Contains(lastMsg(m), "also serving the local network") {
+		t.Fatalf("/dashboard with the LAN on said %q", lastMsg(m))
+	}
+	typeLine(m, "/dashboard serve lan nine")
+	if !strings.Contains(lastMsg(m), "dashboard: nine is not a host:port address") {
+		t.Fatalf("a refused address said %q", lastMsg(m))
+	}
+	for _, line := range []string{"/dashboard serve", "/dashboard serve wan", "/dashboard serve lan a b", "/dashboard serve off now"} {
+		d.calls = nil
+		typeLine(m, line)
+		if len(d.calls) != 0 || !strings.Contains(lastMsg(m), "usage: /dashboard") {
+			t.Fatalf("%q: calls %v, answered %q", line, d.calls, lastMsg(m))
+		}
+	}
+	typeLine(m, "/dashboard serve off")
+	if len(d.calls) != 1 || d.calls[0] != "stop" || !strings.Contains(lastMsg(m), "no longer served") {
+		t.Fatalf("/dashboard serve off: calls %v, answered %q", d.calls, lastMsg(m))
+	}
+
+	// A dashboard without the second listener (another implementation).
+	plain := newModel(context.Background(), Config{Dash: &fakeDash{addr: "127.0.0.1:9770", running: true}})
+	plain.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	typeLine(plain, "/dashboard serve lan")
+	if !strings.Contains(lastMsg(plain), "not available in this session") {
+		t.Fatalf("a dashboard that cannot serve the LAN said %q", lastMsg(plain))
+	}
+	slash(plain, "/dashboard")
+	if strings.Contains(lastMsg(plain), "local network") {
+		t.Fatalf("a dashboard that cannot serve the LAN offers it: %q", lastMsg(plain))
+	}
+}
+
 func TestSlash_DashboardEnableError(t *testing.T) {
 	fd := &fakeDash{addr: "127.0.0.1:9770", enableErr: errors.New("bind failed")}
 	m := newModel(context.Background(), Config{Dash: fd})

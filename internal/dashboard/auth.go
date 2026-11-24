@@ -48,7 +48,16 @@ func (s *Server) secure(h http.Handler) http.Handler {
 		hd.Set("Referrer-Policy", "same-origin")
 		hd.Set("X-Content-Type-Options", "nosniff")
 		ctx, route := r.Context(), s.route(r)
-		if !s.checkHost(r.Host) {
+		// The LAN listener (lan.go) has its own answer to "may this address
+		// ask" and "is this my name"; everything after is the same.
+		lan := lanOf(r)
+		if lan != nil && !lan.from(r.RemoteAddr) {
+			SourceRejected.Log(ctx, "remote", r.RemoteAddr, "method", r.Method, "route", route)
+			refused(r, "source", route)
+			writeError(w, http.StatusForbidden, "the dashboard is served to the local network only")
+			return
+		}
+		if lan != nil && !s.lanHost(r, lan) || lan == nil && !s.checkHost(r.Host) {
 			HostRejected.Log(ctx, "host", r.Host, "method", r.Method, "route", route, "remote", r.RemoteAddr)
 			refused(r, "host", route)
 			writeError(w, http.StatusForbidden, "unrecognized dashboard host")

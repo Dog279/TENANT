@@ -76,17 +76,53 @@ Browsers don't keep a sign-in apart by port: every other web service on this com
 
 - **This computer only**, by default: http://127.0.0.1:9770, or http://localhost:9770 if you prefer the name.
 - **From your phone:** use Tailscale. In the terminal app run `/tailscale serve`, or set `"tailscale": {"serve": true}` in config.json so a background service publishes it on every start. Tenant trusts the Tailscale name on its own.
+- **From another computer on your network, with no VPN:** in the terminal app type `/dashboard serve lan`
+  (or start with `--dashboard-lan`, or set `"dashboard": {"lan": {"enabled": true}}` in config.json).
+  That starts a second listener, HTTPS only, on every interface at port 9771; give an address to
+  choose one (`/dashboard serve lan 192.168.1.5:9771`). `/dashboard serve off` closes it. It is off
+  until you turn it on, and http://127.0.0.1:9770 keeps working beside it. See "On your local
+  network" below.
 - **Behind a web proxy on the same computer:** add the name the proxy uses to `dashboard.allowed_hosts` in config.json.
 - **On a network address** (for example `--dashboard-addr 0.0.0.0:9770`): Tenant refuses to start unless the dashboard has a key and a certificate (`dashboard.tls_cert` and `dashboard.tls_key`).
 - **Never** forward the port to the internet.
 
 One thing works only on the computer running Tenant, in a browser signed in at http://127.0.0.1:9770 (or localhost): **confirming a fleet machine** on the **Fleet** page, the step that lets your agent work on another computer. By your Tailscale name, behind a proxy, from another computer or with the key in a script, the page shows the machine and where to confirm it, and the six digits are refused ("Nothing changed: a machine is confirmed in a browser on the computer running Tenant…"). The terminal on that computer can confirm it too. A browser on another computer that reaches the port through an SSH tunnel counts as being there, as a terminal over that SSH would.
 
+### On your local network
+
+`/dashboard serve lan` answers with the address to open and a certificate fingerprint:
+
+```
+dashboard: also serving the local network at https://192.168.1.5:9771 (listening on 0.0.0.0:9771)
+  certificate: self-signed, SHA-256 fingerprint 7C:32:6C:…
+```
+
+- **The certificate.** Tenant makes it once and keeps it in the config dir
+  (`dashboard-lan-cert.pem`, `dashboard-lan-key.pem`, owner-only), good for two years, then
+  replaced. No authority signed it, so the browser warns the first time: open the certificate in
+  that warning and compare its SHA-256 fingerprint with the one Tenant printed (`/dashboard` prints
+  it again). If they differ, stop: something is between you and Tenant. To use a certificate of
+  your own, set `dashboard.tls_cert` and `dashboard.tls_key`.
+- **Signing in** is the same key as on this computer (section 2).
+- **Who may connect:** this computer, and private or link-local addresses (10.x, 172.16-31.x,
+  192.168.x, fc00::/7, fe80::/10). To let another network in, such as a VPN's range, list it:
+  `"dashboard": {"lan": {"allow": ["100.64.0.0/10"]}}`. Every other address is refused before
+  sign-in, and the refusal is in the Security log.
+- **The name you type** must be the address you are connecting to, or this computer's name (as
+  the system reports it, its first label, or that label with `.local`). Another name needs to be
+  in `dashboard.allowed_hosts`.
+- **One address, not every interface:** `/dashboard serve lan 192.168.1.5:9771`. On macOS and
+  Windows the firewall may ask about the first listener that is not loopback; allow it for the
+  networks you mean to serve.
+- **What it cannot do from there:** confirm a fleet machine (above), or turn this listener on or
+  off. That is done at the keyboard, by the flag or in config.json, never from a page.
+
 If a page shows one of these instead of the dashboard:
 
 | It says | It means | What to do |
 |---|---|---|
 | unrecognized dashboard host | The address you typed isn't one Tenant trusts. | Use http://127.0.0.1:9770 (or http://localhost:9770), your Tailscale address, or add the name to `dashboard.allowed_hosts`. |
+| the dashboard is served to the local network only | You reached the LAN listener from an address that is not private. | Use a computer on the local network, or list your network in `dashboard.lan.allow`. |
 | cross-origin request rejected | The request came from another site, another tab's page, or another port on this computer. | Use the dashboard's own buttons. If it keeps happening, something else on this computer is sending requests to it. |
 | CSRF validation failed | A browser extension or privacy setting removed the header that shows the request came from the dashboard. | Turn that extension off for the dashboard's address. |
 | Nothing changed: that needs a second click to confirm. | A change that asks first was sent without its second step. | Open the step again and press its **Yes** button. |

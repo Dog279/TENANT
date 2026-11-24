@@ -5,6 +5,28 @@ Releases page.
 
 ## Unreleased
 
+- **The dashboard can be served to the local network, for a site with no VPN (TEN-544).** It is
+  off by default, and loopback with `/tailscale serve` stays the way in unless you turn this on.
+  `/dashboard serve lan [HOST:PORT]` in the terminal app (typed at the keyboard), `--dashboard-lan`
+  on `tenant serve` and `tenant tui`, or `dashboard.lan` in `config.json` starts a second
+  listener, by default on every interface at port 9771, with no restart; `/dashboard serve off`
+  closes it. The loopback listener is untouched.
+  - **HTTPS always.** Tenant makes a self-signed certificate once and keeps it, owner-only, in
+    the config dir (`dashboard-lan-cert.pem`, `dashboard-lan-key.pem`); your own
+    `dashboard.tls_cert` and `tls_key` are used instead when set. A browser warns about a
+    self-signed certificate the first time: Tenant prints its SHA-256 fingerprint when the
+    listener starts and in `/dashboard`, to compare with what the browser shows.
+  - **Who may connect.** This computer, private and link-local addresses, and the networks in
+    `dashboard.lan.allow`. Anything else gets 403 before sign-in is looked at, and a Security
+    record. Sign-in is the dashboard's own key; the session cookie is marked Secure.
+  - **What it answers to.** The address a request arrived at, or this computer's own name, on
+    the listener's port. A name another site points at this computer is refused, as before.
+  - **What stays at this computer.** Confirming a fleet machine, and turning this listener on or
+    off: there is no page or API for that, and a line the app submits for you does not do it.
+  - `tenant doctor` and `tenant security audit` name the listener and the certificate's
+    fingerprint; turning it on or off is Security event 4304.
+  - Run on macOS on loopback addresses only: sign-in over HTTPS, the certificate, the refusals
+    and the on and off. Not yet tried from a second computer, or on Linux or Windows.
 - **`/tools` and `/skill list` fill the width of the pane.** The plugins go side by side, each
   whole with its tools under it, in as many straight columns as the pane takes, so a long list
   takes a fraction of the scrolling (the built-in tools fit one screen in a wide window). A

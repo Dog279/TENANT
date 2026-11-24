@@ -433,6 +433,7 @@ Writes the `dashboard` log.
 | [2103](#dashboard-2103) | warning | Access | `Request without a valid token rejected: {method} {route}` |
 | [2104](#dashboard-2104) | warning | Access | `Browser change without a matching Origin rejected: {method} {route}` |
 | [2105](#dashboard-2105) | warning | Access | `Sign-in with a wrong token from {remote}` |
+| [2106](#dashboard-2106) | warning | Access | `Request from {remote} outside the local network rejected: {method} {route}` |
 | [2201](#dashboard-2201) | warning | Action | `Dashboard action {action} failed: {err}` |
 | [2202](#dashboard-2202) | warning | Action | `API key {cred} was not {op}` |
 | [2203](#dashboard-2203) | warning | Action | `API key {cred} was sent in the URL and refused` |
@@ -581,6 +582,20 @@ Writes the `dashboard` log.
 **Why it happens.** A typo, a token from before it changed, or someone guessing.
 
 **What to do.** Use the token in <config>/dashboard-auth-token (or dashboard.auth). Many failures from an address you don't know mean someone is guessing.
+
+### dashboard 2106
+
+`Request from {remote} outside the local network rejected: {method} {route}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Access · **Log:** dashboard
+- **Fields:** `remote`, `method`, `route`
+- **Find it:** `provider:dashboard id:2106`
+
+**What it means.** A request reached the dashboard's LAN listener from an address that is not this computer, a private or link-local address, or a network in dashboard.lan.allow, and got 403.
+
+**Why it happens.** The LAN listener is reachable from a wider network than the local one (a public address, a VPN or overlay range), or someone outside is probing it.
+
+**What to do.** If the network is yours, add it to dashboard.lan.allow. Otherwise nothing: the request was refused. Bind the listener to one address (/dashboard serve lan ADDR) to keep it off the other interfaces.
 
 ### dashboard 2201
 
@@ -4878,6 +4893,7 @@ Writes the `security` log.
 | [4301](#security-4301) | info | Access | `Dashboard sign-in from {remote}` |
 | [4302](#security-4302) | info | Access | `Dashboard sign-out from {remote}` |
 | [4303](#security-4303) | warning | Access | `Request from {remote} refused: {reason}` |
+| [4304](#security-4304) | info | Access | `The dashboard's LAN listener turned {state}` |
 | [4311](#security-4311) | info | Peering | `Paired with peer {peer}` |
 | [4312](#security-4312) | info | Peering | `Unpaired peer {peer} ({how})` |
 | [4321](#security-4321) | warning | Fleet | `Fleet enrollment from {remote} refused: {reason}` |
@@ -5092,11 +5108,26 @@ Writes the `security` log.
 - **Keywords:** `audit.failure`
 - **Find it:** `provider:security id:4303`
 
-**What it means.** A request was refused before it reached anything (reason: token, a wrong dashboard or peer token; sign_in, a wrong token on the sign-in form; csrf; host; origin). A request with no token at all is not recorded here: the dashboard log has it.
+**What it means.** A request was refused before it reached anything (reason: token, a wrong dashboard or peer token; sign_in, a wrong token on the sign-in form; csrf; host; origin; source, an address outside the local network on the dashboard's LAN listener). A request with no token at all is not recorded here: the dashboard log has it.
 
 **Why it happens.** A token that changed, a script with an old one, a page on another site, a name the dashboard doesn't answer to, or someone probing.
 
 **What to do.** Many from an address you don't know mean someone is guessing: keep the dashboard and the peer listener off public networks. See the dashboard or peering log's event for the same request.
+
+### security 4304
+
+`The dashboard's LAN listener turned {state}`
+
+- **Level:** info · **Channel:** operational · **Task:** Access · **Log:** security
+- **Fields:** `state`, `address`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4304`
+
+**What it means.** The operator turned serving the dashboard to the local network on or off. On, other computers on the network can reach the sign-in form over HTTPS at address; nothing but loopback and the tailnet can when it is off.
+
+**Why it happens.** /dashboard serve lan or /dashboard serve off in the terminal, the --dashboard-lan flag, or dashboard.lan in config.json at launch.
+
+**What to do.** None when intended. Otherwise /dashboard serve off, and check who can edit config.json.
 
 ### security 4311
 

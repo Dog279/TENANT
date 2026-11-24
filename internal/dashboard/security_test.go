@@ -481,7 +481,8 @@ func TestRouteInventory(t *testing.T) {
 // says it ("" when the request got through to a handler).
 func envelope(rec *httptest.ResponseRecorder) string {
 	for reason, msg := range map[string]string{"host": "unrecognized dashboard host", "origin": "cross-origin request rejected",
-		"token": "missing or invalid bearer token", "csrf": "CSRF validation failed"} {
+		"token": "missing or invalid bearer token", "csrf": "CSRF validation failed",
+		"source": "the dashboard is served to the local network only"} {
 		if strings.Contains(rec.Body.String(), `{"error":"`+msg+`"}`) {
 			return reason
 		}

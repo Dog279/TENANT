@@ -144,6 +144,31 @@ func slashDashboard(m *model, line string) tea.Cmd {
 		m.sysChat("dashboard not available in this session")
 		return nil
 	}
+	lan, _ := m.cfg.Dash.(DashboardLANControl)
+	if f := strings.Fields(strings.ToLower(arg)); len(f) >= 2 && f[0] == "serve" {
+		// Serving the local network is the operator's act at this keyboard: a
+		// line the app submits itself opens nothing.
+		const usage = "usage: /dashboard serve lan [HOST:PORT]   |   /dashboard serve off"
+		var said string
+		var err error
+		switch {
+		case lan == nil:
+			said = "dashboard: serving the local network is not available in this session"
+		case !m.typed:
+			said = "dashboard: type this command here yourself; a line the app submits does not change who can reach the dashboard"
+		case f[1] == "lan" && len(f) <= 3:
+			said, err = lan.ServeLAN(strings.Join(strings.Fields(arg)[2:], ""))
+		case f[1] == "off" && len(f) == 2:
+			said, err = lan.StopLAN()
+		default:
+			said = usage
+		}
+		if err != nil {
+			said = strings.TrimSpace(said + "\ndashboard: " + err.Error())
+		}
+		m.sysChat(said)
+		return nil
+	}
 	switch strings.ToLower(strings.TrimSpace(arg)) {
 	case "", "status":
 		if running, addr := m.cfg.Dash.Status(); running {
@@ -151,7 +176,15 @@ func slashDashboard(m *model, line string) tea.Cmd {
 			if m.cfg.Tailscale != nil {
 				hint = "   ·   /tailscale serve to reach it from your other devices"
 			}
-			m.sysChat("dashboard: running at http://" + addr + hint)
+			said := "dashboard: running at http://" + addr + hint
+			if lan != nil {
+				if on := lan.LANStatus(); on != "" {
+					said += "\n" + on
+				} else {
+					said += "\ndashboard: not served to the local network   ·   /dashboard serve lan turns that on (HTTPS, off by default)"
+				}
+			}
+			m.sysChat(said)
 		} else {
 			m.sysChat("dashboard: stopped")
 		}
@@ -173,7 +206,7 @@ func slashDashboard(m *model, line string) tea.Cmd {
 			m.sysChat("dashboard: stopped")
 		}
 	default:
-		m.sysChat("usage: /dashboard [status|on|off]")
+		m.sysChat("usage: /dashboard [status|on|off]   |   /dashboard serve lan [HOST:PORT]   |   /dashboard serve off")
 	}
 	return nil
 }
@@ -246,7 +279,11 @@ func sessionCommands() []*slashCommand {
 			Summary: "show the agent ID, active backend and model (runtime truth — trust over the model's self-answer)"},
 		{Names: []string{"/dashboard"}, Section: "session", Run: slashDashboard,
 			Summary: "start/stop the web control panel",
-			Rows:    []cmdreg.Row{{Syntax: "/dashboard [on|off|status]", Desc: "start/stop the web control panel (auto-launches by default; choice persists)"}}},
+			Rows: []cmdreg.Row{
+				{Syntax: "/dashboard [on|off|status]", Desc: "start/stop the web control panel (auto-launches by default; choice persists)"},
+				{Syntax: "/dashboard serve lan [HOST:PORT]", Desc: "also serve it to the local network over HTTPS, for a site with no VPN (off by default; default 0.0.0.0:9771; choice persists)"},
+				{Syntax: "/dashboard serve off", Desc: "stop serving the local network; this computer and the tailnet reach it as before"},
+			}},
 		{Names: []string{"/tailscale", "/ts"}, Section: "session", Run: slashTailscale,
 			Summary: "publish the dashboard to your tailnet",
 			Rows:    []cmdreg.Row{{Syntax: "/tailscale [serve|serve off|status]", Desc: "publish the dashboard to your tailnet over HTTPS via tailscale serve (reach it from other devices)"}}},
