@@ -132,6 +132,14 @@ func (u *fleetUpdates) say(s *fleetUpdateState, stage, line string) {
 	if line != "" && len(s.Lines) < 32 {
 		s.Lines = append(s.Lines, line)
 	}
+	if line != "" { // the fleet log keeps every step, past what the page shows
+		step := fleet.UpdateStep
+		switch s.Stage {
+		case fleetUpdRolledBack, fleetUpdFailed, fleetUpdRefused:
+			step = fleet.UpdateNotDone
+		}
+		step.Log(context.Background(), "name", fleetNames([]string{s.Machine})[0], "machine", s.Machine, "stage", s.Stage, "line", line, "from", s.From, "to", s.To)
+	}
 	switch s.Stage {
 	case fleetUpdDone, fleetUpdRolledBack, fleetUpdFailed, fleetUpdRefused:
 		s.Finished = time.Now()

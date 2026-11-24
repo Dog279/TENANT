@@ -221,7 +221,7 @@ func TestAFleetToolNamesTheProcessThatHoldsTheFleet(t *testing.T) {
 		t.Fatal(err)
 	}
 	// ... and "another" takes it: a manager of its own on the same files.
-	other, err := fleet.StartManager(fleet.ManagerConfig{Store: fleet.Open(l.cfg), Identity: id, Addr: "127.0.0.1:0", Role: "serve", Log: quietLog})
+	other, err := fleet.StartManager(fleet.ManagerConfig{Store: fleet.Open(l.cfg), Identity: id, Addr: "127.0.0.1:0", Role: "serve"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,7 @@ func TestTheMastersRecordOfACallKeepsTheChildsAuditHash(t *testing.T) {
 	var found bool
 	entries, _ := hub.Snapshot()
 	for _, e := range entries {
-		if e.Source != "fleet" || e.Msg != "fleet call" {
+		if e.Source != "fleet" || e.Field("event") != "fleet/1201" {
 			continue
 		}
 		found = true
@@ -309,7 +309,7 @@ func TestACeilingRefusalReachesTheModelAsTheChildWroteIt(t *testing.T) {
 	entries, _ := hub.Snapshot()
 	for _, e := range entries {
 		switch {
-		case e.Source == "fleet" && e.Msg == "fleet call":
+		case e.Source == "fleet" && e.Field("event") == "fleet/1201":
 			if e.Field("outcome") != "the tool failed" {
 				t.Errorf("the master's record of the call: %s", e.Line())
 			}

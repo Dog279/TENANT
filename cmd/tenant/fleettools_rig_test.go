@@ -56,7 +56,7 @@ func newFleetToolRig(t *testing.T) *fleetToolRig {
 		t.Fatal(err)
 	}
 	r.store = fleet.Open(r.dir)
-	if r.mgr, err = fleet.StartManager(fleet.ManagerConfig{Store: r.store, Identity: r.master, Addr: "127.0.0.1:0", Role: "test", Log: fleetQuiet}); err != nil {
+	if r.mgr, err = fleet.StartManager(fleet.ManagerConfig{Store: r.store, Identity: r.master, Addr: "127.0.0.1:0", Role: "test"}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = r.mgr.Close() })

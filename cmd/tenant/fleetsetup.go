@@ -12,6 +12,7 @@ package main
 // six digits it then shows are typed on the master, at this computer.
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -231,6 +232,9 @@ func fleetAddressCmd(args []string) error {
 		}
 	default:
 		return usage
+	}
+	if verb != "list" {
+		_ = fleet.AddressesChanged.Audit(context.Background(), "addresses", strings.Join(have, ", "), "surface", surfaceCLI)
 	}
 	if len(have) == 0 {
 		fmt.Println("A new machine is given no address, so no code can be made: tenant fleet address add HOST:PORT")

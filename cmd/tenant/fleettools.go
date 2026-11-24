@@ -46,7 +46,6 @@ import (
 	"tenant/internal/approval"
 	"tenant/internal/control"
 	"tenant/internal/fleet"
-	"tenant/internal/logs"
 	"tenant/internal/mcp/transport"
 	"tenant/internal/model"
 	"tenant/internal/runtrace"
@@ -85,8 +84,6 @@ const (
 	fleetRosterMax  = 50      // machines the context lists by name
 	fleetNameMax    = 63
 )
-
-var fleetToolLog = logs.For("fleet")
 
 // fleetServedByTool are the machine's tools the fleet_* tools stand for.
 // fleet_tools leaves them out: it lists the others.
@@ -427,7 +424,7 @@ func (p *fleetToolPlugin) onMachine(ctx context.Context, t *fleetTarget, tool st
 			t.turn.touch(t.m)
 			// The call's own record was written when its link dropped, with no
 			// hash: the machine's audit record of it is kept here.
-			fleetToolLog.InfoContext(ctx, "fleet call result", "host", t.m.ID, "name", t.m.Name, "call", a.ID, "origin", t.origin.Name, "audit", res.Audit)
+			fleet.CallResult.Log(ctx, "host", t.m.ID, "name", t.m.Name, "call", a.ID, "origin", t.origin.Name, "audit", res.Audit)
 		}
 		return t.say(ctx, "the result of call "+a.ID, res, err)
 	case tool == "fleet_call":
@@ -785,7 +782,7 @@ func (t *fleetTarget) run(ctx context.Context, tool string, args json.RawMessage
 	res, err := t.mgr.Call(ctx, t.m.ID, fleet.Call{Tool: tool, Arguments: args, Confirm: func(cctx context.Context, action, detail string) bool {
 		o := t.origin
 		if others := t.turn.others(t.m.ID); !read && len(others) > 0 {
-			fleetToolLog.InfoContext(cctx, "fleet: the call asks, because this turn has read from another machine", "host", t.m.ID, "name", t.m.Name, "tool", tool, "read_from", strings.Join(others, ","))
+			fleet.AsksFirst.Log(cctx, "host", t.m.ID, "name", t.m.Name, "tool", tool, "read_from", strings.Join(others, ","))
 			o = fleetAskFirst(o, others)
 		}
 		return t.deps.schemes.For(o, t.machine()).Confirm(cctx, action, detail)
@@ -804,7 +801,7 @@ func (t *fleetTarget) run(ctx context.Context, tool string, args json.RawMessage
 	// records have no place for one. audit is the hash of the record the
 	// machine wrote of the same call in its own audit log (64 hex, or empty
 	// when no result came back): the two logs can be laid side by side.
-	fleetToolLog.InfoContext(ctx, "fleet call", "host", t.m.ID, "name", t.m.Name, "tool", tool, "call", res.CallID,
+	fleet.Called.Log(ctx, "host", t.m.ID, "name", t.m.Name, "tool", tool, "call", res.CallID,
 		"origin", t.origin.Name, "outcome", outcome, "took", time.Since(start).Round(time.Millisecond), "audit", res.Audit)
 	return res, err
 }

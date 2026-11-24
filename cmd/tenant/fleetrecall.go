@@ -210,14 +210,14 @@ func fleetWriteExtracts(ctx context.Context, turn episodic.Episode, calls []flee
 			err := fleetWriteEpisode(wctx, id, &ep)
 			cancel()
 			if err != nil {
-				fleetToolLog.WarnContext(ctx, "fleet: this turn's work on a machine did not go into its memory", "host", id, "err", err)
+				fleet.WorkNotRemembered.Log(ctx, "host", id, "err", err)
 			}
 		}
 	}()
 	select {
 	case <-done:
 	case <-time.After(fleetExtractWait):
-		fleetToolLog.InfoContext(ctx, "fleet: this turn's work goes into its machines' memory after the turn", "hosts", strings.Join(hosts, ","))
+		fleet.WorkRemembered.Log(ctx, "hosts", strings.Join(hosts, ","))
 	}
 }
 
@@ -291,7 +291,7 @@ func (t *fleetTarget) note(ctx context.Context, fact string) (string, bool, erro
 	if err != nil {
 		return fleetMemoryUnavailable(t.m, err) + " The note was not recorded anywhere.", true, nil
 	}
-	fleetToolLog.InfoContext(ctx, "fleet note", "host", t.m.ID, "name", t.m.Name, "origin", t.origin.Name)
+	fleet.NoteKept.Log(ctx, "host", t.m.ID, "name", t.m.Name, "origin", t.origin.Name)
 	return fmt.Sprintf("fleet: noted in the memory of %s. Nothing was sent to the machine.", t.m.Name), false, nil
 }
 

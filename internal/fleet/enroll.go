@@ -537,6 +537,7 @@ func (h *enrollHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		refuse(http.StatusForbidden, why.Reason, "enrollment refused")
 		return
 	}
+	Enrolled.Log(r.Context(), "name", m.Name, "machine", m.ID, "remote", r.RemoteAddr, "certificate", ref.Fingerprint)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(enrollResponse{ID: m.ID, Name: m.Name})
 }

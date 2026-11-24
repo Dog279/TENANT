@@ -203,7 +203,7 @@ func newRig(t *testing.T, tweak ...func(*Manager)) *rig {
 	watchLeaks(t)
 	r := &rig{master: newMaster(t)}
 	r.store.watchEvery = testWatch
-	mgr := must(newManager(ManagerConfig{Store: r.store, Identity: r.id, Role: "test", Log: quiet}))(t)
+	mgr := must(newManager(ManagerConfig{Store: r.store, Identity: r.id, Role: "test"}))(t)
 	mgr.addressEvery = testWatch
 	for _, f := range tweak {
 		f(mgr)
@@ -1348,7 +1348,7 @@ func TestLinkVersionMismatch(t *testing.T) {
 // process does.
 func TestSecondManagerLearnsWhoHoldsTheFleet(t *testing.T) {
 	r := newRig(t)
-	cfg := ManagerConfig{Store: Open(r.dir), Identity: r.id, Addr: r.addr, Role: "tui", Log: quiet}
+	cfg := ManagerConfig{Store: Open(r.dir), Identity: r.id, Addr: r.addr, Role: "tui"}
 	_, err := StartManager(cfg)
 	var held *HeldError
 	if !errors.As(err, &held) {

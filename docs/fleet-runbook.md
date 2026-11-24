@@ -59,6 +59,32 @@ The same init runs inside a running Tenant, from either of its own screens:
 
 Nothing answers on the fleet port but the pinned link and the enroll endpoint, both TLS 1.3.
 
+### What the master records
+
+The master's fleet has a log of its own, `fleet`: `tenant logs query log:fleet`, `/logs
+log:fleet` in the terminal app, or the dashboard's Logs page. It starts the moment this Tenant
+becomes a master, and a Tenant with no fleet has none.
+
+| In the fleet log | Events |
+|---|---|
+| this Tenant became a master; the addresses machines dial; the relay switch | `fleet/1001`, `5001`, `5002` |
+| the port open and closed (one activity, with its uptime), held by another process, not started | `fleet/1`, `2`, `3001` |
+| a code issued, a machine confirmed, renamed, revoked; a machine enrolled and waiting | `fleet/1002`, `1003` |
+| an enrollment or a confirmation refused; a spent code presented again | `fleet/2101`, `2102`, `3101` |
+| a machine connected, disconnected and why | `fleet/1101`, `1102` |
+| each call on a machine, with the hash of the machine's own audit record | `fleet/1201` |
+| each step of an update, and one that did not go through | `fleet/1301`, `2301` |
+| the machines' memory: open or unavailable, copies, forgets, and what went wrong | `fleet/3`, `2003`, `1401` to `1407`, `2401` to `2414` |
+
+The Security log keeps the audit record of each operator change and each refusal
+(`security/4321` to `4324`): who made it and from where. No line in either holds an enrollment
+code or the recovery identity. A change made by a `tenant fleet` command while nothing runs
+is still written to the fleet log before the command returns. `docs/EVENTS.md` has every
+event's meaning, cause and what to do.
+
+A child machine's own process has no log book: it keeps its audit log and writes to its own
+log and the system's.
+
 ## 1a. Where the machines reach the master: three routes (TEN-541)
 
 A machine always dials the master; the master never dials a machine. So only the master needs
@@ -218,7 +244,7 @@ advisory: a command runs as the account that owns `child.json`.
 
 Every call is in the machine's audit log (`<child dir>/audit/audit.jsonl`, hash-chained, and a
 line in the system log) before it runs. The master's own record of the call (`fleet` log,
-`fleet call`) carries the hash of that record, so the two can be laid side by side.
+event `fleet/1201`) carries the hash of that record, so the two can be laid side by side.
 
 ## 5. Revoking a machine
 
@@ -421,7 +447,7 @@ seconds each), so within a minute:
 - `/fleet` in the process that holds the fleet shows `offline, last seen <time>`, and
   `/fleet show <name>` there adds why the last link ended (`tenant fleet` in another process
   cannot tell online from offline);
-- that process's log has `fleet: link ended` with the machine's id and the reason;
+- the `fleet` log has "Machine <name> disconnected" (`fleet/1102`) with the reason;
 - `tenant child status` on the machine stops saying "connected to the master" and says
   "offline since …, trying again".
 

@@ -746,7 +746,7 @@ func TestATurnsExtractWhenTheMemoryCannotBeOpened(t *testing.T) {
 	entries, _ := hub.Snapshot()
 	found := false
 	for _, e := range entries {
-		if e.Msg == "fleet: this turn's work on a machine did not go into its memory" && e.Field("host") == l.web.id && strings.Contains(e.Field("err"), "the test closed it") {
+		if e.Field("event") == "fleet/2201" && e.Field("host") == l.web.id && strings.Contains(e.Field("err"), "the test closed it") {
 			found = true
 		}
 	}

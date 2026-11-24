@@ -5,6 +5,25 @@ Releases page.
 
 ## Unreleased
 
+- **The fleet has its own log.** A master's fleet wrote four audit records to the Security log
+  and a few free-form lines; setting up a fleet, its port opening and a machine connecting left
+  nothing where an operator looks. The fleet is now a catalogued log (`fleet`, 50 events; `tenant
+  logs query log:fleet`, `/logs log:fleet`, the dashboard's Logs page):
+  - **Setup:** this Tenant becoming a master, the addresses machines dial, a code issued, a
+    machine enrolled, confirmed, renamed or revoked, the relay switch. A change made by a
+    one-shot `tenant fleet` command is written before the command returns, so it is in the log
+    as a running Tenant's is. The Security log keeps the audit record of each, as before.
+  - **The port:** open and closed as one activity with its uptime, held by another process,
+    not started and why (once per cause), a refused handshake.
+  - **Machines:** connected, disconnected and why, a machine that sends what the link does not
+    allow.
+  - **Work:** each call on a machine with its outcome and the hash of the machine's own audit
+    record of it (`fleet/1201`, where the free-form `fleet call` line was), each step of an
+    update sent over the link, and one that did not go through.
+  - **Memory:** the machines' memory opened or unavailable and why, copies taken and restored,
+    forgets applied, and every warning that was a free-form line.
+  - No line holds an enrollment code or the recovery identity. A child machine's own process
+    has no log book: it keeps its audit log and writes to its own log and the system's.
 - **The dashboard can be served to the local network, for a site with no VPN (TEN-544).** It is
   off by default, and loopback with `/tailscale serve` stays the way in unless you turn this on.
   `/dashboard serve lan [HOST:PORT]` in the terminal app (typed at the keyboard), `--dashboard-lan`
