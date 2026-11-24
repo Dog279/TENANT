@@ -63,6 +63,11 @@ var SignInFailed = Events.Event(2105, event.Warning, "Access", "Sign-in with a w
 		"A typo, a token from before it changed, or someone guessing.",
 		"Use the token in <config>/dashboard-auth-token (or dashboard.auth). Many failures from an address you don't know mean someone is guessing.")
 
+var SourceRejected = Events.Event(2106, event.Warning, "Access", "Request from {remote} outside the local network rejected: {method} {route}", "remote", "method", "route").
+	Doc("A request reached the dashboard's LAN listener from an address that is not this computer, a private or link-local address, or a network in dashboard.lan.allow, and got 403.",
+		"The LAN listener is reachable from a wider network than the local one (a public address, a VPN or overlay range), or someone outside is probing it.",
+		"If the network is yours, add it to dashboard.lan.allow. Otherwise nothing: the request was refused. Bind the listener to one address (/dashboard serve lan ADDR) to keep it off the other interfaces.")
+
 // Operator actions on the pages.
 
 var ActionFailed = Events.Event(2201, event.Warning, "Action", "Dashboard action {action} failed: {err}", "action", "target", "err").

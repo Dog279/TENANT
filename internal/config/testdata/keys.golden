@@ -40,6 +40,10 @@ config.json: dashboard.addr
 config.json: dashboard.allowed_hosts
 config.json: dashboard.auth
 config.json: dashboard.enabled
+config.json: dashboard.lan
+config.json: dashboard.lan.addr
+config.json: dashboard.lan.allow
+config.json: dashboard.lan.enabled
 config.json: dashboard.tls_cert
 config.json: dashboard.tls_key
 config.json: embed

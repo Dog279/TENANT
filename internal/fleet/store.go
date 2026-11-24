@@ -318,6 +318,10 @@ func validName(s string) bool {
 	return true
 }
 
+// CheckAddresses reports why list cannot be the addresses children dial the
+// master at (SetAddresses), before anything is made for them.
+func CheckAddresses(list []string) error { return validAddresses(list) }
+
 // validAddresses checks a list of host:port addresses of the master.
 func validAddresses(list []string) error {
 	if len(list) > maxAddresses {

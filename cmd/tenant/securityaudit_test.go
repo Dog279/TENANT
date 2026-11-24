@@ -223,8 +223,19 @@ func TestConfiguredListeners(t *testing.T) {
 		Peer:      peerConfig{Listen: "192.168.1.2:9100"},
 	}
 	got := configuredListeners(lc)
-	if len(got) != 3 {
-		t.Fatalf("listeners = %d, want 3: %+v", len(got), got)
+	if len(got) != 4 {
+		t.Fatalf("listeners = %d, want 4: %+v", len(got), got)
+	}
+	// The dashboard's LAN listener is off unless asked for. On, it is HTTPS
+	// behind the dashboard's sign-in, so on every interface it is no finding.
+	if got[3].Name != "dashboard-lan" || got[3].Enabled {
+		t.Errorf("the LAN listener nobody asked for = %+v", got[3])
+	}
+	lc.Dashboard.LAN.Enabled = true
+	report := &securityAuditReport{Listeners: configuredListeners(lc)}
+	evaluateSecurityAudit(report)
+	if lan := report.Listeners[3]; !lan.Enabled || lan.Address != defaultDashboardLANAddr || lan.Loopback || !lan.TLS || !lan.Auth || hasSecurityFinding(report.Findings, "listener.dashboard-lan") {
+		t.Errorf("the LAN listener = %+v, findings %+v", lan, report.Findings)
 	}
 	if got[0].Name != "dashboard" || got[0].Loopback || !got[0].TLS || !got[0].Auth {
 		t.Errorf("dashboard listener = %+v", got[0])

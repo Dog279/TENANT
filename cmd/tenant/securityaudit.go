@@ -277,6 +277,18 @@ func configuredListeners(lc *launchConfig) []listenerAudit {
 	} else {
 		listeners = append(listeners, listenerAudit{Name: "peer", Enabled: false})
 	}
+	// The dashboard's second listener (TEN-544): HTTPS always, behind the
+	// dashboard's own sign-in, so on a non-loopback address it is no finding.
+	if lc.Dashboard.LAN.Enabled {
+		addr := lc.Dashboard.LAN.Addr
+		if addr == "" {
+			addr = defaultDashboardLANAddr
+		}
+		listeners = append(listeners, newListenerAudit("dashboard-lan", lc.Dashboard.IsEnabled(), addr, true, true,
+			"the dashboard for the local network: HTTPS always, the dashboard's sign-in, this computer and private source addresses only"))
+	} else {
+		listeners = append(listeners, listenerAudit{Name: "dashboard-lan", Enabled: false})
+	}
 	return listeners
 }
 

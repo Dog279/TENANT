@@ -44,7 +44,7 @@ func slashConfigure(m *model, line string) tea.Cmd {
 		}
 		// Fallback (no Secrets control wired): legacy skill menu.
 		if m.cfg.SkillConfig != nil {
-			m.sysChat(renderSkillList(m.cfg.SkillConfig.SkillList()))
+			m.sysChat(renderSkillList(m.cfg.SkillConfig.SkillList(), m.chat.Width))
 			m.sysChat("type `/configure <id>` to start an interactive walkthrough — e.g. `/configure gsuite`")
 		}
 		return nil

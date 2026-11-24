@@ -460,6 +460,97 @@ func TestRenderToolList_GroupedReadable(t *testing.T) {
 	}
 }
 
+// A long list fills the pane: the plugins go side by side, each whole, in as
+// many columns as the pane takes, every column starting at one place all the
+// way down. A narrower pane takes fewer columns, and one too narrow for two
+// gets the list one plugin after another, as before. No row is wider than the
+// pane, so nothing wraps, and the styled form shows what the plain one does.
+func TestRenderToolList_Columns(t *testing.T) {
+	var list []ToolInfo
+	for i, name := range []string{"fleet_list", "fleet_exec", "fleet_read_file", "fleet_write", "fleet_bg"} {
+		list = append(list, ToolInfo{Name: name, Plugin: "fleet", Enabled: i%2 == 0})
+	}
+	list = append(list, ToolInfo{Name: "os_sysinfo", Plugin: "os", Enabled: true},
+		ToolInfo{Name: "x_post", Plugin: "x"}, ToolInfo{Name: "x_get", Plugin: "x"}, ToolInfo{Name: "x_search", Plugin: "x"})
+	m := &model{cfg: Config{Tools: &fakeTools{list: list}}}
+	// body is the list under its heading, at a pane width.
+	body := func(width int) string {
+		t.Helper()
+		m.chat.Width = width
+		plain, styled := m.renderToolList()
+		if stripANSI(styled) != plain {
+			t.Fatalf("width %d: styled visible text != plain:\nplain=%q\nvis=%q", width, plain, stripANSI(styled))
+		}
+		_, plain, _ = strings.Cut(plain, "\n\n")
+		_, styled, _ = strings.Cut(styled, "\n\n")
+		for i, row := range strings.Split(styled, "\n") {
+			line := strings.Split(plain, "\n")[i]
+			if line != strings.TrimRight(line, " ") || width > 0 && (visibleRunes(line) > width || wrapLine(row, width) != row) {
+				t.Errorf("width %d: the row %q is wider than the pane, ends in spaces, or is moved by the pane's wrapping", width, line)
+			}
+		}
+		return plain
+	}
+	// rows joins a layout's rows, each column at its place.
+	rows := func(format string, cells ...[]any) string {
+		var out []string
+		for _, c := range cells {
+			out = append(out, strings.TrimRight(fmt.Sprintf(format, c...), " "))
+		}
+		return strings.Join(out, "\n")
+	}
+
+	// 21 + 4 + 16 + 4 + 14 = 59 cells: the three plugins side by side.
+	want := rows("%-25s%-20s%s",
+		[]any{"fleet (3/5 on)", "os (1/1 on)", "x (0/3 on)"},
+		[]any{"    ● fleet_list", "    ● os_sysinfo", "    ○ x_post"},
+		[]any{"    ○ fleet_exec", "", "    ○ x_get"},
+		[]any{"    ● fleet_read_file", "", "    ○ x_search"},
+		[]any{"    ○ fleet_write", "", ""},
+		[]any{"    ● fleet_bg", "", ""})
+	for _, width := range []int{59, 200} {
+		if got := body(width); got != want {
+			t.Fatalf("width %d:\n%s\nwant:\n%s", width, got, want)
+		}
+	}
+	// One cell short: two columns, the short plugins sharing the second.
+	want = rows("%-25s%s",
+		[]any{"fleet (3/5 on)", "os (1/1 on)"},
+		[]any{"    ● fleet_list", "    ● os_sysinfo"},
+		[]any{"    ○ fleet_exec", ""},
+		[]any{"    ● fleet_read_file", "x (0/3 on)"},
+		[]any{"    ○ fleet_write", "    ○ x_post"},
+		[]any{"    ● fleet_bg", "    ○ x_get"},
+		[]any{"", "    ○ x_search"})
+	for _, width := range []int{58, 41} {
+		if got := body(width); got != want {
+			t.Fatalf("width %d:\n%s\nwant:\n%s", width, got, want)
+		}
+	}
+	// Too narrow for two columns, or a width not known yet: one after another.
+	want = "fleet (3/5 on)\n    ● fleet_list\n    ○ fleet_exec\n    ● fleet_read_file\n    ○ fleet_write\n    ● fleet_bg\n\n" +
+		"os (1/1 on)\n    ● os_sysinfo\n\nx (0/3 on)\n    ○ x_post\n    ○ x_get\n    ○ x_search"
+	for _, width := range []int{40, 0} {
+		if got := body(width); got != want {
+			t.Fatalf("width %d:\n%s\nwant:\n%s", width, got, want)
+		}
+	}
+
+	// The plugin list (/skill list) takes the same layout, a line a block.
+	skills := []SkillConfigInfo{{ID: "gsuite", Label: "Google", Configured: true, Enabled: true}, {ID: "x", Label: "X"}, {ID: "discord", Label: "Discord", Configured: true}}
+	const head = "Skills (✓ configured, ● enabled):\n"
+	for width, want := range map[int]string{
+		80: "  ✓ gsuite — Google ●      ○ x — X      ✓ discord — Discord",
+		50: "  ✓ gsuite — Google ●      ✓ discord — Discord\n  ○ x — X",
+		40: "  ✓ gsuite — Google ●\n  ○ x — X\n  ✓ discord — Discord",
+		0:  "  ✓ gsuite — Google ●\n  ○ x — X\n  ✓ discord — Discord",
+	} {
+		if got := renderSkillList(skills, width); got != head+want {
+			t.Errorf("/skill list at width %d:\n%s\nwant:\n%s", width, got, head+want)
+		}
+	}
+}
+
 // --- /skill (singular) integration-config surface — TEN-64 ---
 
 type fakeSkillCfg struct {
@@ -1306,6 +1397,90 @@ func TestSlash_Dashboard(t *testing.T) {
 }
 
 // An Enable error surfaces to the feed instead of a bogus URL.
+// fakeDashLAN is a dashboard that can also be served to the local network.
+type fakeDashLAN struct {
+	*fakeDash
+	calls []string
+	on    string
+}
+
+func (f *fakeDashLAN) ServeLAN(addr string) (string, error) {
+	f.calls = append(f.calls, "serve "+addr)
+	if addr == "nine" {
+		return "", errors.New("nine is not a host:port address")
+	}
+	f.on = "dashboard: also serving the local network at https://192.168.1.5:9771"
+	return f.on, nil
+}
+
+func (f *fakeDashLAN) StopLAN() (string, error) {
+	f.calls, f.on = append(f.calls, "stop"), ""
+	return "dashboard: no longer served to the local network", nil
+}
+
+func (f *fakeDashLAN) LANStatus() string { return f.on }
+
+// /dashboard serve lan opens the dashboard to the local network, so it is the
+// operator's act at this keyboard: a line the app submits itself opens and
+// closes nothing. Typed, it takes an optional address, and /dashboard says
+// whether the network is served. A dashboard that cannot do it says so.
+func TestSlash_DashboardServeLAN(t *testing.T) {
+	d := &fakeDashLAN{fakeDash: &fakeDash{addr: "127.0.0.1:9770", running: true}}
+	m := newModel(context.Background(), Config{Dash: d})
+	m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+
+	for _, line := range []string{"/dashboard serve lan", "/dashboard serve lan 0.0.0.0:9771", "/dashboard serve off"} {
+		slash(m, line)
+		if len(d.calls) != 0 || !strings.Contains(lastMsg(m), "type this command here yourself") {
+			t.Fatalf("%q, not typed: calls %v, answered %q", line, d.calls, lastMsg(m))
+		}
+	}
+	slash(m, "/dashboard")
+	if !strings.Contains(lastMsg(m), "running at http://127.0.0.1:9770") || !strings.Contains(lastMsg(m), "not served to the local network") || !strings.Contains(lastMsg(m), "/dashboard serve lan") {
+		t.Fatalf("/dashboard with the LAN off said %q", lastMsg(m))
+	}
+
+	typeLine(m, "/dashboard serve lan")
+	typeLine(m, "/dashboard serve LAN 192.168.1.5:9443")
+	if got := strings.Join(d.calls, " | "); got != "serve  | serve 192.168.1.5:9443" {
+		t.Fatalf("the dashboard was asked for %q", got)
+	}
+	if !strings.Contains(lastMsg(m), "also serving the local network at https://192.168.1.5:9771") {
+		t.Fatalf("/dashboard serve lan said %q", lastMsg(m))
+	}
+	slash(m, "/dashboard status")
+	if !strings.Contains(lastMsg(m), "also serving the local network") {
+		t.Fatalf("/dashboard with the LAN on said %q", lastMsg(m))
+	}
+	typeLine(m, "/dashboard serve lan nine")
+	if !strings.Contains(lastMsg(m), "dashboard: nine is not a host:port address") {
+		t.Fatalf("a refused address said %q", lastMsg(m))
+	}
+	for _, line := range []string{"/dashboard serve", "/dashboard serve wan", "/dashboard serve lan a b", "/dashboard serve off now"} {
+		d.calls = nil
+		typeLine(m, line)
+		if len(d.calls) != 0 || !strings.Contains(lastMsg(m), "usage: /dashboard") {
+			t.Fatalf("%q: calls %v, answered %q", line, d.calls, lastMsg(m))
+		}
+	}
+	typeLine(m, "/dashboard serve off")
+	if len(d.calls) != 1 || d.calls[0] != "stop" || !strings.Contains(lastMsg(m), "no longer served") {
+		t.Fatalf("/dashboard serve off: calls %v, answered %q", d.calls, lastMsg(m))
+	}
+
+	// A dashboard without the second listener (another implementation).
+	plain := newModel(context.Background(), Config{Dash: &fakeDash{addr: "127.0.0.1:9770", running: true}})
+	plain.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	typeLine(plain, "/dashboard serve lan")
+	if !strings.Contains(lastMsg(plain), "not available in this session") {
+		t.Fatalf("a dashboard that cannot serve the LAN said %q", lastMsg(plain))
+	}
+	slash(plain, "/dashboard")
+	if strings.Contains(lastMsg(plain), "local network") {
+		t.Fatalf("a dashboard that cannot serve the LAN offers it: %q", lastMsg(plain))
+	}
+}
+
 func TestSlash_DashboardEnableError(t *testing.T) {
 	fd := &fakeDash{addr: "127.0.0.1:9770", enableErr: errors.New("bind failed")}
 	m := newModel(context.Background(), Config{Dash: fd})

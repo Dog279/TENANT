@@ -45,6 +45,18 @@ tenant fleet init --listen 0.0.0.0:9777 --address master.example.net:9777
   seconds, takes the fleet, and says `fleet: listening on …`. One process holds the links;
   another on the same dirs says which (`/fleet`, `tenant fleet list`).
 
+The same init runs inside a running Tenant, from either of its own screens:
+
+- **The terminal app:** `/fleet init [--listen ADDR] [--address HOST:PORT]...`. The app steps
+  aside while the recovery identity is shown on the terminal and typed back (the same step as
+  the command's), then comes back and says what `init` says. The identity is never in the
+  app's chat, its transcript or a log. Like every `/fleet` change it is typed at the keyboard.
+- **The dashboard:** the Fleet page of a Tenant with no fleet has **Set up the fleet**, with
+  the fleet port's address and the addresses machines dial filled in as `init` would choose
+  them. It takes a signed-in browser (never the API key) and makes everything but the
+  recovery key: that identity is not shown in a browser. Until `tenant fleet init` or
+  `/fleet init` at a terminal makes it, the page says no machine's memory is kept.
+
 Nothing answers on the fleet port but the pinned link and the enroll endpoint, both TLS 1.3.
 
 ## 1a. Where the machines reach the master: three routes (TEN-541)

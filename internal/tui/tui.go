@@ -452,6 +452,21 @@ type DashboardControl interface {
 	Status() (running bool, addr string)
 }
 
+// DashboardLANControl is the part of a DashboardControl that serves the
+// dashboard to the local network (/dashboard serve lan): a second listener,
+// HTTPS always, off until the operator turns it on. What it returns is ready
+// to show. Optional, so other DashboardControl implementations and test
+// fakes stay source-compatible.
+type DashboardLANControl interface {
+	// ServeLAN serves the running dashboard to the local network at addr (""
+	// keeps the address in use) and says where, and with which certificate.
+	ServeLAN(addr string) (string, error)
+	// StopLAN takes that listener down.
+	StopLAN() (string, error)
+	// LANStatus is the listener in words, "" while it is off.
+	LANStatus() string
+}
+
 // TailscaleControl powers /tailscale: publish the loopback dashboard onto the
 // operator's tailnet via `tailscale serve` (TEN-233) — a reverse proxy, so the
 // dashboard stays bound to 127.0.0.1 (no 0.0.0.0, no cert/token to manage) and
@@ -1552,6 +1567,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if sc, ok := msg.(sysChatMsg); ok {
 		m.sysChat(sc.text)
 		return m, nil
+	}
+	if in, ok := msg.(fleetInitMsg); ok {
+		return m, in.next()
 	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:

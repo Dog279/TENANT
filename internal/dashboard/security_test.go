@@ -295,6 +295,7 @@ var reviewedMutations = map[string]confirmGate{
 	// replacing a machine's settings and letting the agent do more on it ask.
 	"POST /fleet/confirm":      noStep,
 	"POST /fleet/add":          noStep, // a code joins nothing until its machine's six digits are typed (TEN-541)
+	"POST /fleet/init":         noStep, // opens the fleet port and nothing else: no machine joins without a code and its six digits
 	"POST /fleet/rename":       noStep,
 	"POST /fleet/revoke":       always,
 	"POST /fleet/permission":   unless("mode", "ask", "deny"),
@@ -480,7 +481,8 @@ func TestRouteInventory(t *testing.T) {
 // says it ("" when the request got through to a handler).
 func envelope(rec *httptest.ResponseRecorder) string {
 	for reason, msg := range map[string]string{"host": "unrecognized dashboard host", "origin": "cross-origin request rejected",
-		"token": "missing or invalid bearer token", "csrf": "CSRF validation failed"} {
+		"token": "missing or invalid bearer token", "csrf": "CSRF validation failed",
+		"source": "the dashboard is served to the local network only"} {
 		if strings.Contains(rec.Body.String(), `{"error":"`+msg+`"}`) {
 			return reason
 		}

@@ -141,8 +141,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   int(sessionTTL / time.Second),
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		// Secure only when TLS is configured; loopback HTTP is the common case.
-		Secure: s.cfg.TLSCert != "" && s.cfg.TLSKey != "",
+		// Secure whenever the request came over TLS (always, on the LAN
+		// listener); loopback HTTP is the common case.
+		Secure: s.overTLS(r),
 	})
 	_ = catalog.SignedIn.Audit(auditCtx(r), "remote", r.RemoteAddr, "actor", "operator", "surface", "dashboard")
 	http.Redirect(w, r, safeNext(r.FormValue("next")), http.StatusSeeOther)

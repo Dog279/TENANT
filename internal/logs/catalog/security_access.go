@@ -99,9 +99,15 @@ var SignedOut = Security.Event(4302, event.Info, "Access", "Dashboard sign-out f
 
 var AccessRefused = Security.Event(4303, event.Warning, "Access", "Request from {remote} refused: {reason}", "reason", "remote", "method", "route").
 	Keywords("audit.failure").
-	Doc("A request was refused before it reached anything (reason: token, a wrong dashboard or peer token; sign_in, a wrong token on the sign-in form; csrf; host; origin). A request with no token at all is not recorded here: the dashboard log has it.",
+	Doc("A request was refused before it reached anything (reason: token, a wrong dashboard or peer token; sign_in, a wrong token on the sign-in form; csrf; host; origin; source, an address outside the local network on the dashboard's LAN listener). A request with no token at all is not recorded here: the dashboard log has it.",
 		"A token that changed, a script with an old one, a page on another site, a name the dashboard doesn't answer to, or someone probing.",
 		"Many from an address you don't know mean someone is guessing: keep the dashboard and the peer listener off public networks. See the dashboard or peering log's event for the same request.")
+
+var DashboardLAN = Security.Event(4304, event.Info, "Access", "The dashboard's LAN listener turned {state}", "state", "address").
+	Keywords("audit.success").
+	Doc("The operator turned serving the dashboard to the local network on or off. On, other computers on the network can reach the sign-in form over HTTPS at address; nothing but loopback and the tailnet can when it is off.",
+		"/dashboard serve lan or /dashboard serve off in the terminal, the --dashboard-lan flag, or dashboard.lan in config.json at launch.",
+		"None when intended. Otherwise /dashboard serve off, and check who can edit config.json.")
 
 var PeerPaired = Security.Event(4311, event.Info, "Peering", "Paired with peer {peer}", "peer", "instance", "direction").
 	Keywords("audit.success").

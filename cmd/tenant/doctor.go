@@ -1466,7 +1466,7 @@ func checkDashboard(ctx context.Context, e *doctorEnv) checkResult {
 			Detail: fmt.Sprintf("dashboard healthy at %s, but its sign-in key is %d characters", addr, len(key)),
 			Fix:    "use 32 or more random characters in dashboard.auth, or delete dashboard-auth-token and restart to generate one"}
 	}
-	return checkResult{Status: statusOK, Detail: "dashboard healthy at " + addr}
+	return checkResult{Status: statusOK, Detail: "dashboard healthy at " + addr + lanNote(e.c.cfgDir, e.lc)}
 }
 
 // serveStuckTurnSecs is how long an in-flight turn may run before checkServe

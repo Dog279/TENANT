@@ -29,6 +29,18 @@ type fakeFleet struct {
 	identity string
 }
 
+// Init makes the fake a master, as the real control does.
+func (f *fakeFleet) Init(listen string, addresses []string, by string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, strings.Join([]string{"init", listen, strings.Join(addresses, " "), by}, "|"))
+	if f.err != nil {
+		return f.err
+	}
+	f.view.Master, f.view.NoRecovery, f.view.Holder = true, true, "no process holds the fleet yet"
+	return nil
+}
+
 func (f *fakeFleet) View() FleetView {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -46,6 +46,13 @@ func newFleetDash(t *testing.T, stg settings) *fleetDash {
 	d := &fleetDash{t: t, ev: captureChannelEvents(t), l: newFleetLab(t)}
 	d.l.settings(stg)
 	d.mgr = d.l.master()
+	return d.up()
+}
+
+// up starts the lab's dashboard and signs a browser in to it.
+func (d *fleetDash) up() *fleetDash {
+	t := d.t
+	t.Helper()
 	dm := &dashboardManager{
 		base: context.Background(),
 		// The dashboard also answers to a name a proxy publishes it under, as it

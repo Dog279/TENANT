@@ -32,6 +32,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"tenant/internal/logs/catalog"
 )
@@ -41,6 +42,14 @@ import (
 type FleetControl interface {
 	// View is the whole page's state in one read (called per GET).
 	View() FleetView
+	// Init makes this Tenant a fleet master (`tenant fleet init`), all but the
+	// recovery key, which is made at a terminal: listen is where the fleet port
+	// binds ("" keeps what is set), addresses what its machines dial (none
+	// keeps the list, or guesses a first one). by says who asked, for the
+	// Security record. On a Tenant that is a master already it replaces
+	// nothing. The dashboard calls it from one place, for a signed-in browser
+	// (handleFleetInit).
+	Init(listen string, addresses []string, by string) error
 	// Confirm makes a pending machine a confirmed one: code is the six digits
 	// that machine shows on its own screen, set the category=mode pairs the
 	// operator chose for it alone. The dashboard calls it from one place, for a
@@ -110,10 +119,17 @@ const (
 
 // FleetView is the Fleet page in one struct.
 type FleetView struct {
-	Master bool   // this Tenant has a fleet
-	Holder string // which process holds the fleet, in words
-	Here   bool   // it is this one, which knows which machines are online
-	Err    error  // why the machines can't be listed; the page says so plainly
+	Master bool // this Tenant has a fleet
+	// Listen and Dial are what Set up the fleet starts from, on a Tenant with
+	// no fleet: where the fleet port would bind, and the addresses a new
+	// machine would be told to dial, separated by commas.
+	Listen, Dial string
+	// NoRecovery: the fleet has no recovery key, so no machine's memory is
+	// kept. It is made at a terminal, never on this page.
+	NoRecovery bool
+	Holder     string // which process holds the fleet, in words
+	Here       bool   // it is this one, which knows which machines are online
+	Err        error  // why the machines can't be listed; the page says so plainly
 	// NoFresh: what a machine confirmed now would start with can't be worked
 	// out (the fleet's rules can't be read), so no machine has a drift to show
 	// and none can be confirmed or given a fresh copy.
@@ -307,6 +323,10 @@ func (s *Server) mountFleetSSR(mux *http.ServeMux) {
 	// step. Revoking, replacing a machine's settings, and anything that lets
 	// the agent do more on it ask first (DESIGN.md §5).
 	mux.HandleFunc("POST /fleet/confirm", s.handleFleetConfirm)
+	// Making this Tenant a master opens the fleet port and nothing else: no
+	// machine joins without a code and its six digits. It needs a signed-in
+	// browser, never the API key (handleFleetInit).
+	mux.HandleFunc("POST /fleet/init", s.handleFleetInit)
 	// A code joins nothing by itself: the machine that spends it waits until
 	// its six digits are typed on this computer. Making one needs a signed-in
 	// browser, never the API key (handleFleetAdd).
@@ -337,7 +357,11 @@ const (
 	// fleetAddSignIn is the 403 a request to make a code gets without a
 	// signed-in browser behind it.
 	fleetAddSignIn = "No code was made: a code for a new machine is made from the Fleet page in a signed-in browser, or with tenant fleet enroll in a terminal on the computer running Tenant."
-	fleetAddName   = "No code was made. A name is up to 63 letters, digits, dots, dashes or underscores, starts with a letter or a digit, doesn't look like a machine id (m and 16 hex digits), and isn't another machine's."
+	// fleetInitSignIn is the 403 a request to make this Tenant a master gets
+	// without a signed-in browser behind it.
+	fleetInitSignIn = "Nothing changed: a fleet is set up from the Fleet page in a signed-in browser, or with tenant fleet init in a terminal on the computer running Tenant."
+	fleetInitFailed = "The fleet couldn't be set up. The Logs page has the reason."
+	fleetAddName    = "No code was made. A name is up to 63 letters, digits, dots, dashes or underscores, starts with a letter or a digit, doesn't look like a machine id (m and 16 hex digits), and isn't another machine's."
 )
 
 type fleetPageData struct {
@@ -498,6 +522,53 @@ func (s *Server) handleFleetConfirm(w http.ResponseWriter, r *http.Request) {
 	s.fleetDone(w, r, m.ID, m.Name+" is confirmed. Your agent can work on it now, as its approval settings say.", "")
 }
 
+// signedInBrowser is the session of a request a signed-in browser sent from
+// the dashboard's own page: a live sign-in cookie and the page's anti-forgery
+// check (an Origin equal to the dashboard's). The API key is not one.
+func (s *Server) signedInBrowser(r *http.Request) (session string, ok bool) {
+	c, err := r.Cookie(dashCookieName)
+	if err != nil || !s.validSession(c.Value) || r.Header.Get("Origin") == "" || !s.checkOrigin(r) {
+		return "", false
+	}
+	return c.Value, true
+}
+
+// maxFleetAddresses bounds the addresses field before it is split.
+const maxFleetAddresses = 2048
+
+// handleFleetInit is POST /fleet/init (listen, addresses): Set up the fleet.
+// It makes this Tenant a fleet master as `tenant fleet init` does, all but
+// the recovery key: that key's identity is shown once and typed back at a
+// terminal, and this page neither shows nor takes it, so until it is made
+// there the page says no machine's memory is kept.
+//
+// It takes a signed-in browser's session only, as Add machine does: the API
+// key makes no fleet. It opens the fleet port; no machine joins by it without
+// a code and, on this computer, its six digits (handleFleetConfirm).
+func (s *Server) handleFleetInit(w http.ResponseWriter, r *http.Request) {
+	if s.fleet == nil {
+		s.fleetDone(w, r, "", "", "")
+		return
+	}
+	session, ok := s.signedInBrowser(r)
+	if !ok {
+		refused(r, "fleet set up without a signed-in browser", "POST /fleet/init")
+		http.Error(w, fleetInitSignIn, http.StatusForbidden)
+		return
+	}
+	listen, dial := strings.TrimSpace(r.FormValue("listen")), r.FormValue("addresses")
+	if len(listen) > 255 || len(dial) > maxFleetAddresses {
+		s.fleetDone(w, r, "", "", "Nothing changed: that is too long for an address.")
+		return
+	}
+	addresses := strings.FieldsFunc(dial, func(c rune) bool { return c == ',' || c == ';' || unicode.IsSpace(c) })
+	if err := s.fleet.Init(listen, addresses, "dashboard session "+sessionTag(session)+" from "+r.RemoteAddr); err != nil {
+		s.fleetDone(w, r, "", "", s.flashFor(r.Context(), "fleet init", err, fleetInitFailed))
+		return
+	}
+	s.fleetDone(w, r, "", "This Tenant is a fleet master. Add the first machine below.", "")
+}
+
 // maxFleetName bounds the name field before it reaches the fleet, which
 // takes 63 characters at most (the same check `tenant fleet enroll` makes).
 const maxFleetName = 63
@@ -518,8 +589,8 @@ func (s *Server) handleFleetAdd(w http.ResponseWriter, r *http.Request) {
 		s.fleetDone(w, r, "", "", "")
 		return
 	}
-	c, err := r.Cookie(dashCookieName)
-	if err != nil || !s.validSession(c.Value) || r.Header.Get("Origin") == "" || !s.checkOrigin(r) {
+	session, ok := s.signedInBrowser(r)
+	if !ok {
 		refused(r, "fleet code without a signed-in browser", "POST /fleet/add")
 		http.Error(w, fleetAddSignIn, http.StatusForbidden)
 		return
@@ -533,7 +604,7 @@ func (s *Server) handleFleetAdd(w http.ResponseWriter, r *http.Request) {
 		s.fleetDone(w, r, "", "", "Choose whether it runs as you or from boot. No code was made.")
 		return
 	}
-	e, err := s.fleet.Enroll(name, runs == "boot", "dashboard session "+sessionTag(c.Value)+" from "+r.RemoteAddr)
+	e, err := s.fleet.Enroll(name, runs == "boot", "dashboard session "+sessionTag(session)+" from "+r.RemoteAddr)
 	if err != nil {
 		s.fleetDone(w, r, "", "", s.flashFor(r.Context(), "fleet add", err, fleetAddName))
 		return
