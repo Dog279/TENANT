@@ -460,6 +460,97 @@ func TestRenderToolList_GroupedReadable(t *testing.T) {
 	}
 }
 
+// A long list fills the pane: the plugins go side by side, each whole, in as
+// many columns as the pane takes, every column starting at one place all the
+// way down. A narrower pane takes fewer columns, and one too narrow for two
+// gets the list one plugin after another, as before. No row is wider than the
+// pane, so nothing wraps, and the styled form shows what the plain one does.
+func TestRenderToolList_Columns(t *testing.T) {
+	var list []ToolInfo
+	for i, name := range []string{"fleet_list", "fleet_exec", "fleet_read_file", "fleet_write", "fleet_bg"} {
+		list = append(list, ToolInfo{Name: name, Plugin: "fleet", Enabled: i%2 == 0})
+	}
+	list = append(list, ToolInfo{Name: "os_sysinfo", Plugin: "os", Enabled: true},
+		ToolInfo{Name: "x_post", Plugin: "x"}, ToolInfo{Name: "x_get", Plugin: "x"}, ToolInfo{Name: "x_search", Plugin: "x"})
+	m := &model{cfg: Config{Tools: &fakeTools{list: list}}}
+	// body is the list under its heading, at a pane width.
+	body := func(width int) string {
+		t.Helper()
+		m.chat.Width = width
+		plain, styled := m.renderToolList()
+		if stripANSI(styled) != plain {
+			t.Fatalf("width %d: styled visible text != plain:\nplain=%q\nvis=%q", width, plain, stripANSI(styled))
+		}
+		_, plain, _ = strings.Cut(plain, "\n\n")
+		_, styled, _ = strings.Cut(styled, "\n\n")
+		for i, row := range strings.Split(styled, "\n") {
+			line := strings.Split(plain, "\n")[i]
+			if line != strings.TrimRight(line, " ") || width > 0 && (visibleRunes(line) > width || wrapLine(row, width) != row) {
+				t.Errorf("width %d: the row %q is wider than the pane, ends in spaces, or is moved by the pane's wrapping", width, line)
+			}
+		}
+		return plain
+	}
+	// rows joins a layout's rows, each column at its place.
+	rows := func(format string, cells ...[]any) string {
+		var out []string
+		for _, c := range cells {
+			out = append(out, strings.TrimRight(fmt.Sprintf(format, c...), " "))
+		}
+		return strings.Join(out, "\n")
+	}
+
+	// 21 + 4 + 16 + 4 + 14 = 59 cells: the three plugins side by side.
+	want := rows("%-25s%-20s%s",
+		[]any{"fleet (3/5 on)", "os (1/1 on)", "x (0/3 on)"},
+		[]any{"    ● fleet_list", "    ● os_sysinfo", "    ○ x_post"},
+		[]any{"    ○ fleet_exec", "", "    ○ x_get"},
+		[]any{"    ● fleet_read_file", "", "    ○ x_search"},
+		[]any{"    ○ fleet_write", "", ""},
+		[]any{"    ● fleet_bg", "", ""})
+	for _, width := range []int{59, 200} {
+		if got := body(width); got != want {
+			t.Fatalf("width %d:\n%s\nwant:\n%s", width, got, want)
+		}
+	}
+	// One cell short: two columns, the short plugins sharing the second.
+	want = rows("%-25s%s",
+		[]any{"fleet (3/5 on)", "os (1/1 on)"},
+		[]any{"    ● fleet_list", "    ● os_sysinfo"},
+		[]any{"    ○ fleet_exec", ""},
+		[]any{"    ● fleet_read_file", "x (0/3 on)"},
+		[]any{"    ○ fleet_write", "    ○ x_post"},
+		[]any{"    ● fleet_bg", "    ○ x_get"},
+		[]any{"", "    ○ x_search"})
+	for _, width := range []int{58, 41} {
+		if got := body(width); got != want {
+			t.Fatalf("width %d:\n%s\nwant:\n%s", width, got, want)
+		}
+	}
+	// Too narrow for two columns, or a width not known yet: one after another.
+	want = "fleet (3/5 on)\n    ● fleet_list\n    ○ fleet_exec\n    ● fleet_read_file\n    ○ fleet_write\n    ● fleet_bg\n\n" +
+		"os (1/1 on)\n    ● os_sysinfo\n\nx (0/3 on)\n    ○ x_post\n    ○ x_get\n    ○ x_search"
+	for _, width := range []int{40, 0} {
+		if got := body(width); got != want {
+			t.Fatalf("width %d:\n%s\nwant:\n%s", width, got, want)
+		}
+	}
+
+	// The plugin list (/skill list) takes the same layout, a line a block.
+	skills := []SkillConfigInfo{{ID: "gsuite", Label: "Google", Configured: true, Enabled: true}, {ID: "x", Label: "X"}, {ID: "discord", Label: "Discord", Configured: true}}
+	const head = "Skills (✓ configured, ● enabled):\n"
+	for width, want := range map[int]string{
+		80: "  ✓ gsuite — Google ●      ○ x — X      ✓ discord — Discord",
+		50: "  ✓ gsuite — Google ●      ✓ discord — Discord\n  ○ x — X",
+		40: "  ✓ gsuite — Google ●\n  ○ x — X\n  ✓ discord — Discord",
+		0:  "  ✓ gsuite — Google ●\n  ○ x — X\n  ✓ discord — Discord",
+	} {
+		if got := renderSkillList(skills, width); got != head+want {
+			t.Errorf("/skill list at width %d:\n%s\nwant:\n%s", width, got, head+want)
+		}
+	}
+}
+
 // --- /skill (singular) integration-config surface — TEN-64 ---
 
 type fakeSkillCfg struct {

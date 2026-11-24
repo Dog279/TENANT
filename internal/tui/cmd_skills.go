@@ -41,7 +41,7 @@ func slashSkill(m *model, line string) tea.Cmd {
 	sub, rest := firstField(arg)
 	switch strings.ToLower(sub) {
 	case "", "list":
-		m.sysChat(renderSkillList(m.cfg.SkillConfig.SkillList()))
+		m.sysChat(renderSkillList(m.cfg.SkillConfig.SkillList(), m.chat.Width))
 	case "show":
 		id := strings.TrimSpace(rest)
 		if id == "" {
@@ -598,36 +598,111 @@ func (m *model) renderToolList() (string, string) {
 		s.WriteString(cDim.Render(line) + "\n")
 	}
 
+	// Each plugin is a block: its name and count, then its tools. The blocks
+	// go side by side across the pane, as many columns as it takes.
+	var blocks [][]listLine
 	seen := map[string]bool{}
 	for _, t := range list {
 		if seen[t.Plugin] {
 			continue
 		}
 		seen[t.Plugin] = true
-		// Collect this plugin's tools (preserve order) + enabled count.
-		var tools []ToolInfo
+		var tools []listLine
 		on := 0
-		for _, u := range list {
-			if u.Plugin == t.Plugin {
-				tools = append(tools, u)
-				if u.Enabled {
-					on++
-				}
+		for _, u := range list { // this plugin's tools, in order
+			if u.Plugin != t.Plugin {
+				continue
 			}
-		}
-		count := fmt.Sprintf("(%d/%d on)", on, len(tools))
-		p.WriteString(fmt.Sprintf("\n%s %s\n", t.Plugin, count))
-		s.WriteString("\n" + cKey.Render(t.Plugin) + " " + cDim.Render(count) + "\n")
-		for _, u := range tools {
-			p.WriteString("    " + mark(u.Enabled) + " " + u.Name + "\n")
 			name := cName.Render(u.Name)
-			if !u.Enabled {
+			if u.Enabled {
+				on++
+			} else {
 				name = cDim.Render(u.Name)
 			}
-			s.WriteString("    " + markStyled(u.Enabled) + " " + name + "\n")
+			tools = append(tools, listLine{"    " + mark(u.Enabled) + " " + u.Name, "    " + markStyled(u.Enabled) + " " + name})
+		}
+		count := fmt.Sprintf("(%d/%d on)", on, len(tools))
+		head := listLine{t.Plugin + " " + count, cKey.Render(t.Plugin) + " " + cDim.Render(count)}
+		blocks = append(blocks, append([]listLine{head}, tools...))
+	}
+	bp, bs := flowColumns(blocks, 1, m.chat.Width)
+	return p.String() + "\n" + bp, s.String() + "\n" + bs
+}
+
+// colGap is the space between two columns of a list.
+const colGap = 4
+
+// listLine is one line of a list in both forms: as text, and as drawn.
+type listLine struct{ plain, styled string }
+
+// flowColumns lays a list's blocks out across a pane of width cells, in as
+// many columns as it takes side by side. The blocks keep their order and
+// stay whole: they run down the first column, then the next, the columns as
+// even in height as whole blocks allow, with between blank lines parting two
+// blocks in a column. Each column starts at one place all the way down, a
+// gap after the widest line of the column before it. A pane that takes one
+// column (or whose width is not known yet) gets the blocks one after another.
+func flowColumns(blocks [][]listLine, between, width int) (plain, styled string) {
+	var cols [][]listLine
+	var widths []int
+	for n := len(blocks); n >= 1; n-- { // the most columns that fit: the least height
+		cols, widths = packColumns(blocks, between, n), nil
+		need := colGap * (len(cols) - 1)
+		for _, col := range cols {
+			w := 0
+			for _, l := range col {
+				w = max(w, visibleRunes(l.plain))
+			}
+			widths = append(widths, w)
+			need += w
+		}
+		if need <= width {
+			break
 		}
 	}
-	return strings.TrimRight(p.String(), "\n"), strings.TrimRight(s.String(), "\n")
+	rows := 0
+	for _, col := range cols {
+		rows = max(rows, len(col))
+	}
+	var p, s strings.Builder
+	for r := 0; r < rows; r++ {
+		pad := 0 // written only before a cell, so no row ends in spaces
+		for i, col := range cols {
+			if r < len(col) && col[r].plain != "" {
+				p.WriteString(strings.Repeat(" ", pad) + col[r].plain)
+				s.WriteString(strings.Repeat(" ", pad) + col[r].styled)
+				pad = -visibleRunes(col[r].plain)
+			}
+			pad += widths[i] + colGap
+		}
+		if r < rows-1 {
+			p.WriteByte('\n')
+			s.WriteByte('\n')
+		}
+	}
+	return p.String(), s.String()
+}
+
+// packColumns puts blocks, whole and in order, into at most n columns of the
+// least height that takes them, between blank lines parting two blocks.
+func packColumns(blocks [][]listLine, between, n int) [][]listLine {
+	h := 0
+	for _, b := range blocks {
+		h = max(h, len(b))
+	}
+	for ; ; h++ {
+		var cols [][]listLine
+		for _, b := range blocks {
+			if last := len(cols) - 1; last >= 0 && len(cols[last])+between+len(b) <= h {
+				cols[last] = append(append(cols[last], make([]listLine, between)...), b...)
+			} else {
+				cols = append(cols, append([]listLine(nil), b...))
+			}
+		}
+		if len(cols) <= n {
+			return cols
+		}
+	}
 }
 
 // firstField splits "<word> <rest>" on the first whitespace run. Used
@@ -648,12 +723,11 @@ func firstField(s string) (word, rest string) {
 // get a trailing "[legacy]" marker so operators know to use `tenant setup`.
 // Audit P1: this surface keeps /skill list actionable even when the
 // new catalog is empty.
-func renderSkillList(infos []SkillConfigInfo) string {
+func renderSkillList(infos []SkillConfigInfo, width int) string {
 	if len(infos) == 0 {
 		return "no skills available (build is missing the skill catalog)"
 	}
-	var b strings.Builder
-	b.WriteString("Skills (✓ configured, ● enabled):\n")
+	var blocks [][]listLine
 	for _, s := range infos {
 		mark := "○"
 		if s.Configured {
@@ -667,9 +741,11 @@ func renderSkillList(infos []SkillConfigInfo) string {
 		if s.Legacy {
 			legacy = "  [legacy — use `tenant setup`]"
 		}
-		fmt.Fprintf(&b, "  %s %s — %s%s%s\n", mark, s.ID, s.Label, state, legacy)
+		line := fmt.Sprintf("  %s %s — %s%s%s", mark, s.ID, s.Label, state, legacy)
+		blocks = append(blocks, []listLine{{line, line}})
 	}
-	return strings.TrimRight(b.String(), "\n")
+	plain, _ := flowColumns(blocks, 0, width)
+	return "Skills (✓ configured, ● enabled):\n" + plain
 }
 
 // skillCommands are the tool toggles, the T4 skill library and integration

@@ -5,6 +5,10 @@ Releases page.
 
 ## Unreleased
 
+- **`/tools` and `/skill list` fill the width of the pane.** The plugins go side by side, each
+  whole with its tools under it, in as many straight columns as the pane takes, so a long list
+  takes a fraction of the scrolling (the built-in tools fit one screen in a wide window). A
+  narrow pane takes fewer columns, down to the one list as before.
 - **A fleet can be set up from the terminal app and from the dashboard.** Until now only
   `tenant fleet init` made a Tenant a fleet master, and `/fleet` and the Fleet page told you to
   run it. `/fleet init [--listen ADDR] [--address HOST:PORT]...` now does the same in the
