@@ -5,3 +5,8 @@
 # False positive: the archtest layer table lists "internal/fsperm" right after
 # "internal/secrets", which the generic rule reads as a keyword and a key.
 c696604850cd28c21ae8e0844cba14928ce09074:internal/archtest/rules.go:generic-api-key:66
+# False positive: the made-up sign-in key of the dashboard LAN tests, a
+# constant typed into the test file (the words "lan test key" and a run of
+# digits and letters). It was never a credential; the test now uses a short
+# one the generic rule does not match.
+eb69a44f95d432129be3ed795f4a0a84690359d5:cmd/tenant/dashboardlan_test.go:generic-api-key:30

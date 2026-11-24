@@ -27,7 +27,9 @@ import (
 	"tenant/internal/logs/catalog"
 )
 
-const lanTestKey = "lan-test-key-0123456789abcdef0123456789"
+// lanTestKey is the lab's sign-in key: made up, and plainly not a credential,
+// so the secret scan does not take it for one.
+const lanTestKey = "lan-test-key"
 
 var lanURL = regexp.MustCompile(`https://127\.0\.0\.1:\d+`)
 var lanFingerprint = regexp.MustCompile(`SHA-256 fingerprint ((?:[0-9A-F]{2}:){31}[0-9A-F]{2})`)
