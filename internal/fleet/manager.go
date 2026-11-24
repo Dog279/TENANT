@@ -6,12 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,10 +39,6 @@ type ManagerConfig struct {
 	Role string
 	// Refused and Alert are the enroll endpoint's audit (NewEnrollHandler).
 	Refused, Alert func(Refusal)
-	// Log gets what an operator may want on record: links made and ended and
-	// why, handshakes refused, a machine that sends what the link does not
-	// allow. Nil is the process logger.
-	Log *slog.Logger
 	// Connected, when not nil, is told the id of each machine whose link is
 	// up, once per link, on a goroutine of its own: the master's memory
 	// compares its copy with the machine's then (TEN-532).
@@ -106,7 +103,6 @@ type MachineStatus struct {
 type Manager struct {
 	cfg    ManagerConfig
 	store  *Store
-	log    *slog.Logger
 	tls    *tls.Config
 	holder string // the holder file
 
@@ -164,13 +160,9 @@ func newManager(cfg ManagerConfig) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	log := cfg.Log
-	if log == nil {
-		log = slog.Default()
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Manager{
-		cfg: cfg, store: cfg.Store, log: log, tls: tlsCfg,
+		cfg: cfg, store: cfg.Store, tls: tlsCfg,
 		holder:      filepath.Join(filepath.Dir(cfg.Store.path), holderFileName),
 		linkVersion: LinkVersion, inFlight: defaultInFlight, callTime: defaultCallTime, helloTime: helloTime,
 		headerTime: httplimits.ReadHeaderTimeout, addressEvery: 2 * time.Second,
@@ -203,12 +195,30 @@ func (m *Manager) release() {
 	_ = m.lock.Release()
 }
 
+// label is a machine's name for the fleet log, or its id when fleet.json
+// cannot say.
+func (m *Manager) label(id string) string {
+	if mach, err := m.store.Machine(id); err == nil && mach.Name != "" {
+		return mach.Name
+	}
+	return id
+}
+
+// serverErrors files the fleet port's HTTP server's own error log (a refused
+// TLS handshake, mostly) in the fleet log.
+type serverErrors struct{ ctx context.Context }
+
+func (w serverErrors) Write(p []byte) (int, error) {
+	ServerError.Log(w.ctx, "err", strings.TrimSpace(string(p)))
+	return len(p), nil
+}
+
 // serve starts the manager on a listener it now owns.
 func (m *Manager) serve(ln net.Listener) {
 	m.ln, m.started = ln, time.Now()
 	b, _ := json.Marshal(Holder{PID: os.Getpid(), Role: m.cfg.Role, Address: ln.Addr().String(), Since: m.started.UTC().Truncate(time.Second)})
 	if err := writePrivate(m.holder, append(b, '\n')); err != nil {
-		m.log.Warn("fleet: could not record who holds the fleet", "err", err)
+		HolderNotRecorded.Log(m.ctx, "err", err)
 	}
 
 	mux := http.NewServeMux()
@@ -231,7 +241,7 @@ func (m *Manager) serve(ln net.Listener) {
 	// and lives by the transport's deadlines.
 	m.srv.ReadHeaderTimeout = m.headerTime
 	m.srv.ReadTimeout, m.srv.WriteTimeout, m.srv.IdleTimeout = 3*m.headerTime, 3*m.headerTime, 3*m.headerTime
-	m.srv.ErrorLog = slog.NewLogLogger(m.log.Handler(), slog.LevelWarn) // refused handshakes are worth a line
+	m.srv.ErrorLog = log.New(serverErrors{m.ctx}, "", 0) // refused handshakes are worth a line
 	// Seeded with the list as it is: every child is sent it when it connects.
 	pushed, _ := m.store.Addresses()
 	m.wg.Add(3)
@@ -540,7 +550,7 @@ func (m *Manager) serveLink(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		greeted()
 		m.wg.Done()
-		m.log.Debug("fleet: link not upgraded", "machine", mach.ID, "err", err)
+		LinkNotUpgraded.Log(m.ctx, "machine", mach.ID, "remote", r.RemoteAddr, "err", err)
 		return
 	}
 	l := &link{m: m, id: mach.ID, remote: r.RemoteAddr, slots: make(chan struct{}, m.inFlight), calls: map[string]*call{}}
@@ -571,7 +581,7 @@ func (m *Manager) serveLink(w http.ResponseWriter, r *http.Request) {
 		l.refuse(err, true)
 		return
 	}
-	m.log.Info("fleet: machine connected", "machine", l.id, "remote", l.remote, "link", l.version)
+	Connected.Log(m.ctx, "name", m.label(l.id), "machine", l.id, "remote", l.remote, "link", l.version)
 	if m.cfg.Connected != nil {
 		go m.cfg.Connected(l.id)
 	}
@@ -619,7 +629,7 @@ func (m *Manager) ended(l *link) {
 		m.last[l.id] = lastSeen{at: seen.at, err: why}
 	}
 	m.mu.Unlock()
-	m.log.Info("fleet: link ended", "machine", l.id, "remote", l.remote, "why", why)
+	Disconnected.Log(m.ctx, "name", m.label(l.id), "machine", l.id, "remote", l.remote, "why", why)
 	m.wg.Done()
 }
 
@@ -722,7 +732,7 @@ func (l *link) hello(mach Machine) error {
 	// its version after an update, for one.
 	if rep := res.Reported; rep != mach.Reported && rep.validate() == nil {
 		if err := l.m.store.SetReported(l.id, rep); err != nil {
-			l.m.log.Warn("fleet: could not record what the machine reports", "machine", l.id, "err", err)
+			ReportNotRecorded.Log(l.m.ctx, "name", l.m.label(l.id), "machine", l.id, "err", err)
 		}
 	}
 	return nil
@@ -737,7 +747,7 @@ func (l *link) sendAddresses() {
 		return
 	}
 	if err := l.request(l.m.ctx, requestTime, methodAddresses, addressParams{Addresses: addrs}, nil); err != nil {
-		l.m.log.Warn("fleet: the machine did not take the master's addresses", "machine", l.id, "err", err)
+		AddressesNotTaken.Log(l.m.ctx, "name", l.m.label(l.id), "machine", l.id, "err", err)
 	}
 }
 
@@ -947,7 +957,7 @@ func (g *guard) take() bool {
 func (g *guard) strike(what string) error {
 	g.strikes++
 	if g.strikes == 1 {
-		g.l.m.log.Warn("fleet: a machine sent what the link does not allow", "machine", g.l.id, "what", what)
+		NotAllowed.Log(g.l.m.ctx, "name", g.l.m.label(g.l.id), "machine", g.l.id, "what", what)
 	}
 	if g.strikes < maxStrikes {
 		return nil

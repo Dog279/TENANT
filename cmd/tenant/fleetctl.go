@@ -230,9 +230,16 @@ func (o fleetOps) preview(m fleet.Machine, set map[string]string) (*approval.Fle
 	return f, p, nil
 }
 
+// audit files an operator's change to the fleet: its audit record in the
+// Security log, and what happened in the fleet log. Both are written before it
+// returns, so a one-shot command's reach the log book as a running Tenant's
+// do. (A fleet being made has its own line in the fleet log: initFleet.)
 func (o fleetOps) audit(m fleet.Machine, change, detail string) {
 	_ = catalog.FleetMachineChanged.Audit(context.Background(), "name", m.Name, "machine", m.ID, "change", change, "detail", detail,
 		"actor", actorOperator, "surface", o.surface)
+	if change != "initialised" {
+		_ = fleet.MachineChanged.Audit(context.Background(), "name", m.Name, "machine", m.ID, "change", change, "detail", detail, "surface", o.surface)
+	}
 }
 
 // confirmMachine makes a pending machine a confirmed one: the operator typed the
@@ -254,6 +261,7 @@ func (o fleetOps) confirmMachine(ref, code string, set map[string]string) (fleet
 	refuse := func(err error) (fleet.Machine, fleetPreview, error) {
 		_ = catalog.FleetConfirmRefused.Audit(context.Background(), "name", m.Name, "machine", m.ID, "reason", err.Error(),
 			"actor", actorOperator, "surface", o.surface)
+		_ = fleet.ConfirmRefused.Audit(context.Background(), "name", m.Name, "machine", m.ID, "reason", err.Error(), "surface", o.surface)
 		return m, fleetPreview{}, err
 	}
 	if m.State != fleet.StatePending {
@@ -749,10 +757,19 @@ func initFleet(o fleetOps, lc *launchConfig, listen string, addresses []string, 
 			addresses = fleetDefaultAddresses(cmp.Or(lc.Fleet.Listen, defaultFleetListen))
 		}
 	}
+	before, _ := o.store.Addresses()
 	if len(addresses) > 0 {
 		if err := o.store.SetAddresses(addresses); err != nil {
 			return id, created, err
 		}
+	}
+	// The fleet log, written before this returns so a command's line is kept.
+	switch now, _ := o.store.Addresses(); {
+	case created:
+		_ = fleet.Initialised.Audit(context.Background(), "certificate", id.Fingerprint, "listen", cmp.Or(lc.Fleet.Listen, defaultFleetListen),
+			"addresses", strings.Join(now, ", "), "surface", o.surface)
+	case !slices.Equal(before, now):
+		_ = fleet.AddressesChanged.Audit(context.Background(), "addresses", strings.Join(now, ", "), "surface", o.surface)
 	}
 	return id, created, nil
 }
@@ -1444,6 +1461,7 @@ func fleetRelaySwitch(cfgDir string, lc *launchConfig, args []string) (string, e
 		}); err != nil {
 			return "", err
 		}
+		_ = fleet.RelayChanged.Audit(context.Background(), "relay", relay, "state", map[bool]string{true: "reach", false: "not reach"}[on])
 	}
 	on := lc.Relay.AllowFleet
 	if relay == surfaceIMessage {

@@ -223,7 +223,7 @@ func (m *fleetMemory) loadForgets() {
 	if err != nil {
 		aside := m.forgetsPath() + ".unreadable-" + strconv.FormatInt(time.Now().UnixNano(), 10)
 		_ = os.Rename(m.forgetsPath(), aside)
-		m.log.Warn("fleet: the record of forgets cannot be read; it was moved aside", "file", aside, "err", err)
+		fleet.ForgetsUnreadable.Log(context.Background(), "file", aside, "err", err)
 		m.tell("fleet: the record of past forgets cannot be read (" + printableDetail(err.Error()) + "); it was moved aside to " + aside +
 			". A machine's memory rebuilt from an old copy will not have those forgets applied again: forget the same again with tenant privacy forget.")
 		return
@@ -276,6 +276,7 @@ func (m *fleetMemory) takeForgetRequests() {
 		}
 		if err != nil {
 			_ = os.Rename(path, path+".unreadable")
+			fleet.ForgetUnreadable.Log(context.Background(), "file", path+".unreadable", "err", err)
 			m.tell("fleet: a forget left for the machines' memory cannot be read (" + printableDetail(err.Error()) + "); run it again with tenant privacy forget")
 			continue
 		}
@@ -293,7 +294,7 @@ func (m *fleetMemory) takeForgetRequests() {
 		err = m.saveForgets()
 		m.fgMu.Unlock()
 		if err != nil {
-			m.log.Warn("fleet: a forget could not be recorded; it is tried again", "err", err)
+			fleet.ForgetNotRecorded.Log(context.Background(), "err", err)
 			m.fgMu.Lock()
 			m.forgets = m.forgets[:len(m.forgets)-len(got)]
 			m.fgMu.Unlock()
@@ -344,7 +345,7 @@ func (m *fleetMemory) applyForgets(ctx context.Context) {
 	// A machine revoked since the last look no longer holds a forget back.
 	if m.dropFinished() || changed {
 		if err := m.saveForgets(); err != nil {
-			m.log.Warn("fleet: the record of forgets was not written", "err", err)
+			fleet.ForgetNotRecorded.Log(context.Background(), "err", err)
 		}
 	}
 }
@@ -382,7 +383,7 @@ func (m *fleetMemory) applyForget(ctx context.Context, id string, f *fleetForget
 	// Purged waits for the machine to be in step, also with no generation
 	// (gen 0): only then is it known what it keeps (purgeIfOwed).
 	*on = forgetOn{Applied: true, Gen: c.Gen}
-	m.log.Info("fleet: a forget was applied to a machine's memory", "machine", id, "removed", removed, "generation", c.Gen)
+	fleet.ForgetApplied.Log(context.Background(), "machine", id, "removed", removed, "generation", c.Gen)
 	m.kick(id) // the new generation goes to the machine, and then the purge
 	return nil
 }
@@ -400,15 +401,15 @@ func (m *fleetMemory) reapplyForgets(ctx context.Context, id string, gen uint64)
 		}
 		if err := m.applyForget(ctx, id, f, on, false); err != nil {
 			on.Applied = false // the sweep tries again
-			m.log.Warn("fleet: a forget could not be applied again to a rebuilt memory; it is tried again", "machine", id, "err", err)
+			fleet.ForgetNotReapplied.Log(context.Background(), "machine", id, "err", err)
 		} else {
-			m.log.Info("fleet: a forget was applied again to a memory rebuilt from an older copy", "machine", id, "from", gen)
+			fleet.ForgetReapplied.Log(context.Background(), "machine", id, "from", gen)
 		}
 		changed = true
 	}
 	if changed {
 		if err := m.saveForgets(); err != nil {
-			m.log.Warn("fleet: the record of forgets was not written", "err", err)
+			fleet.ForgetNotRecorded.Log(context.Background(), "err", err)
 		}
 	}
 }
@@ -446,10 +447,10 @@ func (m *fleetMemory) purgeIfOwed(ctx context.Context, id string, copies []shado
 	}
 	if owed && keep.Gen > 0 {
 		if err := m.mgr.MemoryPurge(ctx, id, keep); err != nil {
-			m.log.Warn("fleet: a machine was not told to drop its older copies after a forget; it is told at the next comparison", "machine", id, "err", err)
+			fleet.NotToldToDrop.Log(context.Background(), "machine", id, "err", err)
 			return
 		}
-		m.log.Info("fleet: a machine dropped the copies of its memory older than a forget", "machine", id, "kept", keep.Gen)
+		fleet.CopiesDropped.Log(context.Background(), "machine", id, "kept", keep.Gen)
 	}
 	m.fgMu.Lock()
 	told, changed := false, false
@@ -464,7 +465,7 @@ func (m *fleetMemory) purgeIfOwed(ctx context.Context, id string, copies []shado
 	}
 	m.fgMu.Unlock()
 	if err != nil {
-		m.log.Warn("fleet: the record of forgets was not written", "err", err)
+		fleet.ForgetNotRecorded.Log(context.Background(), "err", err)
 	}
 	if told {
 		m.tell(fmt.Sprintf("fleet: machine %s keeps copies of its memory made under another fleet key. A forget cannot delete them from the master: delete them on the machine (the memory folder in its child directory) if they may hold what was forgotten. Until they are gone the forget is kept, to be applied again.", id))
@@ -508,7 +509,7 @@ func (m *fleetMemory) dropFinished() bool {
 	dropped := len(m.forgets) - len(kept)
 	if dropped > 0 {
 		m.forgets = kept
-		m.log.Info("fleet: forgets with nothing left to do were dropped from the record", "dropped", dropped, "left", len(kept))
+		fleet.ForgetsDropped.Log(context.Background(), "dropped", dropped, "left", len(kept))
 	}
 	return dropped > 0
 }
@@ -539,7 +540,7 @@ func (m *fleetMemory) takeInventory(ctx context.Context, id string) {
 		return
 	}
 	_ = os.Remove(mark)
-	m.log.Info("fleet: a machine's inventory was recorded in its memory", "machine", id)
+	fleet.InventoryRecorded.Log(context.Background(), "machine", id)
 }
 
 // --- distillation, machine by machine ---

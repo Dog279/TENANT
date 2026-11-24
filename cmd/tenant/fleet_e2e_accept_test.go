@@ -297,7 +297,7 @@ func TestFleetEndToEnd(t *testing.T) {
 			for _, day := range days {
 				raw, _ := os.ReadFile(day)
 				for _, line := range strings.Split(string(raw), "\n") {
-					if strings.Contains(line, "fleet call") && strings.Contains(line, "audit="+last[1]) && strings.Contains(line, "host="+beta.id) {
+					if strings.Contains(line, "event=fleet/1201") && strings.Contains(line, "audit="+last[1]) && strings.Contains(line, "host="+beta.id) {
 						found = line
 					}
 				}

@@ -163,7 +163,7 @@ func openFleetMemory(cfgDir, dataDir string, store *fleet.Store, mgr *fleet.Mana
 	m := &fleetMemory{dataDir: dataDir, mgr: mgr, store: store, key: key, recovery: recipient, shadows: shadows, log: log, tell: tell, ctx: ctx, cancel: cancel,
 		states: map[string]memoryState{}, syncing: map[string]bool{}, again: map[string]bool{}, childGen: map[string]uint64{}, reembed: map[string]bool{}}
 	if locked, why := key.Locked(); !locked {
-		log.Warn("fleet: the fleet key is held in memory that is not locked against the swap file", "why", why)
+		fleet.KeyNotLocked.Log(context.Background(), "why", why)
 	}
 	m.loadForgets()
 	m.sweep()
@@ -175,7 +175,7 @@ func openFleetMemory(cfgDir, dataDir string, store *fleet.Store, mgr *fleet.Mana
 func withShadowErrors(opt shadow.Options, log *slog.Logger) shadow.Options {
 	if opt.OnError == nil {
 		opt.OnError = func(host string, err error) {
-			log.Warn("fleet: a machine's memory could not be written out", "machine", host, "err", err)
+			fleet.MemoryNotWritten.Log(context.Background(), "machine", host, "err", err)
 		}
 	}
 	return opt
@@ -189,7 +189,7 @@ func (m *fleetMemory) close() {
 	m.cancel()
 	m.wg.Wait()
 	if err := m.shadows.Close(); err != nil {
-		m.log.Warn("fleet: the machines' memory did not close cleanly", "err", err)
+		fleet.MemoryNotClosed.Log(context.Background(), "err", err)
 	}
 	_ = m.key.Close()
 }
@@ -215,7 +215,7 @@ func (m *fleetMemory) pass() {
 	for _, id := range m.shadows.Loaded() {
 		c, made, err := m.shadows.Mint(m.ctx, id)
 		if err != nil {
-			m.log.Warn("fleet: no new generation of a machine's memory", "machine", id, "err", err)
+			fleet.NoNewGeneration.Log(context.Background(), "machine", id, "err", err)
 			continue
 		}
 		if made {
@@ -396,7 +396,7 @@ func (m *fleetMemory) needsKey(id string) {
 	m.mu.Unlock()
 	m.set(id, memoryNeedsKey, detail)
 	if was != memoryNeedsKey {
-		m.log.Warn("fleet: a machine's memory needs the recovery key", "machine", id)
+		fleet.NeedsRecoveryKey.Log(context.Background(), "machine", id)
 		m.tell(fmt.Sprintf("fleet: the memory of machine %s needs the recovery key: %s", id, detail))
 	}
 }
@@ -465,7 +465,7 @@ func (m *fleetMemory) take(ctx context.Context, id string, d shadow.Decision) ta
 	case !d.Own && !errors.Is(err, fleet.ErrOffline) && !errors.Is(err, fleet.ErrOutcomeUnknown) && ctx.Err() == nil:
 		// What the machine sent is not the copy it listed, or it no longer
 		// has it: its next older copy is tried.
-		m.log.Warn("fleet: a machine's copy of its memory did not come whole", "machine", id, "generation", c.Gen, "err", err)
+		fleet.CopyNotWhole.Log(context.Background(), "machine", id, "generation", c.Gen, "err", err)
 		return takeRefused
 	default:
 		m.set(id, memoryBehind, fmt.Sprintf("the machine's generation %d could not be fetched: %v", c.Gen, err))
@@ -478,7 +478,7 @@ func (m *fleetMemory) take(ctx context.Context, id string, d shadow.Decision) ta
 		m.set(id, memoryBehind, fmt.Sprintf("the machine's generation %d waits: the machine's memory is in use; it is tried again in five minutes", c.Gen))
 		return takeStop
 	case !d.Own && (errors.Is(err, shadow.ErrDamaged) || errors.Is(err, shadow.ErrForeignKey)):
-		m.log.Warn("fleet: a machine's copy of its memory did not verify", "machine", id, "generation", c.Gen, "err", err)
+		fleet.CopyNotVerified.Log(context.Background(), "machine", id, "generation", c.Gen, "err", err)
 		return takeRefused
 	default:
 		m.set(id, memoryUnknown, fmt.Sprintf("the machine's memory could not be rebuilt from generation %d: %v", c.Gen, err))
@@ -488,10 +488,10 @@ func (m *fleetMemory) take(ctx context.Context, id string, d shadow.Decision) ta
 	if d.Action == shadow.Pull {
 		what = "replaced by the machine's"
 	}
-	m.log.Info("fleet: a machine's memory was "+what+" a copy", "machine", id, "generation", got.Gen, "aside", got.Aside)
+	fleet.MemoryCopy.Log(context.Background(), "machine", id, "what", what, "generation", got.Gen, "aside", got.Aside)
 	if d.Diverged {
 		m.tell(fmt.Sprintf("fleet: machine %s held generation %d with other content than this master's: the machine's copy stands, and this master's was kept aside for thirty days in %s", id, c.Gen, got.Aside))
-		m.log.Warn("fleet: a machine's memory and the master's diverged; the machine's stands", "machine", id, "generation", c.Gen, "aside", got.Aside)
+		fleet.Diverged.Log(context.Background(), "machine", id, "generation", c.Gen, "aside", got.Aside)
 	}
 	// A copy as old as a forget, or older, may hold what it removed.
 	m.reapplyForgets(ctx, id, got.Gen)
@@ -609,7 +609,7 @@ func (m *fleetMemory) reembedIfOwed(ctx context.Context, id string) {
 		return
 	}
 	if err := reembedShadow(ctx, m.shadows, id, *emb); err != nil {
-		m.log.Warn("fleet: a rebuilt memory was not re-embedded; it is tried again at the next comparison", "machine", id, "err", err)
+		fleet.NotReembedded.Log(context.Background(), "machine", id, "err", err)
 		return
 	}
 	m.mu.Lock()
@@ -712,7 +712,7 @@ func (m *fleetMemory) sweep() {
 		if _, err := os.Lstat(filepath.Join(fleetShadowDir(m.dataDir), e.Name(), memoryRemoveMark)); err == nil {
 			if err := m.shadows.Remove(e.Name()); err == nil {
 				m.forget(e.Name())
-				m.log.Info("fleet: a revoked machine's memory was deleted", "machine", e.Name())
+				fleet.RevokedMemoryDeleted.Log(context.Background(), "machine", e.Name())
 			}
 			continue
 		}

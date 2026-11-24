@@ -33,6 +33,7 @@ import (
 	"tenant/internal/fleet"
 	"tenant/internal/lifecycle"
 	"tenant/internal/logs/catalog"
+	"tenant/internal/logs/event"
 )
 
 // defaultFleetListen is where the one fleet port binds unless config.json's
@@ -198,7 +199,8 @@ type fleetHub struct {
 	log             *slog.Logger
 	store           *fleet.Store
 	comp            *lifecycle.Comp
-	updates         *fleetUpdates // `tenant fleet update`, run here while this process holds the fleet
+	act             *event.Activity // the fleet port's lifetime in the fleet log (fleet.Listening)
+	updates         *fleetUpdates   // `tenant fleet update`, run here while this process holds the fleet
 
 	mu      sync.Mutex
 	mgr     *fleet.Manager
@@ -333,11 +335,14 @@ func (h *fleetHub) tick(ctx context.Context) {
 		return
 	}
 	mgr, err = fleet.StartManager(fleet.ManagerConfig{Store: h.store, Identity: id, Addr: listen, Role: h.role,
-		Refused: h.refused, Alert: h.alert, Log: h.log, Connected: h.connected})
+		Refused: h.refused, Alert: h.alert, Connected: h.connected})
 	var held *fleet.HeldError
 	switch {
 	case errors.As(err, &held):
-		h.state(true, held.Holder, "", strings.TrimPrefix(held.Error(), "fleet: ")+". Its machines are called from there; /fleet here lists them.")
+		who := strings.TrimPrefix(held.Error(), "fleet: ")
+		if h.state(true, held.Holder, "", who+". Its machines are called from there; /fleet here lists them.") {
+			fleet.HeldElsewhere.Log(ctx, "holder", who)
+		}
 		return
 	case err != nil:
 		h.failed(ctx, err)
@@ -347,6 +352,7 @@ func (h *fleetHub) tick(ctx context.Context) {
 	h.mgr, h.run = mgr, want
 	h.mu.Unlock()
 	h.comp = lifecycle.Track(ctx, "fleet listener", lifecycle.Server, "system", lifecycle.Running, nil)
+	_, h.act = event.Start(ctx, fleet.Listening, "addr", mgr.Addr().String(), "role", h.role)
 	say := "listening on " + mgr.Addr().String()
 	if h.role != "serve" {
 		say += ". Machines are connected only while this app is open: a master with a fleet should run `tenant serve` as its service (tenant service install)."
@@ -357,25 +363,27 @@ func (h *fleetHub) tick(ctx context.Context) {
 // failed records why the listener is not up. It is tried again at each tick.
 func (h *fleetHub) failed(ctx context.Context, err error) {
 	h.mu.Lock()
-	fresh := h.problem != err.Error()
+	fresh, listen := h.problem != err.Error(), h.listen
 	h.mu.Unlock()
 	if fresh {
 		sysUnavailable.Log(ctx, "component", "the fleet listener", "effect", "no fleet machine can connect", "err", err)
+		fleet.ListenerNotStarted.Log(ctx, "addr", listen, "err", err)
 	}
 	h.state(false, fleet.Holder{}, err.Error(), "listener not started: "+err.Error())
 }
 
 // state records where the fleet stands and tells the operator when that is
-// not what they were last told.
-func (h *fleetHub) state(held bool, holder fleet.Holder, problem, say string) {
+// not what they were last told; it reports whether it is news.
+func (h *fleetHub) state(held bool, holder fleet.Holder, problem, say string) (fresh bool) {
 	h.mu.Lock()
 	h.held, h.holder, h.problem = held, holder, problem
-	fresh := say != h.said
+	fresh = say != h.said
 	h.said = say
 	h.mu.Unlock()
 	if fresh && say != "" {
 		h.tell("fleet: " + say)
 	}
+	return fresh
 }
 
 // close ends this process's hold on the fleet, if it has one.
@@ -394,6 +402,10 @@ func (h *fleetHub) close() {
 	_ = mgr.Close()
 	if h.comp != nil {
 		h.comp.Set(lifecycle.Stopped, nil)
+	}
+	if h.act != nil {
+		h.act.End(nil)
+		h.act = nil
 	}
 }
 
@@ -439,11 +451,14 @@ func (h *fleetHub) memoryTick() {
 	if mem == nil {
 		if problem != said {
 			h.tell("fleet: the machines' memory is unavailable: " + problem)
+			fleet.MemoryUnavailable.Log(context.Background(), "why", problem)
 		}
 		return
 	}
 	// Machines that connected before the memory was open are compared now.
-	if all, err := mgr.Machines(); err == nil {
+	all, err := mgr.Machines()
+	fleet.MemoryReady.Log(context.Background(), "machines", len(all))
+	if err == nil {
 		for _, st := range all {
 			if st.Online {
 				mem.kick(st.ID)
@@ -470,6 +485,7 @@ func (h *fleetHub) refused(r fleet.Refusal) {
 	}
 	_ = catalog.FleetEnrollRefused.Audit(context.Background(), "reason", string(r.Reason), "remote", r.Source,
 		"name", r.Name, "machine", r.Machine, "certificate", r.Fingerprint)
+	fleet.EnrollRefused.Log(context.Background(), "reason", string(r.Reason), "remote", r.Source, "name", r.Name, "machine", r.Machine)
 }
 
 // alert is raised when a spent enrollment code is presented again: someone
@@ -478,6 +494,7 @@ func (h *fleetHub) refused(r fleet.Refusal) {
 // log keeps it as an error, which the alert rules can act on.
 func (h *fleetHub) alert(r fleet.Refusal) {
 	_ = catalog.FleetCodeReplayed.Audit(context.Background(), "name", r.Name, "machine", r.Machine, "remote", r.Source, "certificate", r.Fingerprint)
+	fleet.CodeReplayed.Log(context.Background(), "name", r.Name, "machine", r.Machine, "remote", r.Source)
 	h.tell(fmt.Sprintf("fleet: ALERT: the enrollment code for %s was presented a second time, from %s, and refused. "+
 		"Someone other than the machine it enrolled (%s) has that code, or had it first: compare the six digits on the machine's own screen before you confirm it, or `tenant fleet revoke %s` and enroll it again.",
 		fleetQuote(r.Name), fleetQuote(r.Source), r.Machine, r.Machine))

@@ -47,6 +47,7 @@ var providers = []struct {
 	{"privacy", []string{"internal/privacy", "cmd/tenant/privacy*.go"}},
 	{"eval", []string{"internal/eval/**", "cmd/tenant/eval*.go", "cmd/tenant/judgectl.go"}},
 	{"logbook", []string{"internal/logs/**", "cmd/tenant/logctl.go", "cmd/tenant/attach.go"}},
+	{"fleet", []string{"internal/fleet/**", "cmd/tenant/fleet*.go", "cmd/tenant/child*.go", "cmd/tenant/doctorfleet.go"}},
 	{"system", []string{"cmd/tenant", "internal/tui", "internal/lifecycle", "internal/config", "internal/secrets", "internal/fsperm",
 		"internal/datalock", "internal/version", "internal/cmdreg", "internal/control", "internal/httplimits", "internal/runtrace"}},
 }
@@ -102,6 +103,10 @@ var catalogued = map[string]int{
 	// mcp.* (TEN-387) and sandbox (TEN-388)
 	"internal/plugins/mcpremote": 0, "internal/mcpserver": 0, "internal/mcp": 0, "internal/mcp/transport": 0,
 	"internal/sandbox": 0, "internal/sandbox/escapecore": 0, "internal/sandbox/escapetest": 0, "internal/sandbox/redteamllm": 0,
+	// fleet: the master's side is catalogued (internal/fleet/events.go). The
+	// two left in internal/fleet are the child's (client.go): a child process
+	// has no log book, and writes to its own log and the system's.
+	"internal/fleet": 2, "internal/fleet/shadow": 0,
 }
 
 // providerOf names the provider file (module-relative) counts toward, or ""

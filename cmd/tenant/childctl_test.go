@@ -87,7 +87,7 @@ func newFleetMaster(t *testing.T) *fleetMaster {
 	}
 	m := &fleetMaster{t: t, store: fleet.Open(dir), id: id}
 	m.allow.Store(true)
-	if m.mgr, err = fleet.StartManager(fleet.ManagerConfig{Store: m.store, Identity: id, Addr: "127.0.0.1:0", Role: "test", Log: quietLog}); err != nil {
+	if m.mgr, err = fleet.StartManager(fleet.ManagerConfig{Store: m.store, Identity: id, Addr: "127.0.0.1:0", Role: "test"}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = m.mgr.Close() })

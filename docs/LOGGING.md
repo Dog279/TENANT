@@ -1365,6 +1365,20 @@ drops, the test fails too, and says what to lower it to.
   job's output is `cron/9001`, diagnostic and masked. Loading, missed runs
   (caught up, or skipped and why) and jobs added, switched and removed are
   logged too. The one-line run summary still goes to the status feed.
+- `fleet` (`internal/fleet/events.go`): the master's side of a fleet. The
+  port's lifetime in the process that holds the fleet is an activity
+  (`fleet/1`); held by another process is `fleet/2`, a start that fails
+  `fleet/3001` (once per cause). This Tenant becoming a master is `fleet/1001`
+  and each operator change `fleet/1002`: both are written with `Audit`, so a
+  one-shot `tenant fleet` command's line is committed before it returns, as
+  its Security record is. A machine enrolling, connecting and disconnecting
+  are `fleet/1003`, `1101` and `1102`; each call on a machine is `fleet/1201`,
+  with the hash of the machine's own audit record; an update's steps are
+  `fleet/1301` and `2301`; the machines' memory is `fleet/3`, `1401`–`1407`
+  and `2401`–`2414`. The Security log keeps the audit records
+  (`security/4321`–`4324`). A child machine's process has no log book, so the
+  child's own lines (`internal/fleet/client.go`, `cmd/tenant/child*.go`) are
+  not catalogued.
 - `peering` (`internal/peering/events.go`): the listener's lifetime is an
   activity (`peering/1`), and a start that fails is `peering/3001`. Pairing,
   both ways, is logged; so are rejected tokens, and peers going up or down

@@ -95,7 +95,7 @@ func FuzzMasterTakesAChildsFrame(f *testing.F) {
 	ec := must(parseEnrollCode(code))(f)
 	mach := must(store.enroll(ec.Secret, childID.Fingerprint, linuxBox))(f)
 	must(store.Confirm(id.Fingerprint, mach.ID, ConfirmCode(id.Fingerprint, childID.Fingerprint)))(f)
-	mgr := must(newManager(ManagerConfig{Store: store, Identity: id, Log: quiet}))(f)
+	mgr := must(newManager(ManagerConfig{Store: store, Identity: id}))(f)
 	ctx := context.Background()
 
 	f.Fuzz(func(t *testing.T, frame []byte) {
