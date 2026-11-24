@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"tenant/internal/fleet"
+	"tenant/internal/version"
 )
 
 // enrolled is a code just made: what the operator is shown, once.
@@ -81,15 +82,25 @@ var (
 	// repoShape is a GitHub owner/name, the only thing put into the scripts'
 	// address.
 	repoShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$`)
+	// releaseShape is a release's version as GoReleaser stamps it (the tag
+	// without its v), the only other thing put into the scripts' address.
+	releaseShape = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$`)
 )
 
-// installScripts is where the install scripts are fetched from: the latest
-// release of the repository `tenant update` takes releases from
-// (updateRepo), "" for a build that names none.
+// installScripts is where the install scripts are fetched from, in the
+// repository `tenant update` takes releases from (updateRepo): this master's
+// own release, whose scripts install that same release, so the new machine
+// runs the version the master does and knows every command the paste goes on
+// to. Not releases/latest, which skips prereleases: from a prerelease master
+// it installed an older Tenant with no `tenant child`. A dev build is nobody's
+// release and gets the latest one. "" for a build that names no repository.
 func installScripts() string {
 	r := updateRepo()
 	if !repoShape.MatchString(r) || strings.Contains(r, "..") {
 		return ""
+	}
+	if !devBuild() && releaseShape.MatchString(version.Version) {
+		return "https://github.com/" + r + "/releases/download/v" + version.Version + "/"
 	}
 	return "https://github.com/" + r + "/releases/latest/download/"
 }
