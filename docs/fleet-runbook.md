@@ -213,10 +213,13 @@ it is on:
   that address as a wrong sign-in does, and is a Security record;
 - a request that carries only the API key is still refused, and the wait after wrong digits is
   the same;
-- the Security and fleet logs record the confirmation, and every refusal, with the surface
-  `dashboard-remote` and the session and address that asked. Behind `tailscale serve` or a
-  proxy that address is always this computer's own, so the record also quotes what the proxy
-  said of who it passed on (the tailnet login), marked as not checked.
+- the Security log records the confirmation and every refusal with the surface
+  `dashboard-remote` and the session and address that asked. The fleet log has the
+  confirmation and the refusals the fleet itself makes (wrong digits, a machine that is not
+  waiting); a wrong or missing key is refused by the dashboard and is in the Security log
+  only. Behind `tailscale serve` or a proxy that address is always this computer's own, so the
+  record also quotes what the proxy said of who it passed on (the tailnet login), marked as
+  not checked.
 
 What you give up:
 
@@ -525,9 +528,11 @@ leaves out and why (pending, revoked, offline: nothing is queued). After the sec
 running Tenant that holds the fleet starts that many machines, in the list's order, and starts
 the next each time one ends:
 
-- a machine that ends **done** is updated;
-- a machine that is **refused** (offline, not confirmed, the same or a newer version without
-  "allow older") is skipped with its reason, and the rollout goes on;
+- a machine that ends **done** is updated; one that already runs the version asked for counts
+  as done, and nothing is sent to it;
+- a machine that is **refused** (offline, not confirmed, or the version asked for is older
+  than the one it runs and "allow an older version" is not ticked) is skipped with its reason,
+  and the rollout goes on;
 - the first machine that **rolls back or fails stops the rollout**: no further machine is
   started, those already updating finish, and the rest show as not started.
 
