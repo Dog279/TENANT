@@ -5,6 +5,14 @@ Releases page.
 
 ## Unreleased
 
+- **Fixed: a scheduled exec job could not post what it read.** The exec runner never passed the
+  sensitive-egress check to the job's approver, so every Discord message, mail or other outbound
+  call that quoted a wiki, memory or mail read was refused. A report built from the wiki now
+  goes out, and each such flow is still a Security record; a vault secret still never leaves in a
+  message.
+- **A scheduled exec job keeps the helper tools** (`spawn_agent`, `team_*`): a helper inherits the
+  job's approver and exec surface, so the same unattended rules apply to it, and the `cron_*`
+  tools stay refused. Jobs without exec still have no helper tools.
 - **Fixed: a scheduled exec job could not write its own notes** when Tenant runs from a folder
   that also holds the wiki (an install at `C:\Tenant` with the wiki in `C:\Tenant\twiki`): the
   guard that keeps an unattended job out of Tenant's own files took the whole install folder,

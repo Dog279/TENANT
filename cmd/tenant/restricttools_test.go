@@ -68,22 +68,21 @@ func TestRestrictedView_SearchKeepsRankedAllowedTools(t *testing.T) {
 		names[i] = sp.Name
 	}
 	joined := strings.Join(names, ",")
-	// The top-3 ALLOWED tools by relevance survive even though three
-	// disallowed tools outranked them: without headroom the k=3 window would
-	// contain only denials and the surface would come back empty — the exact
-	// starvation that sank the brief.
-	for _, want := range []string{"discord_send_message", "money_balances", "gmail_search"} {
+	// The top-3 ALLOWED tools by relevance survive even though a disallowed
+	// tool outranked them: without headroom the k=3 window would hold a
+	// denial and the surface would come back short — the starvation that sank
+	// the brief. The exec surface keeps the helper tools (team_await,
+	// spawn_agent): a job that runs unattended may hand work to its helpers.
+	for _, want := range []string{"team_await", "spawn_agent", "discord_send_message"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("exec surface lost %q: %s", want, joined)
 		}
 	}
-	for _, deny := range []string{"team_await", "cron_add", "spawn_agent"} {
-		if strings.Contains(joined, deny) {
-			t.Errorf("exec surface leaked %q: %s", deny, joined)
-		}
+	if strings.Contains(joined, "cron_add") {
+		t.Errorf("exec surface leaked cron_add: %s", joined)
 	}
 	// Relevance order preserved among survivors.
-	if names[0] != "discord_send_message" {
+	if names[0] != "team_await" {
 		t.Errorf("ranking not preserved, got %s first", names[0])
 	}
 
@@ -93,19 +92,24 @@ func TestRestrictedView_SearchKeepsRankedAllowedTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("search all: %v", err)
 	}
-	if len(all) != 5 {
-		t.Errorf("full-window search returned %d tools, want the 5 allowed", len(all))
+	if len(all) != 7 {
+		t.Errorf("full-window search returned %d tools, want the 7 allowed", len(all))
 	}
 
+	// The safe surface cuts every gated tool AND the helper tools: nobody is
+	// there to answer for what a helper does.
 	safeView, _ := restrictReadComms(inner, nil, "test (safe)", notCron)
-	got, err = safeView.Search(context.Background(), nil, 3)
+	got, err = safeView.Search(context.Background(), nil, len(inner.byRank))
 	if err != nil {
 		t.Fatalf("safe search: %v", err)
 	}
 	for _, sp := range got {
-		if sp.Gated {
-			t.Errorf("safe surface leaked gated tool %q", sp.Name)
+		if sp.Gated || fanOut(sp.Name) || sp.Name == "cron_add" {
+			t.Errorf("safe surface leaked %q", sp.Name)
 		}
+	}
+	if len(got) != 3 {
+		t.Errorf("safe surface returned %d tools, want the 3 plain ones", len(got))
 	}
 }
 

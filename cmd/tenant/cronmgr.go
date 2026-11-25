@@ -161,6 +161,12 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 		Compactor: d.compactor, UserProfile: d.userProfile, SystemPrompt: d.sysPrompt + cronExecSysSuffix,
 		RouteHook: d.routeHook, RouteActive: d.routeActive, RouteSticky: d.routeSticky,
 		Stopping: d.stopping,
+		// The sensitive-egress gate asks the run's approver (the one
+		// withOffsiteConfirm puts on the context), as the channels do.
+		// Without it the gate found nil and refused every outbound call that
+		// quoted a wiki, memory or mail read: a job could build a report and
+		// never deliver it.
+		ConfirmSensitiveEgress: originConfirm(nil),
 	})
 	if err != nil {
 		return nil, err
