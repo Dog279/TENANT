@@ -86,6 +86,11 @@ var RelayChanged = Events.Event(5002, event.Info, "Setup", "Turns from the {rela
 		"tenant fleet relay or /fleet relay.",
 		"None when intended. It is off by default.")
 
+var SettingsChanged = Events.Event(5003, event.Info, "Setup", "Fleet {what}: {change}", "what", "change", "detail").
+	Doc("A group of machines, or the defaults new machines start with, changed: what names which. No machine moved: a group's rules reach its members when it is applied, and the defaults when a machine is confirmed or copied again. The same change is in the Security log (security/4325) with who made it.",
+		"tenant fleet group, tenant fleet permissions --defaults set|unset|add|rm, /fleet group in the terminal app, or the dashboard's Fleet page.",
+		"None when intended. To lay a group's rules over its members: tenant fleet group apply <group>.")
+
 // Enrollment and confirmation turned away (the operational side of
 // security/4321, 4322 and 4324).
 

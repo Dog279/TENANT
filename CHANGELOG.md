@@ -5,6 +5,58 @@ Releases page.
 
 ## Unreleased
 
+## 0.2.0 (2026-11-24)
+
+- **Fleet groups, default categories and bulk changes (TEN-546).** Machines can be put in named
+  groups (`tenant fleet group`, `/fleet group`), each with rules laid over its members when the
+  group is applied (`tenant fleet group apply`), never live: a call is still decided by the
+  machine's own scheme alone, and changing a group moves no machine. The defaults for new
+  machines now take categories as well as rules (`tenant fleet permissions --defaults set|unset
+  <category>`, settings key `fleet_permissions`; groups are `fleet_groups`). A new machine's
+  copy is the master's scheme clamped, then the default categories, then the fleet's rules, then
+  its groups' rules in name order, each winning over the one before; the confirm screen says
+  `fleet default` and `group <name>` where they did. `tenant fleet permissions --group <g> |
+  --all` makes one edit to many machines, one Security record per machine, exit 1 if any was not
+  changed; `tenant fleet update --group <g>` updates a group's members in turn. Both keys are
+  strict and bounded: unreadable, no machine can be confirmed or copied again until fixed. New
+  events `security/4325` and `fleet/5003`. See docs/fleet-runbook.md, section 3a.
+  - **On the dashboard's Fleet page:** the fleet's defaults are edited there (each category as
+    Ask, Allow, Deny or From this Tenant; the fleet's rules), groups are made, filled, applied
+    and deleted, the list can be narrowed to a group, and ticked machines (or everyone shown)
+    take one change at once: a category, a rule, Apply fleet rules, Copy again, or an update.
+    A change that lets the agent do more, replaces settings or updates first shows a step that
+    says how many machines and which; the answer says "Done on 5 of 7." and why for each
+    machine not changed. A machine's page uses the same controls and words as this Tenant's own
+    Approvals & safety and Tools pages. These changes take a signed-in browser; the API key
+    gets no more than it had.
+  - **A rollout** updates many machines a few at a time (1 to 8 at once) from the Fleet page:
+    a refused machine is skipped, and the first that rolls back or fails stops it. One at a
+    time, kept in the running Tenant's memory. `tenant fleet update --all` is unchanged.
+  - A change to the fleet's rules for new machines now leaves a Security record on every
+    surface (`security/4325`), as a change to a default category or a group does.
+  - **What is done is what was shown.** A group's rule takes no step, since it moves no
+    machine; so the steps that do move machines hold to what they showed. A confirmation whose
+    machine would no longer start with the settings on its screen (a default, a fleet rule or
+    one of its groups was edited meanwhile) confirms nothing, on the command line and on the
+    Fleet page; Apply and Copy again on the page are refused and drawn again the same way, and
+    a group's Apply reaches only the members its step named. The record of a confirmation names
+    the defaults and groups it laid, and Apply's record says which of a machine's own rules it
+    replaced.
+- **A fleet machine can be confirmed from another computer, if you turn that on.** A pending
+  machine was confirmed only at the master: its terminal, or a browser signed in at the
+  dashboard's 127.0.0.1 address. On a master with no screen that meant a console for every
+  machine. `tenant fleet remote-confirm on` (or `/fleet remote-confirm on`), run by a person
+  at the master's terminal, lets a signed-in dashboard browser elsewhere confirm one: its page
+  then offers the form with one more field, the sign-in key again. It is off by default, has no
+  switch on the dashboard, and the command refuses to turn it on when its input is not a
+  terminal; a request that carries only the API key is still refused; wrong keys are slowed
+  per address as wrong sign-ins are; and the confirmation and every refusal are recorded with
+  the surface `dashboard-remote`, the session and address that asked, and what a proxy said of
+  who it passed on. The key again stops a session that leaked, not the key's holder: with this
+  on, whoever holds the sign-in key (the API key is the same key) can confirm a machine from
+  anywhere the dashboard is reached. The fleet runbook's sentence that there is "no dashboard
+  button" was wrong since the Fleet page shipped, and is corrected.
+
 - **An install script installs its own release.** The scripts asked GitHub for the latest
   release, which skips prereleases, so `install.ps1` or `install.sh` taken from a prerelease
   installed 0.1.0, and the fleet's paste line then failed with `unknown command: child`. The

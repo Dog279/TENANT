@@ -259,7 +259,51 @@ func (f fleetTUIControl) Perms(name string) (tui.PermissionControl, error) {
 	return defaultFleet.Child(m.ID)
 }
 
-func (f fleetTUIControl) Defaults() tui.ToolRuleControl { return fleetRuleSet{defaultFleet.Rules()} }
+func (f fleetTUIControl) Defaults() tui.FleetDefaults {
+	return fleetDefaultsEditor{fleetRuleSet{defaultFleet.Rules(), &f.ops}, f.ops}
+}
+
+// Group is /fleet group: `tenant fleet group`'s words, with this app's
+// commands in them.
+func (f fleetTUIControl) Group(args []string) (string, error) {
+	text, _, err := groupText(f.ops, "/fleet", args)
+	return text, err
+}
+
+// fleetDefaultsEditor is the defaults for new machines as the permissions
+// editor takes them: the categories the operator set (fleetOps, so each
+// change is recorded) and the fleet's rules.
+type fleetDefaultsEditor struct {
+	fleetRuleSet
+	ops fleetOps
+}
+
+func (e fleetDefaultsEditor) Permissions() []tui.PermissionInfo {
+	f, err := e.ops.schemes()
+	if err != nil {
+		return nil
+	}
+	set, _ := f.Defaults()
+	var out []tui.PermissionInfo
+	for _, c := range approval.Categories {
+		if mode := set[c]; mode != "" {
+			out = append(out, tui.PermissionInfo{Category: c, Mode: mode, Desc: "fleet default; " + approval.CategoryDesc[c],
+				Title: approval.CategoryPlain[c].Title, Can: onMachine(approval.CategoryPlain[c].Can)})
+		}
+	}
+	return out
+}
+
+func (e fleetDefaultsEditor) SetPermission(category, mode string) (bool, error) {
+	if !slices.Contains(approval.Categories, category) {
+		return false, nil
+	}
+	return true, e.ops.setDefault(category, mode)
+}
+
+func (e fleetDefaultsEditor) UnsetPermission(category string) (bool, error) {
+	return e.ops.unsetDefault(category)
+}
 
 func (f fleetTUIControl) Relay(args []string) (string, error) {
 	out, err := fleetRelaySwitch(f.ops.cfgDir, f.lc, args)
@@ -270,6 +314,10 @@ func (f fleetTUIControl) Relay(args []string) (string, error) {
 		h.mu.Unlock()
 	}
 	return out, err
+}
+
+func (f fleetTUIControl) RemoteConfirm(args []string) (string, error) {
+	return fleetRemoteConfirmSwitch(f.ops, f.lc, args)
 }
 
 // fleetNames is a list of machine ids as their names, for display; an id no

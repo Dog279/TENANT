@@ -477,4 +477,12 @@ details.tool[open] summary{border-bottom:1px solid var(--line2)}
 .fl-facts th{width:1%;padding-right:18px}
 .fl-said{font-family:ui-monospace,monospace;font-size:12px;color:#cdd8ea}
 .fl-paste{flex:1;min-width:0;overflow-wrap:anywhere;user-select:all;font-size:12px}
+/* TEN-546: the list's boxes (the whole name cell opens the machine; its box
+   sits above that link), the group filter, the bar, a confirm step's names */
+.fl-pick{position:relative}
+.fl-pick a.linkbtn::after{content:"";position:absolute;inset:0}
+.fl-pick input[type=checkbox]{position:relative;z-index:1}
+.fl-groups{margin-bottom:10px}
+.fl-bulk{border-top:1px solid var(--line);padding-top:12px}
+.fl-names{margin:6px 0 0 18px;padding:0}
 /* == end TEN-533 == */

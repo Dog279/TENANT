@@ -62,13 +62,19 @@ func (f *fakeFleet) change(op, id string, args ...string) (*FleetMachine, error)
 	return &f.view.Machines[i], nil
 }
 
-func (f *fakeFleet) Confirm(id, code string, set []string) error {
+func (f *fakeFleet) Confirm(id, code string, set []string, by string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	m, err := f.change("confirm", id, append([]string{code}, set...)...)
+	args := append([]string{code}, set...)
+	if by != "" { // a browser that is not on this computer
+		args = append(args, "by "+by)
+	}
+	m, err := f.change("confirm", id, args...)
 	switch {
 	case err != nil:
 		return err
+	case by != "" && !f.view.RemoteConfirm: // as the real control reads the setting again
+		return PlainError("Nothing changed: confirming a machine from a browser that is not on the computer running Tenant is turned off.")
 	case m.State != "pending":
 		return PlainError("That machine isn't waiting to be confirmed. Nothing changed.")
 	case code != f.code:
@@ -278,18 +284,41 @@ func fleetFake(n int) *fakeFleet {
 		f.view.Machines = append(f.view.Machines, m)
 	}
 	f.view.Rules = []ToolRuleRow{{Pattern: "os_run(systemctl status *)", Mode: "allow"}, {Pattern: longURL(3), Mode: "deny"}}
+	// TEN-546: the fleet's defaults and two groups, web (machines 1 and 2,
+	// one rule) and db (machine 3, and an id the fleet no longer has).
+	f.view.Defaults = fleetDefaults()
+	f.view.Groups = []FleetGroup{
+		{Name: "db", Members: []string{"m0000000000000003", "m00000000000000ff"}, Differ: -1},
+		{Name: "web", Members: []string{fleetConfirmed, "m0000000000000002"}, Rules: []ToolRuleRow{{Pattern: "os_run(nginx -t)", Mode: "ask"}}, Differ: 1},
+	}
+	for i := range f.view.Machines {
+		switch i {
+		case 1, 2:
+			f.view.Machines[i].Groups = []string{"web"}
+		case 3:
+			f.view.Machines[i].Groups = []string{"db"}
+		}
+	}
 	return f
 }
 
 func init() {
 	harnessFakes = append(harnessFakes, func(s *Server, mode fakeMode) {
 		f := fleetFake(13)
-		if mode == failing { // fleet.json can't be read
+		// A rollout under way, so its card is swept with the page.
+		f.view.Rollout = &FleetRollout{Version: "v2.0.0", Limit: 2, Started: "2026-11-24 10:00", Running: true, Machines: []FleetRolloutMachine{
+			{ID: fleetConfirmed, Name: longName(1), Status: "running", Stage: "sending"},
+			{ID: "m0000000000000002", Name: longName(2), Status: "skipped", Reason: "is offline (offline since 2026-11-24 09:00). Nothing is queued: run the update again once it is back"},
+			{ID: "m0000000000000006", Name: longName(6), Status: "waiting"},
+		}}
+		if mode == failing { // fleet.json can't be read, nor the defaults or the groups
 			f.view.Machines, f.view.Err = nil, errors.New(rawStoreClosed)
+			f.view.Defaults, f.view.DefaultsErr = nil, errors.New(rawStoreClosed)
+			f.view.Groups, f.view.GroupsErr = nil, errors.New(rawStoreClosed)
 		}
 		s.SetFleet(f)
 	})
-	harnessPages = append(harnessPages, "/fleet", "/fleet/"+fleetPending, "/fleet/"+fleetConfirmed)
+	harnessPages = append(harnessPages, "/fleet", "/fleet/"+fleetPending, "/fleet/"+fleetConfirmed, "/fleet/group/web")
 }
 
 // fleetServer is a dashboard at 127.0.0.1:9770 with f as its fleet and a
@@ -431,6 +460,279 @@ func TestFleetConfirmOnlyAtThisComputer(t *testing.T) {
 		if got := f.called(); !slices.Equal(got, []string{"confirm|" + fleetPending + "|" + fleetCode}) || f.machine(fleetPending).State != "confirmed" {
 			t.Errorf("the browser on this computer (%d): calls %q, machine %s", i, got, f.machine(fleetPending).State)
 		}
+	}
+}
+
+// With remote confirmation turned on at the master's terminal (TEN-545), a
+// signed-in browser that is not on this computer confirms a machine by giving
+// the sign-in key again. A request that carries only the API key still confirms
+// nothing, a session without the key confirms nothing, the key is never taken from the address, wrong keys
+// are slowed per address as sign-in's are, and every refusal and the
+// confirmation itself say they were asked from elsewhere. Turned off, the same
+// requests are refused as before, key or no key.
+func TestFleetConfirmFromElsewhere(t *testing.T) {
+	c := installCapture(t)
+	now := time.Now()
+	loginNow = func() time.Time { return now }
+	defer func() { loginNow = time.Now }()
+	f := fleetFake(3)
+	f.view.RemoteConfirm = true
+	s := fleetServer(f)
+	s.SetTrustedHosts([]string{"box.tailnet.ts.net"})
+	h := s.served()
+	// `tailscale serve`: a loopback peer, the tailnet's name, the proxy's headers.
+	tailnet := func(r *http.Request) {
+		r.RemoteAddr, r.Host = "127.0.0.1:50000", "box.tailnet.ts.net"
+		r.Header.Set("Origin", "https://box.tailnet.ts.net")
+		r.Header.Set("X-Forwarded-For", "100.64.0.7")
+		signedIn(r)
+	}
+	// Another computer that reaches the dashboard by a name it answers to.
+	lan := func(r *http.Request) {
+		tailnet(r)
+		r.Header.Del("X-Forwarded-For")
+		r.RemoteAddr = "192.168.1.20:50000"
+	}
+	form := func(code, key string) url.Values {
+		v := url.Values{"machine": {fleetPending}, "code": {code}}
+		if key != "" {
+			v.Set("key", key)
+		}
+		return v
+	}
+	by := func(addr string) string { return "by dashboard session " + sessionTag(testSession) + " from " + addr }
+	pending := func(why string, calls int) {
+		t.Helper()
+		if got := f.called(); len(got) != calls || f.machine(fleetPending).State != "pending" {
+			t.Fatalf("%s: calls %q, machine %s", why, got, f.machine(fleetPending).State)
+		}
+	}
+
+	// Never the API key, with or without the page's Origin, key field or not.
+	for name, set := range map[string]func(*http.Request){
+		"the API key": func(r *http.Request) { tailnet(r); r.Header.Del("Cookie"); bearer("s3cret")(r) },
+		"the API key with no Origin": func(r *http.Request) {
+			r.RemoteAddr, r.Host = "192.168.1.20:50000", "box.tailnet.ts.net"
+			bearer("s3cret")(r)
+		},
+		"the API key beside a stale sign-in": func(r *http.Request) {
+			tailnet(r)
+			r.Header.Set("Cookie", dashCookieName+"=old")
+			bearer("s3cret")(r)
+		},
+	} {
+		rec := sendForm(h, http.MethodPost, "/fleet/confirm", form(fleetCode, "s3cret"), set)
+		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), fleetNotHere) {
+			t.Errorf("%s: %d\n%s", name, rec.Code, rec.Body.String())
+		}
+		pending(name, 0)
+	}
+
+	// A session alone is not enough: no key, a wrong key, the key in the address.
+	for _, tc := range []struct {
+		name, target string
+		form         url.Values
+		said, record string
+	}{
+		{"no key", "/fleet/confirm", form(fleetCode, ""), fleetKeyWrong, "the sign-in key given again was wrong"},
+		{"a wrong key", "/fleet/confirm", form(fleetCode, "s3cre"), fleetKeyWrong, "the sign-in key given again was wrong"},
+		{"the session's own id as the key", "/fleet/confirm", form(fleetCode, testSession), fleetKeyWrong, "the sign-in key given again was wrong"},
+		{"the key in the address", "/fleet/confirm?key=s3cret", form(fleetCode, ""), fleetKeyInURL, "the sign-in key was sent in the address"},
+		{"the key in the address and in the form", "/fleet/confirm?key=s3cret", form(fleetCode, "s3cret"), fleetKeyInURL, "the sign-in key was sent in the address"},
+	} {
+		s.loginOK("127.0.0.1:1") // each case starts with no wrong key counted
+		before := c.notConfirmed()
+		rec := sendForm(h, http.MethodPost, tc.target, tc.form, tailnet)
+		page, _, errMsg := fleetFlash(rec)
+		if rec.Code != http.StatusSeeOther || page != "/fleet/"+fleetPending || errMsg != tc.said {
+			t.Errorf("%s: %d to %q saying %q", tc.name, rec.Code, page, errMsg)
+		}
+		if strings.Contains(rec.Header().Get("Location"), "s3cret") {
+			t.Errorf("%s: the key is in the answer's address: %s", tc.name, rec.Header().Get("Location"))
+		}
+		if c.notConfirmed() != before+1 || !c.hasSecurity("was not confirmed: "+tc.record, "machine="+fleetPending, "@"+surfaceRemote) {
+			t.Errorf("%s: no Security record of the refusal, from elsewhere:\n%s", tc.name, strings.Join(c.security(), "\n"))
+		}
+		pending(tc.name, 0)
+	}
+
+	// Wrong keys are slowed per address, as sign-in's are, and the wait refuses
+	// the right key too, before the digits are looked at.
+	s.loginOK("127.0.0.1:1")
+	for range loginFreeTries + 1 {
+		sendForm(h, http.MethodPost, "/fleet/confirm", form(fleetCode, "guess"), tailnet)
+	}
+	rec := sendForm(h, http.MethodPost, "/fleet/confirm", form(fleetCode, "s3cret"), tailnet)
+	if _, _, errMsg := fleetFlash(rec); !strings.Contains(errMsg, "too many wrong keys from this address") {
+		t.Errorf("the right key during the wait: %q", errMsg)
+	}
+	if !c.hasSecurity("was not confirmed: too many wrong sign-in keys from this address", "@"+surfaceRemote) {
+		t.Errorf("no Security record of the wait:\n%s", strings.Join(c.security(), "\n"))
+	}
+	pending("during the wait", 0)
+	// The wait is the address's: another computer is not held up by it. With
+	// the right key its digits are looked at: wrong ones reach the control and
+	// count against the machine, as at this computer.
+	rec = sendForm(h, http.MethodPost, "/fleet/confirm", form("000000", "s3cret"), lan)
+	if _, _, errMsg := fleetFlash(rec); !strings.Contains(errMsg, "aren't the six digits") {
+		t.Errorf("wrong digits with the right key: %q", errMsg)
+	}
+	want := []string{"confirm|" + fleetPending + "|000000|" + by("192.168.1.20:50000")}
+	if got := f.called(); !slices.Equal(got, want) || f.machine(fleetPending).State != "pending" {
+		t.Fatalf("wrong digits with the right key: calls %q, want %q", got, want)
+	}
+	if s.fails["fleet confirm "+fleetPending].n != 1 {
+		t.Errorf("wrong digits from elsewhere were not counted against the machine: %v", s.fails)
+	}
+
+	// The right key and the right digits, through `tailscale serve` once its
+	// address's wait is over, with a setting chosen for the machine.
+	now = now.Add(2 * time.Second)
+	v := form(fleetCode, "s3cret")
+	v["set"] = []string{"", "web=deny"}
+	rec = sendForm(h, http.MethodPost, "/fleet/confirm", v, tailnet)
+	page, msg, errMsg := fleetFlash(rec)
+	if rec.Code != http.StatusSeeOther || page != "/fleet/"+fleetPending || errMsg != "" || !strings.Contains(msg, "is confirmed") {
+		t.Errorf("from elsewhere with the key: %d to %q, msg %q, err %q", rec.Code, page, msg, errMsg)
+	}
+	// Every request `tailscale serve` passes on comes from 127.0.0.1: the record
+	// also holds what the proxy said of who it was, in quotes, as not checked.
+	want = append(want, "confirm|"+fleetPending+"|"+fleetCode+"|web=deny|"+by("127.0.0.1:50000")+`; its proxy says "100.64.0.7" (not checked)`)
+	if got := f.called(); !slices.Equal(got, want) || f.machine(fleetPending).State != "confirmed" {
+		t.Errorf("from elsewhere with the key: calls %q, want %q; machine %s", got, want, f.machine(fleetPending).State)
+	}
+	if strings.Contains(rec.Header().Get("Location"), "s3cret") {
+		t.Errorf("the key is in the answer's address: %s", rec.Header().Get("Location"))
+	}
+
+	// The browser on this computer needs no key, on or off, and is not "by" anyone.
+	f = fleetFake(3)
+	f.view.RemoteConfirm = true
+	s.SetFleet(f)
+	if rec := sendForm(h, http.MethodPost, "/fleet/confirm", form(fleetCode, ""), here); !slices.Equal(f.called(), []string{"confirm|" + fleetPending + "|" + fleetCode}) {
+		t.Errorf("the browser on this computer, remote confirmation on: %d, calls %q", rec.Code, f.called())
+	}
+
+	// Turned off (the default), the key opens nothing.
+	f = fleetFake(3)
+	s.SetFleet(f)
+	for name, set := range map[string]func(*http.Request){"tailscale serve": tailnet, "another computer": lan} {
+		rec := sendForm(h, http.MethodPost, "/fleet/confirm", form(fleetCode, "s3cret"), set)
+		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), fleetNotHere) {
+			t.Errorf("turned off, %s with the key: %d\n%s", name, rec.Code, rec.Body.String())
+		}
+		pending("turned off, "+name, 0)
+	}
+}
+
+// What a proxy on this computer says of who it passed on goes into the record
+// of a confirmation from elsewhere as another party's words: the tailnet login
+// before the forwarded address, cut short, in quotes it cannot close, and only
+// from a peer on this computer (a request from another computer has no proxy
+// here to speak for it, and could say anything).
+func TestProxySaid(t *testing.T) {
+	for _, tc := range []struct {
+		name, remote string
+		headers      map[string]string
+		want         string
+	}{
+		{"tailscale serve", "127.0.0.1:50000", map[string]string{"Tailscale-User-Login": "op@example.com", "X-Forwarded-For": "100.64.0.7"}, `; its proxy says "op@example.com" (not checked)`},
+		{"a proxy that only forwards", "[::1]:50000", map[string]string{"X-Forwarded-For": "203.0.113.9, 10.0.0.1"}, `; its proxy says "203.0.113.9, 10.0.0.1" (not checked)`},
+		{"no proxy header", "127.0.0.1:50000", nil, ""},
+		{"another computer saying it is someone", "192.168.1.20:50000", map[string]string{"Tailscale-User-Login": "op@example.com"}, ""},
+		{"words that try to close the quote and start a line", "127.0.0.1:50000", map[string]string{"Tailscale-User-Login": "x\" (checked)\noperator@dashboard " + string(rune(0x202e))},
+			`; its proxy says "x\" (checked)\noperator@dashboard ` + "\\" + `u202e" (not checked)`},
+		{"more than is kept", "127.0.0.1:50000", map[string]string{"X-Forwarded-For": strings.Repeat("9", 500)}, `; its proxy says "` + strings.Repeat("9", 128) + `" (not checked)`},
+	} {
+		r := httptest.NewRequest(http.MethodPost, "/fleet/confirm", nil)
+		r.RemoteAddr = tc.remote
+		for k, v := range tc.headers {
+			r.Header.Set(k, v)
+		}
+		if got := proxySaid(r); got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// Refusing a request that carries only the API key keeps a script from
+// confirming by accident. It is not a boundary against whoever holds the key
+// (DESIGN.md §5): the API key is the sign-in key, so a script that signs in
+// with it and sends the form with the dashboard's Origin is a signed-in
+// browser as far as the dashboard can tell. This test states that limit, so
+// that nobody reads more into "never the API key" than is there.
+func TestFleetConfirmFromElsewhereTheKeysHolder(t *testing.T) {
+	f := fleetFake(3)
+	f.view.RemoteConfirm = true
+	s := New(Config{Addr: "127.0.0.1:9770", Auth: "s3cret", AllowedHosts: []string{"box.tailnet.ts.net"}}, nil, nil, nil, nil, nil)
+	s.SetFleet(f)
+	h := s.served()
+	script := func(r *http.Request) {
+		r.RemoteAddr, r.Host = "192.168.1.20:50000", "box.tailnet.ts.net"
+		r.Header.Set("Origin", "https://box.tailnet.ts.net")
+	}
+	rec := sendForm(h, http.MethodPost, "/auth/login", url.Values{"token": {"s3cret"}}, script)
+	var session *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == dashCookieName {
+			session = c
+		}
+	}
+	if session == nil {
+		t.Fatalf("the script's sign-in set no session: %d", rec.Code)
+	}
+	form := url.Values{"machine": {fleetPending}, "code": {fleetCode}, "key": {"s3cret"}}
+	signed := func(r *http.Request) { script(r); r.AddCookie(session) }
+	rec = sendForm(h, http.MethodPost, "/fleet/confirm", form, signed)
+	if _, msg, _ := fleetFlash(rec); !strings.Contains(msg, "is confirmed") || f.machine(fleetPending).State != "confirmed" {
+		t.Errorf("the key's holder, signed in from a script: %d %q, machine %s", rec.Code, msg, f.machine(fleetPending).State)
+	}
+	// Turned off, the same script is refused: off is what holds against the key.
+	f = fleetFake(3)
+	s.SetFleet(f)
+	rec = sendForm(h, http.MethodPost, "/fleet/confirm", form, signed)
+	if rec.Code != http.StatusForbidden || f.machine(fleetPending).State != "pending" || len(f.called()) != 0 {
+		t.Errorf("turned off, the key's holder: %d, machine %s, calls %q", rec.Code, f.machine(fleetPending).State, f.called())
+	}
+}
+
+// The machine's page offers the form with a key field to a signed-in browser
+// elsewhere only while remote confirmation is on; otherwise it says where a
+// machine is confirmed and how the operator turns this on. The browser on
+// this computer never gets a key field.
+func TestFleetConfirmFormFromElsewhere(t *testing.T) {
+	f := fleetFake(3)
+	s := fleetServer(f)
+	s.SetTrustedHosts([]string{"box.tailnet.ts.net"})
+	elsewhere := func(r *http.Request) {
+		r.RemoteAddr, r.Host = "127.0.0.1:50000", "box.tailnet.ts.net"
+		r.Header.Set("X-Forwarded-For", "100.64.0.7")
+		signedIn(r)
+	}
+	local := func(r *http.Request) { here(r); r.Header.Del("Origin") }
+	page := func(set func(*http.Request)) string {
+		rec := sendForm(s.served(), http.MethodGet, "/fleet/"+fleetPending, nil, set)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET the machine's page: %d", rec.Code)
+		}
+		return rec.Body.String()
+	}
+	const keyField, formAction, howTo = `name="key"`, `action="/fleet/confirm"`, "tenant fleet remote-confirm on"
+	if body := page(elsewhere); strings.Contains(body, keyField) || strings.Contains(body, formAction) || !strings.Contains(body, howTo) || !strings.Contains(body, "This browser can't.") {
+		t.Errorf("turned off, a browser elsewhere: want no form, and how it is turned on:\n%s", body)
+	}
+	if body := page(local); strings.Contains(body, keyField) || !strings.Contains(body, formAction) {
+		t.Errorf("turned off, the browser on this computer: want the form with no key field:\n%s", body)
+	}
+	f.mu.Lock()
+	f.view.RemoteConfirm = true
+	f.mu.Unlock()
+	if body := page(elsewhere); !strings.Contains(body, keyField) || !strings.Contains(body, `type="password"`) || !strings.Contains(body, formAction) ||
+		!strings.Contains(body, `name="set"`) || !strings.Contains(body, "This browser is not on the computer running Tenant") {
+		t.Errorf("turned on, a browser elsewhere: want the form, the choices and the key field:\n%s", body)
+	}
+	if body := page(local); strings.Contains(body, keyField) || !strings.Contains(body, formAction) {
+		t.Errorf("turned on, the browser on this computer: want the form with no key field:\n%s", body)
 	}
 }
 
@@ -738,8 +1040,12 @@ func TestFleetStates(t *testing.T) {
 	if strings.Count(list, `<td>unknown</td>`) != 13 {
 		t.Errorf("the memory column: %d of 13 machines say it is unknown", strings.Count(list, `<td>unknown</td>`))
 	}
-	if strings.Count(list, `action="/fleet/`) != strings.Count(list, `action="/fleet/add"`) {
-		t.Errorf("the list carries a form other than Add machine: every change to a machine is on its own page")
+	// One machine is changed on its own page; the list changes the machines
+	// checked in it, together (TEN-546), and the fleet's defaults and groups.
+	for _, action := range []string{"/fleet/permission", "/fleet/rules/add", "/fleet/scheme", "/fleet/update", "/fleet/revoke", "/fleet/rename", "/fleet/confirm"} {
+		if strings.Contains(list, `action="`+action+`"`) {
+			t.Errorf("the list carries %s: a change to one machine is on its own page", action)
+		}
 	}
 
 	// A pending machine, seen from another computer: everything it would start
@@ -788,7 +1094,7 @@ func TestFleetStates(t *testing.T) {
 		`online since 2026-11-18 10:02, from <span class="fl-said">&#34;192.168.1.20:50112&#34;</span>, link version 1, requests in progress: 2`,
 		`<tr><th>Its own limit</th><td class="fl-said">&#34;full&#34;</td></tr>`,
 		"Can create and change files on this machine without asking you.",
-		`<input type="hidden" name="machine" value="` + fleetConfirmed + `"><input type="hidden" name="category" value="write"><input type="hidden" name="mode" value="deny">`,
+		`<input type="hidden" name="machine" value="` + fleetConfirmed + `"><input type="hidden" name="category" value="write"><button type="submit" name="mode" value="deny" class="btn sm">Deny</button>`,
 		`<strong>Act on websites</strong>: this machine is set to Allow; a fresh copy would be Ask first.`,
 		`: only this machine has this rule (Don&#39;t ask); a fresh copy would not.`,
 		`<strong>Rule <span class="nm">os_run(systemctl status *)</span></strong>: this machine doesn&#39;t have this rule; a fresh copy would (Don&#39;t ask). It is one of the fleet&#39;s rules.`,

@@ -459,7 +459,7 @@ func approvalCommands() []*slashCommand {
 				{Syntax: "/permissions set <cat> <mode>", Desc: "e.g. /permissions set exec allow"},
 				{Syntax: "/permissions add <tool|pattern> <mode>", Desc: "per-tool rule: a name (any connector), an exact id, or a glob — delete_* deny, mcp:host:port:* allow"},
 				{Syntax: "/permissions rm <pattern>", Desc: "remove a tool rule"},
-				{Syntax: "/permissions fleet <name> [set|add|rm …]", Desc: "one fleet machine's own scheme, edited the same way; --defaults: the rules new machines start with"},
+				{Syntax: "/permissions fleet <name> [set|add|rm …]", Desc: "one fleet machine's own scheme, edited the same way; --defaults: the categories and rules new machines start with"},
 			}},
 		{Names: []string{"/approve", "/approve!"}, Section: "safety", Run: slashApprove,
 			Summary: "approve a paused dangerous action",

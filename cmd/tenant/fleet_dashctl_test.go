@@ -147,17 +147,7 @@ func (d *fleetDash) page(path string) string {
 }
 
 // records lists the Security records of def as "actor@surface k=v …".
-func (d *fleetDash) records(def *event.Def) []string {
-	var out []string
-	for _, e := range d.ev.matching(def, "") {
-		l := e.Actor + "@" + e.Surface
-		for _, f := range e.Data {
-			l += " " + f.Key + "=" + f.Text()
-		}
-		out = append(out, l)
-	}
-	return out
-}
+func (d *fleetDash) records(def *event.Def) []string { return recordsOf(d.ev, def) }
 
 func hasRecord(records []string, parts ...string) bool {
 	for _, r := range records {
@@ -791,7 +781,7 @@ func TestFleetDashWhenAnotherProcessHoldsTheFleet(t *testing.T) {
 		"a setting":        ctl.SetPermission("", "web", "deny"),
 		"a rule":           ctl.SetRule("nobody", "x", "deny"),
 		"a copy":           ctl.Recopy("nobody", "master"),
-		"a confirmation":   ctl.Confirm("edge1", ch.code, nil),
+		"a confirmation":   ctl.Confirm("edge1", ch.code, nil, ""),
 		"an unknown field": ctl.SetPermission(ch.id, "root", "allow"),
 	} {
 		if err == nil || (name != "an unknown field" && !errors.As(err, &plain)) {
@@ -840,7 +830,7 @@ func TestFleetDashWhenTheFilesCannotBeRead(t *testing.T) {
 		t.Error("a fresh copy was made from rules that can't be read")
 	}
 	var plain dashboard.PlainError
-	if err := ctl.Confirm(waiting.id, waiting.code, nil); err == nil || errors.As(err, &plain) {
+	if err := ctl.Confirm(waiting.id, waiting.code, nil, ""); err == nil || errors.As(err, &plain) {
 		t.Errorf("a machine was confirmed on rules that can't be read: %v", err)
 	}
 	if m, _ := fleet.Open(l.cfg).Machine(waiting.id); m.State != fleet.StatePending {
@@ -862,7 +852,7 @@ func TestFleetDashWhenTheFilesCannotBeRead(t *testing.T) {
 		t.Fatalf("the fleet with a fleet.json that can't be read: %+v", v)
 	}
 	for name, err := range map[string]error{"rename": ctl.Rename(done.id, "edge1"), "revoke": ctl.Revoke(done.id, true), "a setting": ctl.SetPermission(done.id, "web", "deny"),
-		"a confirmation": ctl.Confirm(waiting.id, waiting.code, nil)} {
+		"a confirmation": ctl.Confirm(waiting.id, waiting.code, nil, "")} {
 		if err == nil || errors.As(err, &plain) {
 			t.Errorf("%s with fleet.json unreadable: %v, want the store's error", name, err)
 		}

@@ -568,6 +568,12 @@ type Fleet struct {
 	// init` has made this Tenant a master. Empty: 0.0.0.0:9777. The addresses
 	// children are told to dial are a separate list, kept in fleet.json.
 	Listen string `json:"listen,omitempty"`
+	// RemoteConfirm lets a signed-in dashboard browser that is not on this
+	// computer confirm a pending machine, once it gives the dashboard's
+	// sign-in key again (TEN-545). False, the default: a machine is confirmed
+	// at this computer only. It is switched at this computer's terminal
+	// (`tenant fleet remote-confirm`), never from the dashboard.
+	RemoteConfirm bool `json:"remote_confirm,omitempty"`
 }
 
 // IMessage holds the iMessage drive-allowlist: the normalized handles

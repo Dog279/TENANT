@@ -11,14 +11,18 @@ package main
 // Confirming a machine is the one step that lets a master call it. It is
 // taken here, in the terminal's /fleet confirm and on the dashboard's Fleet
 // page opened on this computer, and nowhere else: no tool, no relay and no
-// approval card leads to it (fleetOps.confirmMachine).
+// approval card leads to it (fleetOps.confirmMachine). The operator can let a
+// signed-in browser elsewhere take it too, with the sign-in key again
+// (`tenant fleet remote-confirm`, off by default; TEN-545).
 
 import (
 	"bufio"
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -154,7 +158,17 @@ type fleetOps struct {
 	cfgDir  string
 	dataDir string // where the machines' memory is kept (fleetmemory.go)
 	store   *fleet.Store
-	surface string // cli | tui, for the Security record
+	surface string // cli | tui | dashboard | dashboard-remote, for the Security record
+	// by says who asked for a confirmation when it is not the operator at this
+	// computer (a dashboard session elsewhere); "" otherwise. It goes into the
+	// confirmation's records.
+	by string
+	// shown is the scheme the operator was shown on the confirm screen, as
+	// schemeShown names it; "" where no screen came first in this process.
+	// confirmMachine refuses when what the machine would start with has
+	// changed since: a default, a fleet rule or a group may have been edited
+	// between the screen and the digits.
+	shown string
 	// schemes is the fleet's approval schemes, saved when changed. The command
 	// line reads them from the settings file at each call, so what it saves
 	// over is what is there now.
@@ -184,7 +198,9 @@ type fleetPreview struct {
 	// adopted the id. Nothing is copied from the master then.
 	Kept       bool
 	Master     map[string]approval.Mode // the master's own category modes
+	Defaults   map[string]string        // the fleet's default categories for new machines
 	FleetRules map[string]string        // the fleet's rules for new machines
+	Groups     []approval.Group         // the machine's groups, in the order their rules were laid
 	Set        map[string]string        // what the operator set on the confirm screen
 }
 
@@ -205,9 +221,10 @@ func parseSet(pairs []string) (map[string]string, error) {
 }
 
 // preview works out the scheme machine m starts with: the one kept under its
-// id if it adopted one, else a copy of the master's local scheme with exec,
-// write, destructive, send and sandbox no looser than ask and the fleet's
-// rules laid over it; then what the operator set here.
+// id if it adopted one, else its fresh copy (approval.Fleet.Fresh): a copy of
+// the master's local scheme with exec, write, destructive, send and sandbox
+// no looser than ask, the fleet's default categories, the fleet's rules and
+// its groups' rules laid over it; then what the operator set here.
 func (o fleetOps) preview(m fleet.Machine, set map[string]string) (*approval.Fleet, fleetPreview, error) {
 	p := fleetPreview{Set: set}
 	f, err := o.schemes()
@@ -221,8 +238,12 @@ func (o fleetOps) preview(m fleet.Machine, set map[string]string) (*approval.Fle
 	p.Master, p.FleetRules = approval.SavedModes(local.Permissions), f.Rules().Snapshot()
 	if kept, err := f.Scheme(m.ID); err == nil {
 		p.Scheme, p.Kept = kept, true
-	} else if p.Scheme, err = f.Inherit(local); err != nil {
+	} else if p.Scheme, err = f.Fresh(m.ID, local); err != nil {
 		return nil, p, err
+	} else {
+		// Fresh worked, so neither can fail.
+		p.Defaults, _ = f.Defaults()
+		p.Groups, _ = f.GroupsOf(m.ID)
 	}
 	for cat, mode := range set {
 		p.Scheme.Permissions[cat] = mode
@@ -247,8 +268,10 @@ func (o fleetOps) audit(m fleet.Machine, change, detail string) {
 // outside the store's own package, and its own callers are the command line
 // (fleetConfirmCmd, which reads the digits from a terminal), the terminal
 // app's /fleet confirm and the dashboard's Fleet page, which takes the digits
-// only from a browser signed in on this computer (dashFleet.Confirm): nothing
-// a relay or a tool can reach.
+// from a browser signed in on this computer or, once the operator turned
+// remote confirmation on, from a signed-in browser elsewhere that gave the
+// sign-in key again (dashFleet.Confirm; o.by then says which): nothing a
+// relay or a tool can reach.
 //
 // The machine's scheme is saved first and the machine confirmed second, so a
 // machine is never callable without a scheme; if the confirmation fails, a
@@ -259,9 +282,13 @@ func (o fleetOps) confirmMachine(ref, code string, set map[string]string) (fleet
 		return m, fleetPreview{}, err
 	}
 	refuse := func(err error) (fleet.Machine, fleetPreview, error) {
-		_ = catalog.FleetConfirmRefused.Audit(context.Background(), "name", m.Name, "machine", m.ID, "reason", err.Error(),
+		reason := err.Error()
+		if o.by != "" {
+			reason += "; asked by " + o.by
+		}
+		_ = catalog.FleetConfirmRefused.Audit(context.Background(), "name", m.Name, "machine", m.ID, "reason", reason,
 			"actor", actorOperator, "surface", o.surface)
-		_ = fleet.ConfirmRefused.Audit(context.Background(), "name", m.Name, "machine", m.ID, "reason", err.Error(), "surface", o.surface)
+		_ = fleet.ConfirmRefused.Audit(context.Background(), "name", m.Name, "machine", m.ID, "reason", reason, "surface", o.surface)
 		return m, fleetPreview{}, err
 	}
 	if m.State != fleet.StatePending {
@@ -278,6 +305,9 @@ func (o fleetOps) confirmMachine(ref, code string, set map[string]string) (fleet
 	f, p, err := o.preview(m, set)
 	if err != nil {
 		return m, p, err
+	}
+	if o.shown != "" && schemeShown(p.Scheme) != o.shown {
+		return refuse(errors.New("what this machine would start with changed since the screen you read (a default, a fleet rule or one of its groups was edited): look at it again, then confirm"))
 	}
 	if err := f.Put(m.ID, p.Scheme); err != nil {
 		return m, p, err
@@ -301,7 +331,13 @@ func (o fleetOps) confirmMachine(ref, code string, set map[string]string) (fleet
 		Reported fleet.Reported    `json:"reported_by_the_machine"`
 		Set      map[string]string `json:"set_by_the_operator,omitempty"`
 		Kept     bool              `json:"scheme_kept_with_the_id,omitempty"`
-	}{got.Reported, set, p.Kept})
+		By       string            `json:"asked_by,omitempty"`
+		// The layers laid over its copy of the master's scheme (TEN-546): the
+		// default categories set for new machines, and its groups in the order
+		// their rules were laid. The fleet's rules are in the scheme itself.
+		Defaults map[string]string `json:"fleet_defaults,omitempty"`
+		Groups   []string          `json:"groups_laid,omitempty"`
+	}{got.Reported, set, p.Kept, o.by, p.Defaults, groupNames(p.Groups)})
 	o.audit(got, "confirmed", string(detail)+inventory)
 	return got, p, nil
 }
@@ -327,17 +363,31 @@ func (o fleetOps) revoke(ref string, deleteScheme bool) (fleet.Machine, error) {
 		return m, fmt.Errorf("%s is revoked, but its approval scheme was not deleted: %w", fleetName(m.Name), err)
 	}
 	f.Delete(m.ID)
+	// And its groups: the id can no longer come back. (A revoke that keeps the
+	// scheme keeps them, for a machine that adopts the id.) Groups that can't
+	// be read keep the id in their text: harmless once the record is gone, as
+	// no machine can have the id again, and said.
+	groups, groupsErr := f.LeaveGroups(m.ID)
 	if err := o.store.Remove(m.ID); err != nil {
 		return m, fmt.Errorf("%s is revoked, but its record was not removed: %w", fleetName(m.Name), err)
 	}
 	// Its memory goes with it (TEN-532): the shadow, its snapshots and what
 	// was kept aside. The copies on the machine are the machine's.
 	memory, err := removeFleetMemory(o.cfgDir, o.dataDir, m.ID)
+	switch {
+	case groupsErr != nil:
+		memory = "it is still listed in the groups, which can't be read; " + memory
+	case len(groups) > 0:
+		memory = "it left group(s) " + strings.Join(groups, ", ") + "; " + memory
+	}
 	if err != nil {
 		o.audit(m, "removed", "revoked; its record and approval scheme are deleted; its memory was not: "+err.Error())
 		return m, fmt.Errorf("%s is revoked and its record and approval scheme are deleted, but its memory was not: %w", fleetName(m.Name), err)
 	}
 	o.audit(m, "removed", "revoked; its record and approval scheme are deleted; "+memory)
+	if groupsErr != nil {
+		return m, fmt.Errorf("%s is revoked and its record and approval scheme are deleted, but it is still listed in the groups: %w", fleetName(m.Name), groupsErr)
+	}
 	return m, nil
 }
 
@@ -368,7 +418,8 @@ func confirmScreen(m fleet.Machine, p fleetPreview) string {
 		lines = append(lines, "  Approval scheme it starts with (kept under this id from the machine that had it before; nothing is copied from this master):")
 	} else {
 		lines = append(lines, "  Approval scheme it starts with (a copy of this master's local scheme; exec, write, destructive, send and sandbox",
-			"  no looser than ask, whatever the master allows; the fleet's rules for new machines laid over it, and they win):")
+			"  no looser than ask, whatever the master allows; then the fleet's defaults for new machines, then the rules of its",
+			"  groups, each laid over the one before and winning):")
 	}
 	lines = append(lines, schemeLines(p.Scheme, "    ", p.catNote, p.ruleNote)...)
 	lines = append(lines, "  After this the two schemes are independent: a later change on the master does not move this machine.")
@@ -376,61 +427,126 @@ func confirmScreen(m fleet.Machine, p fleetPreview) string {
 }
 
 // catNote says where a category's mode on the confirm screen came from, when
-// it is not simply the master's own: the operator set it here, or the master
-// allows what a machine starts no looser than ask.
+// it is not simply the master's own: the operator set it here, it is the
+// fleet's default for new machines, or the master allows what a machine
+// starts no looser than ask.
 func (p fleetPreview) catNote(cat, mode string) string {
 	switch master, known := p.Master[cat]; {
 	case p.Set[cat] != "":
 		return "set by you, for this machine only"
+	case !p.Kept && p.Defaults[cat] != "":
+		return "fleet default"
 	case !p.Kept && known && master.String() != mode:
 		return "(this master: " + master.String() + ")"
 	}
 	return ""
 }
 
-// ruleNote marks a rule that is one of the fleet's rules for new machines.
+// ruleNote marks a rule a layer laid: the last of the machine's groups that
+// has it (the one that won), else the fleet's rules for new machines.
 func (p fleetPreview) ruleNote(pattern, mode string) string {
+	for _, g := range slices.Backward(p.Groups) {
+		if g.ToolRules[pattern] != "" {
+			if g.ToolRules[pattern] == mode {
+				return "group " + g.Name
+			}
+			break
+		}
+	}
 	if p.FleetRules[pattern] == mode {
 		return "fleet rule"
 	}
 	return ""
 }
 
-// recopy gives a machine its scheme again: from "defaults" the fleet's rules
-// are laid over the scheme it has; from "master" it gets a fresh copy of the
-// master's local scheme, as a machine confirmed now would (Fleet.Inherit).
-// f is the fleet's schemes (o.schemes).
-func (o fleetOps) recopy(f *approval.Fleet, m fleet.Machine, from string) error {
+// recopy gives a machine its scheme again: from "defaults" (Apply fleet
+// rules) the fleet's rules and then its groups' rules, in name order, are
+// laid over the scheme it has, its categories kept (Fleet.Reapply); from
+// "master" it gets its fresh copy, as a machine confirmed now would
+// (Fleet.Fresh). f is the fleet's schemes (o.schemes). said is what was done,
+// in words.
+func (o fleetOps) recopy(f *approval.Fleet, m fleet.Machine, from string) (said string, err error) {
 	switch from {
 	case "defaults":
-		s, err := f.Scheme(m.ID)
+		before, _ := f.Scheme(m.ID)
+		groups, err := f.Reapply(m.ID)
 		if err != nil {
-			return err
+			return "", err
 		}
-		if err := f.Put(m.ID, s.Overlay(f.Rules().Snapshot())); err != nil {
-			return err
+		said = "the fleet's rules laid over its approval scheme again"
+		if len(groups) > 0 {
+			said += ", then the rules of group(s) " + strings.Join(groups, ", ")
 		}
-		o.audit(m, "scheme changed", "the fleet's rules laid over its approval scheme again")
+		// Which of its own rules a laid rule replaced: a block among them is
+		// gone from this machine, and the record is where that is said.
+		if after, err := f.Scheme(m.ID); err == nil {
+			said += replacedRules(before, after)
+		}
+		o.audit(m, "scheme changed", said)
 	case "master":
 		if m.State == fleet.StatePending || m.State == fleet.StateRevoked {
-			return fmt.Errorf("%s is %s: a machine gets its scheme when it is confirmed", fleetName(m.Name), m.State)
+			return "", fmt.Errorf("%s is %s: a machine gets its scheme when it is confirmed", fleetName(m.Name), m.State)
 		}
 		local, err := o.local()
 		if err != nil {
-			return err
+			return "", err
 		}
-		s, err := f.Inherit(local)
+		s, err := f.Fresh(m.ID, local)
 		if err != nil {
-			return err
+			return "", err
 		}
+		groups, _ := f.GroupsOf(m.ID) // Fresh read them
 		if err := f.Put(m.ID, s); err != nil {
-			return err
+			return "", err
 		}
-		o.audit(m, "scheme changed", "a fresh copy of the master's local scheme")
+		said = "a fresh copy of the master's local scheme, with the fleet's defaults"
+		if len(groups) > 0 {
+			names := make([]string, len(groups))
+			for i, g := range groups {
+				names[i] = g.Name
+			}
+			said += " and the rules of group(s) " + strings.Join(names, ", ")
+		}
+		o.audit(m, "scheme changed", said)
 	default:
-		return fmt.Errorf("--from %s: want defaults or master", fleetQuote(from))
+		return "", fmt.Errorf("--from %s: want defaults or master", fleetQuote(from))
 	}
-	return nil
+	return said, nil
+}
+
+// schemeShown names a scheme as it was shown to the operator, so that a later
+// step can tell whether it is still the same one: the first 16 hex digits of
+// the SHA-256 of its JSON (whose keys encoding/json sorts).
+func schemeShown(s approval.Scheme) string {
+	b, _ := json.Marshal(s)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:8])
+}
+
+func groupNames(groups []approval.Group) []string {
+	var out []string
+	for _, g := range groups {
+		out = append(out, g.Name)
+	}
+	return out
+}
+
+// replacedRules says which rules of before are gone or changed in after, as
+// Apply's record tells it: each with the mode it had, ten at most.
+func replacedRules(before, after approval.Scheme) string {
+	var gone []string
+	for _, p := range slices.Sorted(maps.Keys(before.ToolRules)) {
+		if mode := before.ToolRules[p]; after.ToolRules[p] != mode {
+			gone = append(gone, fleetRule(p)+" (was "+mode+")")
+		}
+	}
+	switch n := len(gone); {
+	case n == 0:
+		return ""
+	case n > 10:
+		return fmt.Sprintf("; of its own rules, replaced: %s and %d more", strings.Join(gone[:10], ", "), n-10)
+	}
+	return "; of its own rules, replaced: " + strings.Join(gone, ", ")
 }
 
 // listText is the fleet's machines, one per line. links is the state of each
@@ -518,7 +634,8 @@ func cmdFleet(_ context.Context, args []string) error {
 		"init": fleetInitCmd, "enroll": fleetEnrollCmd, "list": fleetListCmd, "ls": fleetListCmd, "show": fleetShowCmd,
 		"confirm": fleetConfirmCmd, "rename": fleetRenameCmd, "revoke": fleetRevokeCmd,
 		"permissions": fleetPermissionsCmd, "perms": fleetPermissionsCmd, "relay": fleetRelayCmd,
-		"update": fleetUpdateCmd, "recover": fleetRecoverCmd, "address": fleetAddressCmd,
+		"update": fleetUpdateCmd, "recover": fleetRecoverCmd, "address": fleetAddressCmd, "group": fleetGroupCmd,
+		"remote-confirm": fleetRemoteConfirmCmd,
 	}[args[0]]
 	if run == nil {
 		return fleetUsage()
@@ -545,12 +662,25 @@ func fleetUsage() error {
   revoke <name> [--keep-scheme | --delete-scheme]
   permissions <name> [set <category> <mode> | add <pattern> <mode> | rm <pattern>]
   permissions <name> --from defaults|master
-                          lay the fleet's rules over one machine again, or copy the master's scheme again
-  permissions --defaults [add <pattern> <mode> | rm <pattern>]
-                          the rules every newly confirmed machine starts with
+                          lay the fleet's rules and its groups' rules over one machine again,
+                          or copy the master's scheme again (with the fleet's defaults and groups)
+  permissions --group <group> | --all  [set <category> <mode> | add <pattern> <mode> | rm <pattern>]
+  permissions --group <group> | --all  --from defaults|master
+                          the same change to each member of a group, or to every confirmed
+                          machine: one line each; exits 1 if any was not changed
+  permissions --defaults [set <category> <mode> | unset <category> | add <pattern> <mode> | rm <pattern>]
+                          the categories and rules every newly confirmed machine starts with
+  group [show <group> | create <group> | delete <group>]
+  group add|remove <group> <machine>...
+  group rules <group> [add <pattern> <mode> | rm <pattern>]
+                          machine groups: changing one moves no machine
+  group apply <group>     lay the fleet's rules, then each member's groups' rules (by name), over
+                          each confirmed member's scheme, on purpose
   relay [discord|imessage [on|off]]
                           whether a turn from that relay may reach the fleet at all (off by default)
-  update <name> | --all [--version vX.Y.Z] [--allow-older] [--arch amd64|arm64]
+  remote-confirm [on|off] whether a signed-in dashboard browser on another computer may confirm a
+                          machine, with the sign-in key again (off by default)
+  update <name> | --all | --group <group> [--version vX.Y.Z] [--allow-older] [--arch amd64|arm64]
                           send a machine a newer Tenant over its link, through the running
                           Tenant that holds the fleet; the machine rolls back if it fails
   recover <name> [--was ID]
@@ -612,18 +742,27 @@ func fileFleetSchemes(cfgDir, agent string) (*approval.Fleet, error) {
 		return nil, err // never written over what could not be read
 	}
 	f := approval.NewFleet(categorize)
-	if _, problems := f.Load(stg.FleetSchemes, stg.FleetRules); len(problems) > 0 {
+	_, problems := f.Load(stg.FleetSchemes, stg.FleetRules)
+	_, more := f.LoadLayers(stg.FleetPermissions, stg.FleetGroups)
+	if problems = append(problems, more...); len(problems) > 0 {
 		fmt.Fprintln(fleetNotes, "note: "+strings.Join(problems, "\nnote: "))
 	}
 	var mu sync.Mutex
-	f.SetPersist(func(snapshot func() (map[string]json.RawMessage, json.RawMessage)) {
+	// Each hook reads the file again and writes its own two keys over it.
+	save := func(set func(stg *settings)) {
 		mu.Lock()
 		defer mu.Unlock()
 		if fresh, err := loadSettings(cfgDir, agent); err == nil {
 			stg = fresh
 		}
-		stg.FleetSchemes, stg.FleetRules = snapshot()
+		set(stg)
 		saveSettingsOrTell(stg, cfgDir, agent, func(s string) { fmt.Fprintln(fleetNotes, s) })
+	}
+	f.SetPersist(func(snapshot func() (map[string]json.RawMessage, json.RawMessage)) {
+		save(func(stg *settings) { stg.FleetSchemes, stg.FleetRules = snapshot() })
+	})
+	f.SetPersistLayers(func(snapshot func() (json.RawMessage, json.RawMessage)) {
+		save(func(stg *settings) { stg.FleetPermissions, stg.FleetGroups = snapshot() })
 	})
 	return f, nil
 }
@@ -1233,6 +1372,7 @@ func fleetConfirmCmd(args []string) error {
 		return err
 	}
 	fmt.Println(confirmScreen(m, p))
+	cli.ops.shown = schemeShown(p.Scheme) // what is confirmed is what this screen showed
 	// The digits are typed by a person, at a terminal, after reading the
 	// screen above. There is no flag for them: a command a script or the agent
 	// runs cannot confirm a machine.
@@ -1348,19 +1488,49 @@ func permEdit(cats *approvalBroker, rules tui.ToolRuleControl, surface string, a
 }
 
 // fleetRuleSet is the fleet's rules for new machines as an editor takes them.
-type fleetRuleSet struct{ r *toolRules }
+// With o, each change is recorded (fleetOps.auditSettings): a rule that lets a
+// tool run on every machine confirmed from now on is not a quiet change.
+type fleetRuleSet struct {
+	r *toolRules
+	o *fleetOps
+}
 
-func (s fleetRuleSet) Rules() []tui.ToolRuleInfo               { return s.r.Rules() }
-func (s fleetRuleSet) SetRule(pattern, mode string) error      { return s.r.Set(pattern, mode) }
-func (s fleetRuleSet) RemoveRule(pattern string) (bool, error) { return s.r.Remove(pattern), nil }
+func (s fleetRuleSet) Rules() []tui.ToolRuleInfo { return s.r.Rules() }
+
+func (s fleetRuleSet) SetRule(pattern, mode string) error {
+	if err := s.r.Set(pattern, mode); err != nil {
+		return err
+	}
+	if s.o != nil {
+		m, _ := approval.ParseMode(mode)
+		s.o.auditSettings(defaultsWhat, "rule set", strings.TrimSpace(pattern)+" "+m.String())
+	}
+	return nil
+}
+
+func (s fleetRuleSet) RemoveRule(pattern string) (bool, error) {
+	had := s.r.Remove(pattern)
+	if had && s.o != nil {
+		s.o.auditSettings(defaultsWhat, "rule removed", strings.TrimSpace(pattern))
+	}
+	return had, nil
+}
 
 func fleetPermissionsCmd(args []string) error {
 	fs := flag.NewFlagSet("fleet permissions", flag.ContinueOnError)
-	defaults := fs.Bool("defaults", false, "the fleet's rules for new machines, not one machine's scheme")
-	from := fs.String("from", "", "defaults: lay the fleet's rules over this machine again; master: copy the master's local scheme again")
+	defaults := fs.Bool("defaults", false, "the fleet's categories and rules for new machines, not one machine's scheme")
+	from := fs.String("from", "", "defaults: lay the fleet's rules and the machine's groups' rules over it again; master: copy the master's local scheme again")
+	group := fs.String("group", "", "make the change to each member of this group")
+	all := fs.Bool("all", false, "make the change to every confirmed machine")
 	cli, err := openFleetCLI(fs, args)
 	if err != nil {
 		return err
+	}
+	switch {
+	case (*group != "" || *all) && (*defaults || *group != "" && *all):
+		return errors.New("--group, --all and --defaults go one at a time")
+	case *group != "" || *all:
+		return fleetBulkPermissions(cli, fleetSelection{Group: *group, All: *all}, *from)
 	}
 	f, err := cli.ops.schemes()
 	if err != nil {
@@ -1368,22 +1538,38 @@ func fleetPermissionsCmd(args []string) error {
 	}
 	if *defaults {
 		if *from != "" {
-			return errors.New("usage: tenant fleet permissions --defaults [add <pattern> <mode> | rm <pattern>]")
+			return errors.New("usage: tenant fleet permissions --defaults [set <category> <mode> | unset <category> | add <pattern> <mode> | rm <pattern>]")
 		}
+		const later = ". Machines confirmed or copied again from now on start with it; it moves none: tenant fleet permissions <name> --from master"
+		verb := ""
 		if len(cli.pos) > 0 {
-			done, err := permEdit(nil, fleetRuleSet{f.Rules()}, surfaceCLI, cli.pos)
+			verb = strings.ToLower(cli.pos[0])
+		}
+		switch {
+		case verb == "set" || verb == "unset":
+			said, err := defaultEdit(cli.ops, cli.pos)
+			if err != nil {
+				return err
+			}
+			fmt.Println(said + later)
+			return nil
+		case len(cli.pos) > 0:
+			done, err := permEdit(nil, fleetRuleSet{f.Rules(), &cli.ops}, surfaceCLI, cli.pos)
 			if err != nil {
 				return fmt.Errorf("fleet rules: %w", err)
 			}
 			fmt.Println("fleet rules: " + done + ". Machines confirmed from now on start with it; one confirmed already: tenant fleet permissions <name> --from defaults")
 			return nil
 		}
-		fmt.Println("Fleet rules: what every newly confirmed machine starts with, laid over the scheme it inherits")
-		fmt.Println(strings.Join(schemeLines(approval.Scheme{ToolRules: f.Rules().Snapshot()}, "  ", nil, nil)[len(approval.Categories):], "\n"))
+		text, err := defaultsText(f, "tenant fleet permissions --defaults")
+		if err != nil {
+			return err
+		}
+		fmt.Println(text)
 		return nil
 	}
 	if len(cli.pos) == 0 {
-		return errors.New("usage: tenant fleet permissions <name> [set <category> <mode> | add <pattern> <mode> | rm <pattern>] [--from defaults|master]   |   tenant fleet permissions --defaults")
+		return errors.New("usage: tenant fleet permissions <name> [set <category> <mode> | add <pattern> <mode> | rm <pattern>] [--from defaults|master]   |   tenant fleet permissions --group <group> | --all ...   |   tenant fleet permissions --defaults")
 	}
 	m, err := cli.ops.machine(cli.pos[0])
 	if err != nil {
@@ -1394,20 +1580,13 @@ func fleetPermissionsCmd(args []string) error {
 	case *from != "" && len(cli.pos) > 1:
 		return errors.New("--from takes no edit beside it")
 	case *from != "":
-		if err := cli.ops.recopy(f, m, *from); err != nil {
-			return err
-		}
-		if *from == "defaults" {
-			fmt.Printf("%s: the fleet's rules are laid over its scheme again\n", name)
-		} else {
-			fmt.Printf("%s: its scheme is a fresh copy of this master's local scheme (exec, write, destructive, send and sandbox no looser than ask), with the fleet's rules\n", name)
-		}
-	case len(cli.pos) > 1:
-		b, err := f.Child(m.ID)
+		said, err := cli.ops.recopy(f, m, *from)
 		if err != nil {
 			return err
 		}
-		done, err := permEdit(b, b, surfaceCLI, cli.pos[1:])
+		fmt.Printf("%s: %s\n", name, said)
+	case len(cli.pos) > 1:
+		done, err := cli.ops.editMachine(f, m, cli.pos[1:])
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
@@ -1468,4 +1647,80 @@ func fleetRelaySwitch(cfgDir string, lc *launchConfig, args []string) (string, e
 		on = lc.IMessage.AllowFleet
 	}
 	return relay + " is " + state(on), nil
+}
+
+func fleetRemoteConfirmCmd(args []string) error {
+	cli, err := openFleetCLI(flag.NewFlagSet("fleet remote-confirm", flag.ContinueOnError), args)
+	if err != nil {
+		return err
+	}
+	// Turning it on widens who may confirm a machine, so it takes a person at
+	// a terminal, as confirming one does: a command a script or the agent runs
+	// has none, and there is no flag that answers for them (terminalAsk).
+	// Turning it off needs nobody: it only closes.
+	if on, err := parseOnOff(strings.Join(cli.pos, " ")); len(cli.pos) == 1 && err == nil && on {
+		answer, err := fleetAsk("This lets a signed-in dashboard browser on another computer confirm a pending machine, once it gives the sign-in key again.\n" +
+			"Whoever holds that key can then confirm a machine from anywhere the dashboard is reached.\nType on to turn it on (Enter alone cancels): ")
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(answer, "on") {
+			return errors.New("not turned on")
+		}
+	}
+	out, err := fleetRemoteConfirmSwitch(cli.ops, cli.c.lc, cli.pos)
+	if err != nil {
+		return err
+	}
+	fmt.Println(out)
+	return nil
+}
+
+// fleetRemoteConfirmSwitch shows or sets fleet.remote_confirm (TEN-545):
+// whether a signed-in dashboard browser that is not on this computer may
+// confirm a pending machine, once it gives the sign-in key again. It is set
+// at this computer, by a person: the command line asks at a terminal before
+// it turns it on (fleetRemoteConfirmCmd), the terminal app takes it from a
+// typed line only, and the dashboard has no switch, so a session elsewhere
+// cannot open the door it then walks through. The file is no better guarded
+// than config.json is: whatever can write that file as this account can set
+// it. The running Tenant reads config.json at each confirmation.
+func fleetRemoteConfirmSwitch(o fleetOps, lc *launchConfig, args []string) (string, error) {
+	state := func(on bool) string {
+		if on {
+			return "remote confirmation is on: a signed-in dashboard browser on another computer can confirm a pending machine, after giving the sign-in key again. So can anyone else who holds that key, from wherever the dashboard is reached"
+		}
+		return "remote confirmation is off: a machine is confirmed at this computer only (a browser signed in at the dashboard's 127.0.0.1 address, or the terminal)"
+	}
+	switch len(args) {
+	case 0:
+		return state(fleetRemoteConfirmOn(o.cfgDir)), nil
+	case 1:
+		on, err := parseOnOff(args[0])
+		if err != nil {
+			return "", err
+		}
+		// Written whatever lc says it is: lc is this process's copy, and
+		// another process may have switched the file since.
+		if err := persistLaunchConfig(o.cfgDir, lc, func(lc *launchConfig) { lc.Fleet.RemoteConfirm = on }); err != nil {
+			return "", err
+		}
+		o.audit(fleet.Machine{Name: "(this master)"}, "remote confirmation turned "+map[bool]string{true: "on", false: "off"}[on],
+			"whether a signed-in dashboard browser on another computer may confirm a machine (fleet.remote_confirm)")
+		// What the file says now, not what was asked: config.json has no lock
+		// between processes, and another save may have landed on top of this one.
+		if now := fleetRemoteConfirmOn(o.cfgDir); now != on {
+			return "", fmt.Errorf("config.json was written, and now says remote confirmation is %s: another process saved it at the same moment. Run this again", map[bool]string{true: "on", false: "off"}[now])
+		}
+		return state(on), nil
+	}
+	return "", errors.New("usage: fleet remote-confirm [on|off]")
+}
+
+// fleetRemoteConfirmOn is fleet.remote_confirm as config.json holds it now.
+// A file that cannot be read is off: the door is not left open on the
+// strength of a file nobody can read.
+func fleetRemoteConfirmOn(cfgDir string) bool {
+	lc, err := loadLaunchConfig(cfgDir)
+	return err == nil && lc.Fleet.RemoteConfirm
 }

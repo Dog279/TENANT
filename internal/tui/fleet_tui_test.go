@@ -65,7 +65,7 @@ func newFakeFleet() *fakeFleet {
 	mk := func() *fakeFleetPerms {
 		return &fakeFleetPerms{modes: map[string]string{"exec": "ask"}, rules: map[string]string{}}
 	}
-	return &fakeFleet{perms: map[string]*fakeFleetPerms{"web1": mk()}, defaults: mk()}
+	return &fakeFleet{perms: map[string]*fakeFleetPerms{"web1": mk()}, defaults: &fakeFleetPerms{modes: map[string]string{}, rules: map[string]string{}}}
 }
 
 func (f *fakeFleet) note(parts ...string) string {
@@ -93,9 +93,31 @@ func (f *fakeFleet) Perms(name string) (PermissionControl, error) {
 	}
 	return nil, errors.New("no machine " + name)
 }
-func (f *fakeFleet) Defaults() ToolRuleControl { return f.defaults }
+func (f *fakeFleet) Defaults() FleetDefaults { return fakeDefaults{f.defaults} }
+func (f *fakeFleet) Group(args []string) (string, error) {
+	return f.note(append([]string{"group"}, args...)...), nil
+}
+
+// fakeDefaults are the defaults for new machines: only the categories set.
+type fakeDefaults struct{ *fakeFleetPerms }
+
+func (d fakeDefaults) Permissions() []PermissionInfo {
+	if d.modes["exec"] == "" {
+		return nil
+	}
+	return d.fakeFleetPerms.Permissions()
+}
+
+func (d fakeDefaults) UnsetPermission(cat string) (bool, error) {
+	had := d.modes[cat] != ""
+	delete(d.modes, cat)
+	return had, nil
+}
 func (f *fakeFleet) Relay(args []string) (string, error) {
 	return f.note(append([]string{"relay"}, args...)...), nil
+}
+func (f *fakeFleet) RemoteConfirm(args []string) (string, error) {
+	return f.note(append([]string{"remote-confirm"}, args...)...), nil
 }
 
 func newFleetModel(f FleetControl) *model {
@@ -161,7 +183,7 @@ func TestSlashFleetChangesNeedTheKeyboard(t *testing.T) {
 	f := newFakeFleet()
 	m := newFleetModel(f)
 	for _, line := range []string{
-		"/fleet enroll web2", "/fleet confirm web1 123456", "/fleet confirm web1 123 456 exec=allow", "/fleet revoke web1 delete", "/fleet revoke web1 keep", "/fleet relay discord on",
+		"/fleet enroll web2", "/fleet confirm web1 123456", "/fleet confirm web1 123 456 exec=allow", "/fleet revoke web1 delete", "/fleet revoke web1 keep", "/fleet relay discord on", "/fleet remote-confirm on",
 	} {
 		slash(m, line)
 		if len(f.calls) != 0 {
@@ -174,7 +196,7 @@ func TestSlashFleetChangesNeedTheKeyboard(t *testing.T) {
 	// What only looks is answered either way.
 	for line, want := range map[string]string{
 		"/fleet": "status", "/fleet show web1": "show web1", "/fleet confirm web1": "confirm web1 code=",
-		"/fleet revoke web1": "revoke web1 scheme=", "/fleet relay": "relay", "/fleet relay discord": "relay discord",
+		"/fleet revoke web1": "revoke web1 scheme=", "/fleet relay": "relay", "/fleet relay discord": "relay discord", "/fleet remote-confirm": "remote-confirm",
 	} {
 		f.calls = nil
 		slash(m, line)
@@ -189,6 +211,7 @@ func TestSlashFleetChangesNeedTheKeyboard(t *testing.T) {
 		"/fleet revoke web1 DELETE":                       "revoke web1 scheme=delete",
 		"/fleet enroll web2":                              "enroll web2",
 		"/fleet relay imessage on":                        "relay imessage on",
+		"/fleet remote-confirm off":                       "remote-confirm off",
 	} {
 		f.calls = nil
 		typeLine(m, line)
@@ -199,7 +222,7 @@ func TestSlashFleetChangesNeedTheKeyboard(t *testing.T) {
 			t.Fatal("the keyboard mark outlived the line it was set for")
 		}
 	}
-	for _, line := range []string{"/fleet bogus", "/fleet show", "/fleet enroll", "/fleet enroll a b", "/fleet confirm", "/fleet revoke", "/fleet revoke a b c", "/fleet relay a b c"} {
+	for _, line := range []string{"/fleet bogus", "/fleet show", "/fleet enroll", "/fleet enroll a b", "/fleet confirm", "/fleet revoke", "/fleet revoke a b c", "/fleet relay a b c", "/fleet remote-confirm on now"} {
 		f.calls = nil
 		typeLine(m, line)
 		if len(f.calls) != 0 || !strings.Contains(lastMsg(m), "usage: /fleet") {
@@ -214,6 +237,41 @@ func TestSlashFleetChangesNeedTheKeyboard(t *testing.T) {
 	none.handleSlash("/permissions fleet web1")
 	if !strings.Contains(lastMsg(none), "not available") {
 		t.Errorf("/permissions fleet with no control at all: %q", lastMsg(none))
+	}
+}
+
+// /fleet group: looking is open to any line; a change to a group, and
+// applying one, takes a line typed at this keyboard.
+func TestSlashFleetGroup(t *testing.T) {
+	f := newFakeFleet()
+	m := newFleetModel(f)
+	for line, want := range map[string]string{
+		"/fleet group": "group", "/fleet group list": "group list", "/fleet group show web": "group show web", "/fleet group rules web": "group rules web",
+	} {
+		f.calls = nil
+		slash(m, line)
+		if len(f.calls) != 1 || f.calls[0] != want {
+			t.Errorf("%q asked the fleet for %v, want %q", line, f.calls, want)
+		}
+	}
+	for line, want := range map[string]string{
+		"/fleet group create web":                     "group create web",
+		"/fleet group delete web":                     "group delete web",
+		"/fleet group add web web1 web2":              "group add web web1 web2",
+		"/fleet group remove web web1":                "group remove web web1",
+		"/fleet group rules web add x_post deny":      "group rules web add x_post deny",
+		"/fleet group rules web rm os_exec(uptime *)": "group rules web rm os_exec(uptime *)",
+		"/fleet group apply web":                      "group apply web",
+	} {
+		f.calls = nil
+		slash(m, line)
+		if len(f.calls) != 0 || !strings.Contains(lastMsg(m), "type this command here yourself") {
+			t.Fatalf("%q, not typed: calls %v, answered %q", line, f.calls, lastMsg(m))
+		}
+		typeLine(m, line)
+		if len(f.calls) != 1 || f.calls[0] != want {
+			t.Errorf("%q, typed, asked the fleet for %v, want %q", line, f.calls, want)
+		}
 	}
 }
 
@@ -246,18 +304,35 @@ func TestSlashPermissionsFleet(t *testing.T) {
 		t.Errorf("a missing rule: %q", lastMsg(m))
 	}
 
-	// The fleet's rules for new machines: rules only.
+	// The fleet's defaults for new machines: the rules, and only the
+	// categories set (TEN-546), each of which can be given back.
 	m.handleSlash("/permissions fleet --defaults add os_exec(uptime *) allow")
 	if f.defaults.rules["os_exec(uptime *)"] != "allow" || len(f.perms["web1"].rules) != 0 {
 		t.Fatalf("fleet rules %v, web1 %v", f.defaults.rules, f.perms["web1"].rules)
 	}
 	m.handleSlash("/permissions fleet --defaults")
-	if got := lastMsg(m); !strings.Contains(got, "Fleet rules") || !strings.Contains(got, "os_exec(uptime *)") || strings.Contains(got, "set <category>") {
-		t.Fatalf("/permissions fleet --defaults:\n%s", got)
+	if got := lastMsg(m); !strings.Contains(got, "Fleet defaults") || !strings.Contains(got, "os_exec(uptime *)") || strings.Contains(got, "exec ") {
+		t.Fatalf("/permissions fleet --defaults, no category set:\n%s", got)
 	}
 	m.handleSlash("/permissions fleet --defaults set exec allow")
-	if !strings.Contains(lastMsg(m), "no such category") || f.defaults.modes["exec"] != "ask" {
-		t.Errorf("the fleet's rules took a category: %q", lastMsg(m))
+	if f.defaults.modes["exec"] != "allow" {
+		t.Fatalf("a default category: %q %v", lastMsg(m), f.defaults.modes)
+	}
+	m.handleSlash("/permissions fleet --defaults")
+	if got := lastMsg(m); !strings.Contains(got, "exec ") || !strings.Contains(got, "allow") {
+		t.Fatalf("/permissions fleet --defaults lists the category set:\n%s", got)
+	}
+	m.handleSlash("/permissions fleet --defaults set nope allow")
+	if !strings.Contains(lastMsg(m), "no such category") {
+		t.Errorf("a default for no category: %q", lastMsg(m))
+	}
+	m.handleSlash("/permissions fleet --defaults unset exec")
+	if _, set := f.defaults.modes["exec"]; set || !strings.Contains(lastMsg(m), "master's copy") {
+		t.Errorf("unset: %q %v", lastMsg(m), f.defaults.modes)
+	}
+	m.handleSlash("/permissions fleet --defaults unset exec")
+	if !strings.Contains(lastMsg(m), "is not set") {
+		t.Errorf("unset twice: %q", lastMsg(m))
 	}
 
 	m.handleSlash("/permissions fleet nobody set exec allow")

@@ -140,6 +140,15 @@ func fleetUpdater() *fleetUpdates {
 	return nil
 }
 
+// fleetRollouter is this process's rollout of updates over many machines
+// (fleetrollout.go): nil in a command-line process.
+func fleetRollouter() *fleetRollout {
+	if h := theFleet.Load(); h != nil {
+		return h.rollout
+	}
+	return nil
+}
+
 type fleetMachinesKey struct{}
 
 // withFleetMachines stamps an unattended turn with the fleet machines it may
@@ -201,6 +210,7 @@ type fleetHub struct {
 	comp            *lifecycle.Comp
 	act             *event.Activity // the fleet port's lifetime in the fleet log (fleet.Listening)
 	updates         *fleetUpdates   // `tenant fleet update`, run here while this process holds the fleet
+	rollout         *fleetRollout   // a staggered update of many machines, through updates
 
 	mu      sync.Mutex
 	mgr     *fleet.Manager
@@ -236,6 +246,7 @@ func startFleetHub(ctx context.Context, c *commonFlags, role string, local *appr
 	}
 	h := &fleetHub{cfgDir: c.cfgDir, dataDir: c.dataDir, role: role, local: local, tell: tell, log: log,
 		store: fleet.Open(c.cfgDir), listen: defaultFleetListen, relays: map[string]bool{}, updates: newFleetUpdates(c.dataDir)}
+	h.rollout = newFleetRollout(h.updates)
 	theFleet.Store(h)
 	ctx, cancel := context.WithCancel(ctx)
 	h.tick(ctx)

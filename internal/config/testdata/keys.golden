@@ -65,6 +65,7 @@ config.json: embed_model
 config.json: fallbacks
 config.json: fleet
 config.json: fleet.listen
+config.json: fleet.remote_confirm
 config.json: gateway
 config.json: gateway.mode
 config.json: gateway.sse_addr
@@ -254,6 +255,8 @@ settings.json: exec_profiles.*.memory_mb
 settings.json: exec_profiles.*.network
 settings.json: exec_profiles.*.read_roots
 settings.json: exec_profiles.*.write_roots
+settings.json: fleet_groups
+settings.json: fleet_permissions
 settings.json: fleet_rules
 settings.json: fleet_schemes
 settings.json: known_categories

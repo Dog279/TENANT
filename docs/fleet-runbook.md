@@ -168,18 +168,68 @@ the master sends it nothing.
 tenant fleet confirm web1           # at a terminal: shows what the machine reported, asks for the six digits
 ```
 
-Confirming takes a person at a terminal (or `/fleet confirm web1 <digits>` typed in the
-terminal app). There is no flag for the digits, no tool, no relay command and no dashboard
-button. The screen shows what the machine said about itself (OS, account, version, sandbox,
+Confirming takes a person: at a terminal, with `/fleet confirm web1 <digits>` typed in the
+terminal app, or on the dashboard's Fleet page (the machine's own page, **Confirm this
+machine**) in a browser signed in on the master itself, at its 127.0.0.1 address. There is no
+flag for the digits, no tool and no relay command, and a request that carries only the API key
+is refused. The screen shows what the machine said about itself (OS, account, version, sandbox,
 ceiling: its own words, not checked) and the approval scheme it will start with:
 
 - a copy of the master's local scheme, with exec, write, destructive, send and sandbox no
   looser than **ask** whatever the master allows;
-- the fleet's rules for new machines laid over it (`tenant fleet permissions --defaults`);
+- the fleet's default categories and rules for new machines laid over it (`tenant fleet
+  permissions --defaults`), and the rules of each group it is already in (section 3a);
 - anything you set here: `tenant fleet confirm web1 --set exec=allow`.
+
+Each line of the screen says where its value came from when it is not the master's own:
+`set by you`, `fleet default`, `fleet rule`, `group <name>`, or `(this master: allow)` for a
+category the copy clamped.
 
 The enroll endpoint takes five attempts a minute from one address. A code that is presented
 twice is refused and raises an alert: compare the digits on the machine's own screen.
+
+### Confirming from another computer (TEN-545)
+
+A browser that reaches the dashboard over the LAN, by a tailnet name or through a proxy is not
+"on the master": its Fleet page shows the pending machine and says where to confirm it. On a
+master with no screen (Windows Server Core, a headless box) that means a console for every
+machine. You can let a signed-in browser elsewhere confirm instead. It is off until you turn
+it on, at the master's terminal:
+
+```
+tenant fleet remote-confirm          # says whether it is on
+tenant fleet remote-confirm on       # asks you to type "on"; also /fleet remote-confirm on, in the terminal app
+tenant fleet remote-confirm off
+```
+
+Turning it on takes a person at a terminal: the command asks, and refuses when its input is
+not a terminal, so a script or the agent cannot turn it on with this command. Turning it off
+needs nobody. It is `fleet.remote_confirm` in `config.json`; the running Tenant reads it at
+each confirmation, so no restart is needed. There is no switch for it on the dashboard. While
+it is on:
+
+- the pending machine's page offers the form to a signed-in browser elsewhere, with one more
+  field: **the dashboard's sign-in key, again**. A wrong key changes nothing, counts against
+  that address as a wrong sign-in does, and is a Security record;
+- a request that carries only the API key is still refused, and the wait after wrong digits is
+  the same;
+- the Security and fleet logs record the confirmation, and every refusal, with the surface
+  `dashboard-remote` and the session and address that asked. Behind `tailscale serve` or a
+  proxy that address is always this computer's own, so the record also quotes what the proxy
+  said of who it passed on (the tailnet login), marked as not checked.
+
+What you give up:
+
+- At the master, the digits show that the person typing them can see both screens. From
+  elsewhere they show only the machine. Read them from the machine's own screen yourself, or
+  have someone you trust at it read them to you.
+- **Whoever holds the sign-in key can confirm a machine from anywhere the dashboard is
+  reached.** The key again stops a session that leaked or a browser left signed in. It does
+  not stop the key's holder, and the API key that scripts use is the same key: a script that
+  signs in with it looks like a browser. Do not turn this on while a script or a log shipper
+  on another machine holds the key.
+
+Leave it off on a master you can sit at.
 
 ## 3. Work on it
 
@@ -202,8 +252,10 @@ headline says "on your fleet machine <name>".
 ```
 tenant fleet permissions web1                               # the machine's scheme
 tenant fleet permissions web1 add "os_exec(systemctl status *)" allow
-tenant fleet permissions web1 --from defaults|master        # lay the fleet's rules over it again; copy the master's again
+tenant fleet permissions web1 --from defaults|master        # lay the fleet's and its groups' rules over it again; copy the master's again
 tenant fleet permissions --defaults add "os_exec(uptime)" allow   # what every newly confirmed machine starts with
+tenant fleet permissions --defaults set web deny            # a category every newly confirmed machine starts with
+tenant fleet permissions --group web set exec ask           # the same change to each member of a group (--all: every confirmed machine)
 ```
 
 A relay (Discord, iMessage) or a cron job reaches no machine, reads included, until you open
@@ -216,6 +268,116 @@ plain read on another asks, whatever that machine's scheme says.
 
 A picture a tool makes on a machine (a screenshot, an image file read) stays there: the link
 carries text. The result says so.
+
+## 3a. Groups and default categories (TEN-546)
+
+A machine's scheme is its own. Nothing the fleet holds is read when a call is decided: a call
+on web1 is decided by web1's stored scheme and nothing else. Two things are **laid over** a
+scheme on purpose, at a step you take, and each laying has one Security record per machine:
+
+- the **defaults for new machines**: categories you set (`fleet_permissions`; a category you
+  did not set comes from the master's copy) and rules (`fleet_rules`);
+- **groups**: a name, its machines (by id; a machine may be in any number of groups, in any
+  state) and rules. A group has no categories.
+
+**The layering order.** A machine's *fresh copy* (what it gets when it is confirmed, or copied
+again with `--from master`) is built in this order, each layer winning over the one before it
+where they disagree:
+
+1. a copy of the master's local scheme, clamped (exec, write, destructive, send, sandbox no
+   looser than ask);
+2. the fleet's default categories: each one you set replaces the copy's mode;
+3. the fleet's rules;
+4. the rules of each group the machine is in, groups in ascending name order (compared without
+   case): a later group wins over an earlier one, and any group wins over a fleet rule.
+
+A rule laid over a scheme replaces every rule of the machine that it answers for (the same
+pattern, a narrower command under its prefix, a tool its glob covers) and leaves the machine's
+categories alone.
+
+**Which layer wins after that.** Once laid, the scheme is the machine's: an edit made to it
+(a category, a rule, an "always" on its card) stands, over every layer, until a layer is laid
+over it again. Changing a group (its rules or its machines) or a default **moves no machine**;
+the answer says so and names the step that does.
+
+```
+tenant fleet group create web                       # names: letters, digits, . _ -; not "all", not a machine id
+tenant fleet group add web web1 web2                # machines by name or id
+tenant fleet group rules web add "os_exec(systemctl restart nginx)" allow
+tenant fleet group                                  # the groups; show <group> for one
+tenant fleet group apply web                        # lay the fleet's rules, then each member's groups' rules, over each member
+tenant fleet group remove web web2
+tenant fleet group delete web                       # its members keep what it laid
+tenant fleet permissions --defaults set exec ask    # unset <category>: back to the master's copy
+```
+
+**Apply** (`tenant fleet group apply`, and `--from defaults` for one machine or with
+`--group`/`--all`) lays the fleet's rules and then the rules of all of that machine's groups,
+in name order, over the scheme it has; its categories stay. A member that is pending, revoked
+or whose scheme cannot be read is skipped and named in the answer, and the command exits 1.
+A laid rule replaces every rule of the machine's own that it answers for, **a block included**:
+a group rule `os_exec(git *)` allow removes the machine's `os_exec(git status)` deny. The
+answer and the machine's Security record say which rules were replaced and what they were.
+
+**A pending machine in a group** starts with the group's rules when it is confirmed, and the
+confirm screen shows them (`group <name>`). The confirmation lays what that screen showed: if a
+default, a fleet rule or one of its groups is edited between the screen and the digits,
+`tenant fleet confirm` and the dashboard's form confirm nothing and say to read it again. The
+terminal app's `/fleet confirm <name> <digits>` is one line with no screen before it in the same
+step, so it is not held to one: read `/fleet confirm <name>` just before. The record of a
+confirmation names the defaults and the groups it laid, on every surface.
+
+**Bulk.** `tenant fleet permissions --group <group> | --all` takes the same edits as one
+machine (`set`, `add`, `rm`, `--from defaults|master`) and makes them to each machine in turn,
+by name, through the one-machine path: one line and one Security record per machine changed,
+none for the batch, never stopping at a failure, exit 1 if any machine was not changed. `--all`
+is every confirmed machine. `tenant fleet update --group <group>` updates the members one after
+the other, as `--all` does.
+
+**Revoking.** `--delete-scheme` takes the machine out of every group; `--keep-scheme` keeps its
+memberships, for a machine that adopts the id.
+
+**When a key can't be read.** `fleet_permissions` and `fleet_groups` are read strictly, like
+`fleet_rules`: an unknown category, a mode that is not ask/allow/deny, a key twice (group names
+differing only in case are the same name), null, trailing text, a member that is not a machine
+id, or over 256 groups, 4096 machines or 512 rules in a group makes the whole key unreadable.
+Then no machine can be confirmed or copied again (and, for `fleet_groups`, no group applied
+or changed), the operator is told once, and the text is kept as written for you to fix. Machines that have a
+scheme keep deciding by it.
+
+The terminal app has the same verbs: `/fleet group …`, and `/permissions fleet --defaults
+set|unset|add|rm`. The command line and the terminal app take a loosening (allow) without a
+second step, as for one machine.
+
+### On the dashboard's Fleet page
+
+The Fleet page does all of this with the same operations and the same records, with
+`dashboard` as their surface:
+
+- **The fleet's defaults:** each safety category as Ask, Allow, Deny or **From this Tenant**
+  (unset; the page says what this Tenant's own setting gives now, clamped), and the fleet's
+  rules with the editor a machine's page has.
+- **Groups:** make one, open it to add or take out machines and rules, **Apply** it to its
+  members, delete it. The list can be narrowed to one group.
+- **Many machines at once:** tick machines in the list (or choose everyone shown, which the
+  master works out from the group you narrowed to, never from what the browser sent), then set
+  a category, add or remove a rule, apply the fleet's rules, copy again, or update. The answer
+  says "Done on 5 of 7." and names each machine that was not changed, with the reason.
+- **A machine's page** uses the same controls and words as this Tenant's own Approvals & safety
+  and Tools pages, and lists the groups the machine is in.
+
+What asks first: anything that lets your agent do more on machines that exist (Allow, an allow
+rule, removing a rule that asked or blocked), anything that replaces settings (Apply, Copy
+again), an update, a default of Allow or From this Tenant, an allow rule in the fleet's
+defaults, and deleting a group. For many machines the step is a page that says what will
+happen, to **how many machines**, lists them by name, and lists those left out and why; only
+then does a second button do it. A rule added to a group asks nothing: it moves no machine
+until the group is applied, and Apply asks. Tightening (Ask, Deny, a block rule) and Stop go
+through at once.
+
+These changes take a signed-in browser. The API key gets no more than it had: it can still
+update one machine (`tenant fleet update` uses it), and it makes none of the changes in this
+section.
 
 ## 4. On the machine
 
@@ -353,6 +515,30 @@ first hello; if it does not reach the master by the deadline in `child-update.js
 the old binary back itself. A trial that exits or does not reach the master within a minute is
 deleted, and the machine reconnects on the old version. `tenant child status` shows the last
 update, and an update in the middle.
+
+### A rollout: many machines, a few at a time (TEN-546)
+
+On the dashboard's Fleet page, tick machines (or narrow the list to a group and choose everyone
+shown), pick **Update**, a version (empty is the latest release) and how many update at once (1
+to 8). The page first says how many machines it will update and names them, with those it
+leaves out and why (pending, revoked, offline: nothing is queued). After the second button the
+running Tenant that holds the fleet starts that many machines, in the list's order, and starts
+the next each time one ends:
+
+- a machine that ends **done** is updated;
+- a machine that is **refused** (offline, not confirmed, the same or a newer version without
+  "allow older") is skipped with its reason, and the rollout goes on;
+- the first machine that **rolls back or fails stops the rollout**: no further machine is
+  started, those already updating finish, and the rest show as not started.
+
+The Fleet page shows the rollout while it runs and afterwards (reload it): each machine as
+waiting, its live stage, done, skipped and why, rolled back, failed or not started. **Stop**
+starts no more machines; those updating finish. So does the fleet port going down, or another
+process taking the fleet: the rollout starts nothing over links it no longer holds. One rollout
+runs at a time. It is kept in the
+running Tenant's memory: a restart of the master forgets it, though each machine still finishes
+or rolls back by itself. `tenant fleet update --all` and `--group <group>` stay as they were:
+one machine after the other, going on past a failure.
 
 ## 5b. Losing the master (TEN-533)
 

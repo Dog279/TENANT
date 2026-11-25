@@ -24,14 +24,14 @@ includes comments and blank lines. “Plugin capability packages” counts immed
 with `go run ./scripts/docfacts -write docs/ARCHITECTURE.md`; CI checks this
 block for drift.
 
-<!-- docfacts:generated:start; date=2026-11-24; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
+<!-- docfacts:generated:start; date=2026-11-25; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
 | Go packages | 107 |
-| Go files | 1,607 |
-| Test files | 812 |
-| Production Go LOC | 211,427 |
-| Test Go LOC | 183,616 |
+| Go files | 1,621 |
+| Test files | 821 |
+| Production Go LOC | 214,989 |
+| Test Go LOC | 187,240 |
 | Go modules | 1 |
 | Plugin capability packages | 15 |
 | Version | `0.0.1` |
@@ -1420,7 +1420,11 @@ nothing. A machine is
 confirmed there only from a browser signed in on the computer running Tenant
 (`Server.atThisComputer`: loopback peer, loopback Host, no proxy header, the
 session cookie and never the API key); `TestOnlyTheOperatorConfirmsAMachine`
-holds the dashboard to that one handler. `GET /api/fleet` is the page as JSON
+holds the dashboard to that one handler. The operator can widen that at the
+master's terminal (`fleet.remote_confirm`, TEN-545, off by default): the same
+handler then takes the digits from a signed-in browser elsewhere that gives
+the sign-in key again (`keyAgain`), recorded with the surface
+`dashboard-remote`; the API key still confirms nothing. `GET /api/fleet` is the page as JSON
 and changes nothing.
 
 **Losing the master** (TEN-533). `tenant child rehome` (`childRehome`,

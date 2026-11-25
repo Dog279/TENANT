@@ -17,12 +17,18 @@ package dashboard
 // the spec takes it from the local dashboard only. Here that is a browser
 // signed in on the computer running Tenant (atThisComputer): the digits are
 // not taken from the API key, through `tailscale serve` or a proxy, or from
-// another address. The other forms follow the rest of the dashboard: any
-// signed-in browser, with the confirm step where a change lets the agent do
-// more or cannot be undone.
+// another address. The operator can widen that at the master's terminal
+// (fleet.remote_confirm, TEN-545; DESIGN.md §5): a signed-in browser
+// elsewhere may then confirm a machine by giving the sign-in key again. A
+// request that carries only the API key still confirms nothing; that keeps a
+// script from confirming by accident, and is no boundary against whoever
+// holds the key, which is the sign-in key too. The other forms follow the rest
+// of the dashboard: any signed-in browser, with the confirm step where a change lets
+// the agent do more or cannot be undone.
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -30,6 +36,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -52,9 +59,12 @@ type FleetControl interface {
 	Init(listen string, addresses []string, by string) error
 	// Confirm makes a pending machine a confirmed one: code is the six digits
 	// that machine shows on its own screen, set the category=mode pairs the
-	// operator chose for it alone. The dashboard calls it from one place, for a
-	// browser signed in on this computer (handleFleetConfirm).
-	Confirm(machine, code string, set []string) error
+	// operator chose for it alone. by is "" for a browser signed in on this
+	// computer; else it says which signed-in browser elsewhere asked, for the
+	// Security record, and the control confirms only while the operator's
+	// setting allows that (FleetView.RemoteConfirm). The dashboard calls it
+	// from one place (handleFleetConfirm).
+	Confirm(machine, code string, set []string, by string) error
 	Rename(machine, name string) error
 	// Revoke ends a machine; deleteSettings also removes its record and its
 	// approval settings, where keeping them leaves both under its id.
@@ -86,6 +96,93 @@ type FleetControl interface {
 	// for the Security record, which never holds the code. The dashboard calls
 	// it from one place, for a signed-in browser (handleFleetAdd).
 	Enroll(name string, boot bool, by string) (FleetEnrollment, error)
+
+	// The fleet's defaults, its groups, changes to many machines and the
+	// rollout (TEN-546). The dashboard calls each from a signed-in browser
+	// only, after its confirm step where one is due (fleet_bulk.go). None of
+	// the defaults' or the groups' methods moves a machine: a machine's own
+	// settings change only through Bulk (and the single-machine methods
+	// above), each change audited once per machine.
+
+	// SetDefault sets what a newly confirmed machine starts with for one
+	// safety category (settings key fleet_permissions): mode is ask, allow or
+	// deny, or "" to unset it, so that a new machine takes this Tenant's own
+	// mode for it again (clamped as today). It refuses a category that is not
+	// one, and refuses while fleet_permissions cannot be read (the text stays
+	// as written). It moves no machine.
+	SetDefault(category, mode string) error
+	// SetDefaultRule adds or replaces one of the fleet's rules (fleet_rules),
+	// pattern -> ask, allow or deny, as `tenant fleet permissions --defaults
+	// add` does; RemoveDefaultRule removes one and reports whether there was
+	// one. Neither moves a machine.
+	SetDefaultRule(pattern, mode string) error
+	RemoveDefaultRule(pattern string) (removed bool, err error)
+	// CreateGroup makes an empty group. A name is 1 to 63 of [A-Za-z0-9._-],
+	// starts with a letter or a digit, is not a machine id, is not "all", and
+	// is unique case-insensitively; anything else is a PlainError that says
+	// so. DeleteGroup removes a group with its rules and memberships; its
+	// members' settings stay as they are. group is matched case-insensitively.
+	CreateGroup(name string) error
+	DeleteGroup(group string) error
+	// AddMembers and RemoveMembers put machines (by id, each one the fleet
+	// has, in any state) in a group or take them out. Adding one that is in
+	// it already, or removing one that is not, is no error. They move no
+	// machine.
+	AddMembers(group string, machines []string) error
+	RemoveMembers(group string, machines []string) error
+	// SetGroupRule adds or replaces a rule of a group (the same patterns and
+	// modes as the fleet's rules); RemoveGroupRule removes one and reports
+	// whether there was one. They move no machine: Apply (Bulk with
+	// FleetBulkApply over the members) is the step that does.
+	SetGroupRule(group, pattern, mode string) error
+	RemoveGroupRule(group, pattern string) (removed bool, err error)
+	// Bulk runs one operation on each machine in machines (ids the dashboard
+	// has checked against View), through the same single-machine code the
+	// methods above use, so each machine gets its own audit record. It never
+	// stops at the first failure: it returns one result per machine, in the
+	// order given, saying whether it was done and, when not, why in a plain
+	// sentence (pending, revoked, no approval settings that can be read, no
+	// such category, the store's refusal...). A machine that does not
+	// qualify is a result, not an error.
+	Bulk(op FleetBulkOp, machines []string) []FleetBulkResult
+	// StartRollout updates machines (ids, in that order) to version ("" is
+	// the latest release), how many at once limit says (1 to 8), as
+	// `tenant fleet update` does for each: arch names the processor of a
+	// machine too old to say, allowOlder lets an older version go. It
+	// refuses at once, as a PlainError, a version or arch that is not one, a
+	// limit outside 1 to 8, a rollout that is running already, and a process
+	// that does not hold the fleet (with Update's words). The rest shows in
+	// FleetView.Rollout: the first machine that rolls back or fails stops it.
+	StartRollout(machines []string, version, arch string, allowOlder bool, limit int) error
+	// StopRollout asks the running rollout to start no more machines; those
+	// in flight finish. It reports whether one was running.
+	StopRollout() bool
+}
+
+// The operations Bulk runs on each machine (FleetBulkOp.Action).
+const (
+	FleetBulkPermission = "permission" // set Category to Mode (ask, allow, deny)
+	FleetBulkRule       = "rule"       // add or replace the rule Pattern -> Mode
+	FleetBulkUnrule     = "unrule"     // remove the rule Pattern
+	FleetBulkApply      = "apply"      // lay the fleet's rules, then its groups' rules in name order, over its settings
+	FleetBulkCopy       = "copy"       // replace its settings with a fresh copy from this Tenant
+)
+
+// FleetBulkOp is the one operation a Bulk call runs on every machine. Only
+// the fields its Action reads are set.
+type FleetBulkOp struct {
+	Action            string
+	Category, Pattern string
+	Mode              string // ask | allow | deny
+}
+
+// FleetBulkResult is what Bulk did to one machine: Done, or Said, the plain
+// sentence that says why not. Name is the machine's name as the page shows
+// names (already escaped by the control).
+type FleetBulkResult struct {
+	ID, Name string
+	Done     bool
+	Said     string
 }
 
 // FleetEnrollment is a code just made, render-ready. Code is a secret while
@@ -133,9 +230,111 @@ type FleetView struct {
 	// NoFresh: what a machine confirmed now would start with can't be worked
 	// out (the fleet's rules can't be read), so no machine has a drift to show
 	// and none can be confirmed or given a fresh copy.
-	NoFresh  bool
-	Machines []FleetMachine
-	Rules    []ToolRuleRow // the fleet's rules: what every newly confirmed machine starts with
+	NoFresh bool
+	// RemoteConfirm: the operator let a signed-in browser that is not on this
+	// computer confirm a machine, with the sign-in key again
+	// (fleet.remote_confirm, off unless set at the master's terminal).
+	RemoteConfirm bool
+	Machines      []FleetMachine
+	Rules         []ToolRuleRow // the fleet's rules: what every newly confirmed machine starts with
+
+	// Defaults are the fleet's default safety categories, one per category in
+	// the order the page lists them: what a newly confirmed machine starts
+	// with. nil when they can't be shown (not wired, or DefaultsErr).
+	Defaults []FleetDefault
+	// DefaultsErr: fleet_permissions can't be read. The page says so plainly
+	// and offers no change to the categories; the reason goes to the log.
+	DefaultsErr error
+	// Groups are the fleet's groups in name order. GroupsErr: fleet_groups
+	// can't be read, so no group can be shown, changed or applied until it is
+	// fixed (the page says so; the reason goes to the log).
+	Groups    []FleetGroup
+	GroupsErr error
+	// LayersKey names everything Apply fleet rules and Copy again lay, as it
+	// is at this read: this Tenant's own settings, the defaults, the fleet's
+	// rules and the groups. "" when it can't be worked out. A confirm step
+	// carries it, and its second post is refused when it has changed.
+	LayersKey string
+	// Rollout is the current or last rollout of this process; nil with none,
+	// and in a process that does not hold the fleet.
+	Rollout *FleetRollout
+}
+
+// FleetDefault is one safety category of the fleet's defaults. Mode is ask,
+// allow or deny where the operator set it for new machines, "" where it is
+// unset: then a new machine takes this Tenant's own mode, clamped, which
+// Inherited says (ask, allow or deny, as of this read). Can is worded for a
+// machine ("on this machine").
+type FleetDefault struct {
+	PermissionRow
+	Inherited string
+}
+
+// FleetGroup is one group, render-ready. Name is the operator's own word, as
+// written. Members are machine ids, in the order the control keeps them.
+// Differ is how many of its confirmed members have settings that differ from
+// what Apply would lay over them now; -1 when that can't be worked out.
+type FleetGroup struct {
+	Name    string
+	Members []string
+	Rules   []ToolRuleRow
+	Differ  int
+}
+
+// Href is the group's own page. The name is escaped though the control checks
+// it: a link must not be able to aim at another route (F1).
+func (g FleetGroup) Href() string { return "/fleet/group/" + url.PathEscape(g.Name) }
+
+// FleetRollout is a rollout as far as it has got. Times are as the page shows
+// them ("" for none). Stopped is "" while it runs on its own and when it
+// ended on its own, else why it stopped ("stopped by the operator", "stopped
+// at <name>"). It lives in the memory of the process that holds the fleet: a
+// restart forgets it.
+type FleetRollout struct {
+	Version           string // as asked for; "" is the latest release
+	Limit             int    // how many at once
+	Started, Finished string
+	Running           bool
+	Stopped           string
+	Machines          []FleetRolloutMachine // in the order they were given
+}
+
+// FleetRolloutMachine is one machine of a rollout. Status is waiting,
+// running, done, skipped, rolled_back, failed or not_started; Stage is its
+// update's stage while it runs; Reason says why it ended as it did (it may
+// hold what the machine said, quoted by the control).
+type FleetRolloutMachine struct {
+	ID, Name, Status, Stage, Reason string
+}
+
+// Href is the machine's own page.
+func (m FleetRolloutMachine) Href() string { return "/fleet/" + url.PathEscape(m.ID) }
+
+// Words is the machine's status as the rollout card says it.
+func (m FleetRolloutMachine) Words() string {
+	switch m.Status {
+	case "running":
+		if m.Stage != "" {
+			return "running: " + strings.ReplaceAll(m.Stage, "_", " ")
+		}
+		return "running"
+	case "not_started":
+		return "not started"
+	}
+	return strings.ReplaceAll(m.Status, "_", " ")
+}
+
+// Pill is the class of the machine's status pill.
+func (m FleetRolloutMachine) Pill() string {
+	switch m.Status {
+	case "done":
+		return "on-tag"
+	case "rolled_back", "failed":
+		return "act-errtag"
+	case "running", "waiting":
+		return "risk"
+	}
+	return "tag"
 }
 
 // FleetMachine is one machine, render-ready. OS, User, Version, Sandbox and
@@ -170,6 +369,8 @@ type FleetMachine struct {
 	Start *FleetStart
 	// Update is the machine's last update from this process; nil with none.
 	Update *FleetUpdate
+	// Groups are the names of the groups it is in, in name order.
+	Groups []string
 }
 
 // FleetUpdate is how far a machine's update has got. Lines are what the
@@ -194,6 +395,11 @@ type FleetStart struct {
 	Kept  bool // kept under its id from the machine that had it before
 	Perms []FleetStartPerm
 	Rules []FleetStartRule
+	// Key names these settings, so the confirm form can carry it: when it
+	// comes back and the machine's start is no longer this one (a default, a
+	// fleet rule or one of its groups was edited meanwhile), the page shows
+	// the new start and asks again instead of confirming what nobody read.
+	Key string
 }
 
 // FleetStartPerm is one category of a FleetStart; Note says where its mode
@@ -320,7 +526,7 @@ func (s *Server) mountFleetSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /fleet/{id}", s.handleFleetMachinePage)
 	mux.HandleFunc("GET /api/fleet", s.handleFleetAPI)
 	// Confirming has no second click: typing the machine's six digits is the
-	// step. Revoking, replacing a machine's settings, and anything that lets
+	// step (and, from a browser elsewhere, the sign-in key again). Revoking, replacing a machine's settings, and anything that lets
 	// the agent do more on it ask first (DESIGN.md §5).
 	mux.HandleFunc("POST /fleet/confirm", s.handleFleetConfirm)
 	// Making this Tenant a master opens the fleet port and nothing else: no
@@ -328,8 +534,8 @@ func (s *Server) mountFleetSSR(mux *http.ServeMux) {
 	// browser, never the API key (handleFleetInit).
 	mux.HandleFunc("POST /fleet/init", s.handleFleetInit)
 	// A code joins nothing by itself: the machine that spends it waits until
-	// its six digits are typed on this computer. Making one needs a signed-in
-	// browser, never the API key (handleFleetAdd).
+	// its six digits are typed where a machine is confirmed (handleFleetConfirm).
+	// Making one needs a signed-in browser, never the API key (handleFleetAdd).
 	mux.HandleFunc("POST /fleet/add", s.handleFleetAdd)
 	mux.HandleFunc("POST /fleet/rename", s.handleFleetRename)
 	mux.HandleFunc("POST /fleet/revoke", needConfirm(nil, s.handleFleetRevoke))
@@ -345,15 +551,27 @@ func (s *Server) mountFleetSSR(mux *http.ServeMux) {
 	// The recovery identity reads every copy the fleet's machines hold: it
 	// asks first, and it is the request's body, never a form field or a URL.
 	mux.HandleFunc("POST /fleet/recover", needConfirm(nil, s.handleFleetRecover))
+	// The fleet's defaults, groups, many machines at once, the rollout (TEN-546).
+	s.mountFleetBulk(mux)
 }
 
 // The page's fixed words.
 const (
-	fleetGone       = "That machine isn't part of this fleet. Nothing changed."
-	fleetUnreadable = "The list of machines can't be read right now. Until it can, no machine is called. The Logs page has the reason."
+	fleetGone = "That machine isn't part of this fleet. Nothing changed."
+	// fleetStartChanged answers a confirmation whose form listed settings the
+	// machine would no longer start with.
+	fleetStartChanged = "Nothing changed: what this machine would start with was edited since this page was drawn (a default, a fleet rule or one of its groups). Read it again below, then confirm."
+	fleetUnreadable   = "The list of machines can't be read right now. Until it can, no machine is called. The Logs page has the reason."
 	// fleetNotHere is the 403 a confirmation gets from anywhere but a browser
-	// signed in on the computer running Tenant.
-	fleetNotHere = "Nothing changed: a machine is confirmed in a browser on the computer running Tenant, signed in to the dashboard at its 127.0.0.1 or localhost address, or in the terminal."
+	// signed in on the computer running Tenant, unless the operator turned
+	// remote confirmation on and the request is a signed-in browser's.
+	fleetNotHere = "Nothing changed: a machine is confirmed in a browser on the computer running Tenant, signed in to the dashboard at its 127.0.0.1 or localhost address, or in the terminal. A signed-in browser elsewhere can confirm one only after tenant fleet remote-confirm on is run in a terminal on that computer."
+	// The step-up a browser elsewhere takes: the sign-in key again.
+	fleetKeyWrong = "Nothing changed: that isn't the dashboard's sign-in key. From this browser a machine is confirmed with the key again, as the file dashboard-auth-token on the computer running Tenant holds it."
+	fleetKeyInURL = "Nothing changed: the sign-in key goes in the form, never in the address. The key in that address may now be in your browser's history: to change it, delete the file dashboard-auth-token and restart Tenant."
+	// surfaceRemote is the surface of a Security record this page files for a
+	// confirmation asked from a browser that is not on this computer.
+	surfaceRemote = "dashboard-remote"
 	// fleetAddSignIn is the 403 a request to make a code gets without a
 	// signed-in browser behind it.
 	fleetAddSignIn = "No code was made: a code for a new machine is made from the Fleet page in a signed-in browser, or with tenant fleet enroll in a terminal on the computer running Tenant."
@@ -371,9 +589,25 @@ type fleetPageData struct {
 	Problem    string        // the plain line when the machines can't be listed
 	One        *FleetMachine // a machine's own page; nil is the list
 	Local      bool          // this browser may confirm a machine (atThisComputer)
-	Msg, Err   string
+	// Remote: this browser is elsewhere and may confirm a machine by giving
+	// the sign-in key again (the operator turned remote confirmation on).
+	Remote   bool
+	Msg, Err string
 	// Added is the code this request made, shown in this answer only.
 	Added *FleetEnrollment
+
+	// TEN-546 (fleet_bulk.go).
+	Filter  string         // the list's group filter as asked (?group=); "" is every machine
+	Shown   []FleetMachine // the machines the list shows: all, or the filter's group's members
+	NoGroup bool           // the filter names no group the fleet has
+	Group   *FleetGroup    // a group's own page; nil otherwise
+	Members []FleetMachine // that group's members the fleet has, and Others the rest
+	Others  []FleetMachine
+	Strays  []string // member ids the fleet has no machine for
+	// The plain lines when the defaults or the groups can't be read.
+	DefaultsProblem, GroupsProblem string
+	Step                           *fleetBulkStep  // the confirm step of a change to many machines, in place of the page
+	Result                         *fleetBulkReply // what a change to many machines did, per machine
 }
 
 // fleetData reads the page's state; id picks one machine's page.
@@ -383,12 +617,21 @@ func (s *Server) fleetData(r *http.Request, id string) fleetPageData {
 		return d
 	}
 	d.Configured, d.View, d.Local = true, s.fleet.View(), s.atThisComputer(r)
+	d.Remote = !d.Local && d.View.RemoteConfirm && s.validCookie(r)
 	if d.View.Err != nil {
 		d.Problem = s.flashFor(r.Context(), "fleet list", d.View.Err, fleetUnreadable)
 	}
 	if i := slices.IndexFunc(d.View.Machines, func(m FleetMachine) bool { return m.ID == id }); id != "" && i >= 0 {
 		d.One = &d.View.Machines[i]
 	}
+	if d.View.DefaultsErr != nil {
+		d.DefaultsProblem = s.flashFor(r.Context(), "fleet defaults", d.View.DefaultsErr, fleetDefaultsBroken)
+	}
+	if d.View.GroupsErr != nil {
+		d.GroupsProblem = s.flashFor(r.Context(), "fleet groups", d.View.GroupsErr, fleetGroupsUnreadable)
+	}
+	d.Filter = strings.TrimSpace(r.FormValue("group"))
+	d.Shown, d.NoGroup = fleetShown(d.View, d.Filter)
 	return d
 }
 
@@ -465,9 +708,60 @@ func (s *Server) atThisComputer(r *http.Request) bool {
 }
 
 // confirmRefused files the Security record of a confirmation the dashboard
-// turned away itself (wrong digits are the control's to record).
-func confirmRefused(r *http.Request, m FleetMachine, actor, reason string) {
-	_ = catalog.FleetConfirmRefused.Audit(auditCtx(r), "name", m.Name, "machine", m.ID, "reason", reason, "actor", actor, "surface", "dashboard")
+// turned away itself (wrong digits are the control's to record). surface is
+// "dashboard", or surfaceRemote for a browser that is not on this computer.
+func confirmRefused(r *http.Request, m FleetMachine, actor, reason, surface string) {
+	_ = catalog.FleetConfirmRefused.Audit(auditCtx(r), "name", m.Name, "machine", m.ID, "reason", reason, "actor", actor, "surface", surface)
+}
+
+// proxySaid is what a proxy on this computer says of who it passed on, for the
+// record of a confirmation asked from elsewhere: behind `tailscale serve` or a
+// reverse proxy every request arrives from loopback, and the address alone
+// says nothing. It is the tailnet login the proxy names, else the address it
+// forwards for: another party's words, cut short and in quotes they cannot
+// close, marked as not checked. Nothing is decided by it. A request that did
+// not come from this computer has no proxy here to speak for it: "".
+func proxySaid(r *http.Request) string {
+	if !fromLoopback(r) {
+		return ""
+	}
+	said := r.Header.Get("Tailscale-User-Login")
+	if said == "" {
+		said = r.Header.Get("X-Forwarded-For")
+	}
+	if said == "" {
+		return ""
+	}
+	if len(said) > 128 {
+		said = said[:128]
+	}
+	return "; its proxy says " + strconv.QuoteToASCII(said) + " (not checked)"
+}
+
+// keyAgain is the step-up a browser that is not on this computer takes before
+// it confirms a machine: the dashboard's sign-in key, in the body, compared as
+// sign-in compares it and counted against the same per-address wait. A
+// session someone stole or left open is then not enough. It returns what the
+// page says and what the Security record says when the key does not pass, ""
+// when it does.
+func (s *Server) keyAgain(r *http.Request) (said, reason string) {
+	key, inBody := bodyOnly(r, "key")
+	wait := s.loginWait(r.RemoteAddr)
+	switch {
+	case !inBody:
+		KeyInURL.Log(r.Context(), "cred", "dashboard sign-in key")
+		return fleetKeyInURL, "the sign-in key was sent in the address"
+	case wait > 0:
+		SignInFailed.Log(r.Context(), "remote", r.RemoteAddr, "throttled", wait.String())
+		return fmt.Sprintf("Nothing changed: too many wrong keys from this address. Try again in %d seconds.", int(wait/time.Second)+1),
+			"too many wrong sign-in keys from this address"
+	case s.cfg.Auth == "" || subtle.ConstantTimeCompare([]byte(key), []byte(s.cfg.Auth)) != 1:
+		s.loginFailed(r.RemoteAddr)
+		SignInFailed.Log(r.Context(), "remote", r.RemoteAddr)
+		return fleetKeyWrong, "the sign-in key given again was wrong"
+	}
+	s.loginOK(r.RemoteAddr)
+	return "", ""
 }
 
 // handleFleetConfirm is POST /fleet/confirm (machine, code, set…): the six
@@ -475,6 +769,19 @@ func confirmRefused(r *http.Request, m FleetMachine, actor, reason string) {
 // computer. It is the dashboard's only way to confirm a machine. Attempts are
 // taken one at a time and slowed per machine as sign-in is per address: after
 // loginFreeTries failures each further one doubles a wait, up to loginMaxWait.
+//
+// Where the operator turned remote confirmation on (FleetView.RemoteConfirm,
+// TEN-545), a signed-in browser that is not on this computer may send the
+// form too, with what makes up for "at this computer": it must be the page's
+// own form (a live session and its Origin, never the API key), and it gives
+// the sign-in key again in a key field (keyAgain). The per-machine wait is the
+// same, and every refusal and the confirmation itself are recorded as asked
+// from elsewhere (surfaceRemote), with the session and the address, and what
+// a proxy on this computer said of who it passed on (proxySaid).
+//
+// The key again stops a session without the key: a cookie that leaked, a
+// browser left signed in. It does not stop whoever holds the key, who can sign
+// in and send this form from anywhere the dashboard is reached (DESIGN.md §5).
 func (s *Server) handleFleetConfirm(w http.ResponseWriter, r *http.Request) {
 	if s.fleet == nil {
 		s.fleetDone(w, r, "", "", "")
@@ -483,10 +790,16 @@ func (s *Server) handleFleetConfirm(w http.ResponseWriter, r *http.Request) {
 	m, found := s.fleetMachine(r)
 	// The page's own form, sent by the browser that shows it: secure() checked
 	// the Origin of a cookie's request already, and this route takes no other.
+	by, actor, surface := "", "operator", "dashboard"
 	if !s.atThisComputer(r) || r.Header.Get("Origin") == "" || !s.checkOrigin(r) {
-		confirmRefused(r, m, r.RemoteAddr, "not asked from a browser signed in on the computer running Tenant")
-		http.Error(w, fleetNotHere, http.StatusForbidden)
-		return
+		session, ok := s.signedInBrowser(r)
+		if !ok || !s.fleet.View().RemoteConfirm {
+			confirmRefused(r, m, r.RemoteAddr, "not asked from a browser signed in on the computer running Tenant", surface)
+			http.Error(w, fleetNotHere, http.StatusForbidden)
+			return
+		}
+		by, surface = "dashboard session "+sessionTag(session)+" from "+r.RemoteAddr+proxySaid(r), surfaceRemote
+		actor = by
 	}
 	if !found {
 		s.fleetDone(w, r, "", "", fleetGone)
@@ -494,12 +807,30 @@ func (s *Server) handleFleetConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	s.confirmMu.Lock()
 	defer s.confirmMu.Unlock()
+	if by != "" {
+		if said, reason := s.keyAgain(r); said != "" {
+			confirmRefused(r, m, actor, reason, surface)
+			s.fleetDone(w, r, m.ID, "", said)
+			return
+		}
+	}
+	// What is confirmed is what the page showed (TEN-546): the form carries
+	// the name of the settings it listed, and one of them may have been edited
+	// since, a group's rules without any step. Then nothing is confirmed, no
+	// attempt is counted, and the answer is the page as it reads now. A form
+	// without the field is not checked: the page's own always has it.
+	if shown := r.FormValue("start"); shown != "" && (m.Start == nil || m.Start.Key != shown) {
+		d := s.fleetData(r, m.ID) // drawn again in place: the form now lists, and carries, what it would start with
+		s.formWarn(w, r, m.Href(), fleetStartChanged, func() (string, error) { return part(s.tmpl.fleet, "fleet-body", d) })
+		return
+	}
 	// ponytail: the counts live in sign-in's table, which starts again when it
 	// passes 10,000 addresses. Its own table if that is ever worth an attack: a
-	// guess still needs a browser signed in on this computer.
+	// guess still needs a browser signed in on this computer, or elsewhere with
+	// the key.
 	tries := "fleet confirm " + m.ID // no address reads like it
 	if wait := s.loginWait(tries); wait > 0 {
-		confirmRefused(r, m, "operator", "too many failed attempts")
+		confirmRefused(r, m, actor, "too many failed attempts", surface)
 		in := "a second"
 		if wait > time.Second {
 			in = fmt.Sprintf("%d seconds", int((wait+time.Second-1)/time.Second))
@@ -513,7 +844,7 @@ func (s *Server) handleFleetConfirm(w http.ResponseWriter, r *http.Request) {
 			set = append(set, pair)
 		}
 	}
-	if err := s.fleet.Confirm(m.ID, r.FormValue("code"), set); err != nil {
+	if err := s.fleet.Confirm(m.ID, r.FormValue("code"), set, by); err != nil {
 		s.loginFailed(tries)
 		s.fleetDone(w, r, m.ID, "", s.flashFor(r.Context(), "fleet confirm", err, "Couldn't confirm that machine. Nothing changed."))
 		return
@@ -544,7 +875,8 @@ const maxFleetAddresses = 2048
 //
 // It takes a signed-in browser's session only, as Add machine does: the API
 // key makes no fleet. It opens the fleet port; no machine joins by it without
-// a code and, on this computer, its six digits (handleFleetConfirm).
+// a code and its six digits, typed where a machine is confirmed
+// (handleFleetConfirm).
 func (s *Server) handleFleetInit(w http.ResponseWriter, r *http.Request) {
 	if s.fleet == nil {
 		s.fleetDone(w, r, "", "", "")
@@ -583,7 +915,8 @@ const maxFleetName = 63
 // It takes a signed-in browser's session only, with the page's anti-forgery
 // check (an Origin equal to the dashboard's): the API key makes no code. A
 // code is the first half of a machine joining; the other half, the six
-// digits, stays at this computer (handleFleetConfirm).
+// digits, stays at this computer unless the operator turned remote
+// confirmation on there (handleFleetConfirm).
 func (s *Server) handleFleetAdd(w http.ResponseWriter, r *http.Request) {
 	if s.fleet == nil {
 		s.fleetDone(w, r, "", "", "")

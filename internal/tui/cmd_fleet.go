@@ -40,11 +40,31 @@ type FleetControl interface {
 	Revoke(name, scheme string) (string, error)
 	// Perms is one machine's own approval scheme, for /permissions fleet <name>.
 	Perms(name string) (PermissionControl, error)
-	// Defaults are the fleet's rules for new machines.
-	Defaults() ToolRuleControl
+	// Defaults are what every newly confirmed machine starts with: the
+	// categories the operator set for new machines, and the fleet's rules.
+	Defaults() FleetDefaults
+	// Group runs /fleet group's verbs (list, show, create, delete, add,
+	// remove, rules, apply) as `tenant fleet group` does, and says what it did.
+	Group(args []string) (string, error)
 	// Relay shows or sets whether a relay's turns may reach the fleet: args is
 	// nothing, a relay, or a relay and on|off.
 	Relay(args []string) (string, error)
+	// RemoteConfirm shows or sets whether a signed-in dashboard browser on
+	// another computer may confirm a machine, with the sign-in key again:
+	// args is nothing, or on|off.
+	RemoteConfirm(args []string) (string, error)
+}
+
+// FleetDefaults are the fleet's defaults for new machines, in the
+// permissions editor: Permissions lists only the categories the operator set
+// (one not listed comes from the master's copy), SetPermission sets one, and
+// the rules are the fleet's rules.
+type FleetDefaults interface {
+	PermissionControl
+	ToolRuleControl
+	// UnsetPermission gives a category back to the master's copy; false when
+	// it was not set.
+	UnsetPermission(category string) (bool, error)
 }
 
 // FleetInit is an init that has done everything but the recovery key.
@@ -113,7 +133,7 @@ type CronFleetControl interface {
 	SetFleet(id string, machines []string) (CronJobView, error)
 }
 
-const fleetUsage = "usage: /fleet   |   /fleet init [--listen ADDR] [--address HOST:PORT]...   |   /fleet show <name>   |   /fleet enroll <name>   |   /fleet confirm <name> [<six digits> [category=mode ...]]   |   /fleet revoke <name> [keep|delete]   |   /fleet relay [discord|imessage [on|off]]   (a machine's permissions: /permissions fleet <name>)"
+const fleetUsage = "usage: /fleet   |   /fleet init [--listen ADDR] [--address HOST:PORT]...   |   /fleet show <name>   |   /fleet enroll <name>   |   /fleet confirm <name> [<six digits> [category=mode ...]]   |   /fleet revoke <name> [keep|delete]   |   /fleet relay [discord|imessage [on|off]]   |   /fleet remote-confirm [on|off]   |   /fleet group [show|create|delete|add|remove|rules|apply ...]   (a machine's permissions: /permissions fleet <name>)"
 
 // slashFleet runs /fleet.
 func slashFleet(m *model, line string) tea.Cmd {
@@ -200,23 +220,32 @@ func slashFleet(m *model, line string) tea.Cmd {
 			return nil
 		}
 		return answer(func() (string, error) { return fc.Relay(f[1:]) })
+	case sub == "group":
+		// The list, a group and its rules alone only look.
+		verb := ""
+		if len(f) > 1 {
+			verb = strings.ToLower(f[1])
+		}
+		looks := len(f) == 1 || verb == "list" && len(f) == 2 || verb == "show" && len(f) == 3 || verb == "rules" && len(f) == 3
+		if !looks && !typed() {
+			return nil
+		}
+		return answer(func() (string, error) { return fc.Group(f[1:]) })
+	case sub == "remote-confirm" && len(f) <= 2:
+		if len(f) == 2 && !typed() {
+			return nil
+		}
+		return answer(func() (string, error) { return fc.RemoteConfirm(f[1:]) })
 	}
 	m.sysChat(fleetUsage)
 	return nil
 }
 
-// rulesOnly is a rule set with no categories of its own, as the permissions
-// editor shows the fleet's rules for new machines.
-type rulesOnly struct{ ToolRuleControl }
-
-func (rulesOnly) Permissions() []PermissionInfo              { return nil }
-func (rulesOnly) SetPermission(string, string) (bool, error) { return false, nil }
-
 // fleetPermissions is /permissions fleet …: one machine's scheme, or with
-// --defaults the fleet's rules for new machines, in the same editor and the
-// same words as the master's own.
+// --defaults the fleet's categories and rules for new machines, in the same
+// editor and the same words as the master's own.
 func (m *model) fleetPermissions(f []string) {
-	const usage = "usage: /permissions fleet <name> [set <category> <mode> | add <pattern> <mode> | rm <pattern>]   |   /permissions fleet --defaults [add <pattern> <mode> | rm <pattern>]"
+	const usage = "usage: /permissions fleet <name> [set <category> <mode> | add <pattern> <mode> | rm <pattern>]   |   /permissions fleet --defaults [set <category> <mode> | unset <category> | add <pattern> <mode> | rm <pattern>]"
 	if m.cfg.Fleet == nil {
 		m.sysChat("the fleet is not available in this session")
 		return
@@ -226,9 +255,25 @@ func (m *model) fleetPermissions(f []string) {
 		return
 	}
 	var pc PermissionControl
-	header, cmd := "Fleet rules: what every newly confirmed machine starts with", "/permissions fleet --defaults"
+	header, cmd := "Fleet defaults: what every newly confirmed machine starts with (a category not listed comes from the master's copy; set <category> <mode>, unset <category>)", "/permissions fleet --defaults"
 	if f[0] == "--defaults" {
-		pc = rulesOnly{m.cfg.Fleet.Defaults()}
+		d := m.cfg.Fleet.Defaults()
+		if len(f) >= 2 && strings.EqualFold(f[1], "unset") {
+			if len(f) != 3 {
+				m.sysChat(usage)
+				return
+			}
+			switch had, err := d.UnsetPermission(strings.ToLower(f[2])); {
+			case err != nil:
+				m.sysChat("error: " + err.Error())
+			case !had:
+				m.sysChat(f[2] + " is not set for new machines (see " + cmd + ")")
+			default:
+				m.sysChat("unset " + strings.ToLower(f[2]) + ": new machines take it from the master's copy")
+			}
+			return
+		}
+		pc = d
 	} else {
 		var err error
 		if pc, err = m.cfg.Fleet.Perms(f[0]); err != nil {
@@ -254,6 +299,11 @@ func fleetCommands() []*slashCommand {
 				{Syntax: "/fleet confirm <name> <six digits> [category=mode ...]", Desc: "confirm it with the digits it shows; a pair sets that category for this machine alone"},
 				{Syntax: "/fleet revoke <name> [keep|delete]", Desc: "end a machine; keep or delete its approval scheme"},
 				{Syntax: "/fleet relay [discord|imessage [on|off]]", Desc: "whether a relay's turns may reach the fleet at all (default off); a machine's permissions: /permissions fleet <name>"},
+				{Syntax: "/fleet group [show <group> | create <group> | delete <group>]", Desc: "named groups of machines, each with rules laid over its members; changing a group moves no machine"},
+				{Syntax: "/fleet group add|remove <group> <machine>...", Desc: "put machines (by name or id) into a group, or take them out"},
+				{Syntax: "/fleet group rules <group> [add <pattern> <mode> | rm <pattern>]", Desc: "a group's rules: laid after the fleet's rules, groups in name order, each winning over the one before"},
+				{Syntax: "/fleet group apply <group>", Desc: "lay the fleet's rules and each member's groups' rules over every confirmed member's scheme, on purpose; its categories stay"},
+				{Syntax: "/fleet remote-confirm [on|off]", Desc: "whether a signed-in dashboard browser on another computer may confirm a machine, with the sign-in key again (default off)"},
 			}},
 	}
 }

@@ -34,16 +34,9 @@
       {{with .Discord}}<div class="perm-other">Discord conversations: {{.}}. <a href="/access">Change on Access</a></div>{{end}}
     </div>
     {{if .Session}}<form method="POST" action="/safety/mode" data-on:submit__prevent__throttle.1s="@post('/safety/mode', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="mode" value="ask"><button type="submit" class="btn sm">Ask me again</button></form>{{end}}
-    {{/* The current mode is a pressed, disabled button; Ask and Deny are one
-         tap (tightening); Allow is a confirm step (D3 (c)). */}}
-    <div class="seg" role="group" aria-label="{{.Title}}">
-      {{- if eq .Mode "ask"}}<button type="button" class="btn sm on" disabled aria-pressed="true">Ask</button>
-      {{- else}}<form method="POST" action="/safety/mode" data-on:submit__prevent__throttle.1s="@post('/safety/mode', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="category" value="{{.Category}}"><button type="submit" name="mode" value="ask" class="btn sm">Ask</button></form>{{end}}
-      {{- if eq .Mode "allow"}}<button type="button" class="btn sm on" disabled aria-pressed="true">Allow</button>
-      {{- else}}{{template "ui-confirm" (inline (confirmGo "/safety/mode" "Allow" .Allow "category" .Category "mode" "allow"))}}{{end}}
-      {{- if eq .Mode "deny"}}<button type="button" class="btn sm on" disabled aria-pressed="true">Deny</button>
-      {{- else}}<form method="POST" action="/safety/mode" data-on:submit__prevent__throttle.1s="@post('/safety/mode', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="category" value="{{.Category}}"><button type="submit" name="mode" value="deny" class="btn sm">Deny</button></form>{{end -}}
-    </div>
+    {{/* The control is shared with a fleet machine's page and the fleet's
+         defaults (perm-seg in ui.html). */}}
+    {{template "perm-seg" .Seg}}
   </div>
 {{end}}
 </div>

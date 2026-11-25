@@ -61,7 +61,7 @@ func TestFleetPageInChrome(t *testing.T) {
 	}
 
 	// A setting in place, then Copy again through its step.
-	block := `form[action="/fleet/permission"]:has(input[name=mode][value=deny]) button`
+	block := `form[action="/fleet/permission"] button[name=mode][value=deny]`
 	again := `details.confirm-step:has(input[name=from][value=master])`
 	var bad []string
 	err = run(ctx,

@@ -538,6 +538,7 @@ func fleetMB(n int64) string { return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
 func fleetUpdateCmd(args []string) error {
 	fs := flag.NewFlagSet("fleet update", flag.ContinueOnError)
 	all := fs.Bool("all", false, "every confirmed machine, one after the other")
+	group := fs.String("group", "", "every member of this group, one after the other")
 	ver := fs.String("version", "", "install this release (vX.Y.Z) instead of the latest")
 	older := fs.Bool("allow-older", false, "send a version older than the machine runs")
 	arch := fs.String("arch", "", "the machine's processor, amd64 or arm64, for a machine too old to say")
@@ -551,7 +552,7 @@ func fleetUpdateCmd(args []string) error {
 	}
 	var machines []fleet.Machine
 	switch {
-	case *all && len(cli.pos) == 0:
+	case *all && *group == "" && len(cli.pos) == 0:
 		every, err := cli.store.Machines()
 		if err != nil {
 			return err
@@ -564,14 +565,23 @@ func fleetUpdateCmd(args []string) error {
 		if len(machines) == 0 {
 			return errors.New("no confirmed machine to update")
 		}
-	case !*all && len(cli.pos) == 1:
+	case *group != "" && !*all && len(cli.pos) == 0:
+		// Its members by name, each asked of the hub in turn: one that is not
+		// confirmed is refused there and counted as not updated.
+		if machines, err = cli.ops.targets(fleetSelection{Group: *group}); err != nil {
+			return err
+		}
+		if len(machines) == 0 {
+			return fmt.Errorf("group %s has no machine to update", fleetQuote(*group))
+		}
+	case !*all && *group == "" && len(cli.pos) == 1:
 		m, err := cli.ops.machine(cli.pos[0])
 		if err != nil {
 			return err
 		}
 		machines = []fleet.Machine{m}
 	default:
-		return errors.New("usage: tenant fleet update <name> | --all [--version vX.Y.Z] [--allow-older] [--arch amd64|arm64] [--hub ADDR]")
+		return errors.New("usage: tenant fleet update <name> | --all | --group <group> [--version vX.Y.Z] [--allow-older] [--arch amd64|arm64] [--hub ADDR]")
 	}
 	token, _ := dashboardClientToken(cli.c.cfgDir, cli.c.lc, true)
 	h := fleetHubClient{base: attachBaseURL(*hub, cli.c.lc), token: token, http: &http.Client{Timeout: 30 * time.Second,
