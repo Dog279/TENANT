@@ -122,6 +122,28 @@ mux.HandleFunc("POST /safety/mode", needConfirm(confirmUnless("mode", "ask", "de
 
 Every route that changes something is in `reviewedMutations` (security_test.go), the TEN-213 ledger, with when it confirms; `TestRouteInventory` posts each one on the real mux, every spelling of "more" included, and fails on a route nobody classified.
 
+### Confirming a fleet machine from another computer (TEN-545)
+
+Confirming a pending fleet machine is the one action that is not open to "any signed-in browser". The six digits tie the record to the machine the person is looking at. By default they are also taken only at the computer running Tenant (`atThisComputer`: loopback peer, loopback name, no proxy header, a live session, never the API key), which ties the person to the master: a session cookie that leaked, a browser left signed in somewhere, or someone on the tailnet who should only look cannot confirm a machine of their own.
+
+A master with no screen (Server Core, a headless box) needs a console for every machine under that rule. Decision, 2026-11-24: the operator can turn on confirming from a signed-in browser elsewhere. What stands in for "at this computer":
+
+- **Off by default, and turned on only by a person at the master.** `fleet.remote_confirm` in `config.json`. `tenant fleet remote-confirm on` asks at a terminal before it turns it on and refuses a standard input that is not one, as `tenant fleet confirm` does; `/fleet remote-confirm on` is taken from a typed line only; turning it off needs nobody. There is no switch on the dashboard: a session elsewhere must not open the door it then walks through. The running Tenant reads the file again at each confirmation, in the handler and in the control behind it; a file that can't be read is off.
+- **The sign-in key again, every time.** The form from a browser elsewhere has a key field (`keyAgain`). It is compared as sign-in compares it, taken from the body only, and wrong keys are slowed per address by sign-in's own count. A session alone is not enough.
+- **The page's own form only.** A live session and the dashboard's Origin (`signedInBrowser`). A request that carries only the API key is refused, on or off.
+- **The per-machine wait is unchanged**, and attempts are still taken one at a time.
+- **The records say where.** Every refusal and the confirmation itself carry the surface `dashboard-remote` with the session's tag and address (`security/4323`, `security/4324`, `fleet/1002`, `fleet/2102`). Behind `tailscale serve` or a proxy that address is always loopback, so the record also holds what the proxy said of who it passed on (the tailnet login, else the forwarded address), in quotes and marked as not checked (`proxySaid`). Turning the setting on or off is a Security record too.
+
+Weighed and not built: a list of addresses that may confirm. The LAN listener already refuses every source outside the private ranges and the operator's list before sign-in (`lan.go`); behind `tailscale serve` or a proxy every request arrives from loopback, so such a list would decide by a header the proxy wrote. The key is the check that holds on every route.
+
+What this does and does not hold against, said plainly:
+
+- **A session without the key** (a cookie that leaked, a browser left signed in) is stopped by the key field. Two limits. A browser that saved the sign-in key may offer to fill the field in: the field is marked `autocomplete="new-password"`, which browsers mostly honour, and a browser left open is then only as safe as its password store. And a session can already drive the agent and answer its cards; on a master where the agent may run commands, a determined session holder can have it read `dashboard-auth-token`. The key field raises the cost and leaves records; it is not a wall.
+- **Whoever holds the key** is not stopped by anything here, and could not be: the API key and the sign-in key are one secret. Refusing the bare `Authorization: Bearer` request keeps a script from confirming by accident. A script that signs in with the key and sends the form with the dashboard's Origin is a signed-in browser as far as the dashboard can tell. Before this setting the key's holder could confirm only on the master itself (or by way of the agent there); with it on, from anywhere the dashboard is reached. So the setting is only as safe as the key is kept: do not turn it on while a script or a log shipper on another machine holds the key. A token scoped to reading logs, separate from the sign-in key, would take that key away from them; it does not exist yet.
+- **The file.** `fleet.remote_confirm` is as well guarded as `config.json`: the agent's file tools cannot write it, but anything that runs as the account Tenant runs as can.
+
+What nothing stands in for: with this on, the digits no longer show that the person typing them is at the master. They still have to come from the machine's own screen, and the form says so. Leave it off on a master you can sit at.
+
 
 A tap on a component's button or a form's Send counts as the operator speaking: it starts a turn like a typed message, and never asks first. It is still a message the model proposed, so the bubble says "via choices" or "via form", and a component can never send a slash command.
 
@@ -247,7 +269,7 @@ A request for an action on a machine is titled "On the machine "<name>": your ag
 
 A machine is named in a form by its id alone, in a field called `machine`, and a handler uses it only once it is one of the fleet's.
 
-**Where a machine may be confirmed.** `POST /fleet/confirm` is the one dashboard route that works only for a browser signed in on the computer running Tenant (`atThisComputer`): a loopback peer address, a loopback name in `Host`, no proxy header (`Forwarded`, `Via`, `X-Forwarded-*`, `X-Real-*`, `Tailscale-*`, `Cf-*`), and the session cookie, never the API key. Anything else gets 403 and a Security record (4324); the page shows such a browser where to confirm instead of the form. Attempts are taken one at a time, and after five failures for one machine each further one doubles a wait, up to a minute, as sign-in does per address. There is no `/api` row that changes the fleet.
+**Where a machine may be confirmed.** `POST /fleet/confirm` is the one dashboard route that works only for a browser signed in on the computer running Tenant (`atThisComputer`), unless the operator turned remote confirmation on there (§5, TEN-545): a loopback peer address, a loopback name in `Host`, no proxy header (`Forwarded`, `Via`, `X-Forwarded-*`, `X-Real-*`, `Tailscale-*`, `Cf-*`), and the session cookie, never the API key. Anything else gets 403 and a Security record (4324); the page shows such a browser where to confirm instead of the form. Attempts are taken one at a time, and after five failures for one machine each further one doubles a wait, up to a minute, as sign-in does per address. There is no `/api` row that changes the fleet.
 
 ## 9. A new page
 

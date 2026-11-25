@@ -28,10 +28,10 @@ block for drift.
 | Measure | Result |
 |---|---:|
 | Go packages | 107 |
-| Go files | 1,612 |
-| Test files | 815 |
-| Production Go LOC | 212,907 |
-| Test Go LOC | 184,666 |
+| Go files | 1,613 |
+| Test files | 816 |
+| Production Go LOC | 213,143 |
+| Test Go LOC | 185,189 |
 | Go modules | 1 |
 | Plugin capability packages | 15 |
 | Version | `0.0.1` |
@@ -1420,7 +1420,11 @@ nothing. A machine is
 confirmed there only from a browser signed in on the computer running Tenant
 (`Server.atThisComputer`: loopback peer, loopback Host, no proxy header, the
 session cookie and never the API key); `TestOnlyTheOperatorConfirmsAMachine`
-holds the dashboard to that one handler. `GET /api/fleet` is the page as JSON
+holds the dashboard to that one handler. The operator can widen that at the
+master's terminal (`fleet.remote_confirm`, TEN-545, off by default): the same
+handler then takes the digits from a signed-in browser elsewhere that gives
+the sign-in key again (`keyAgain`), recorded with the surface
+`dashboard-remote`; the API key still confirms nothing. `GET /api/fleet` is the page as JSON
 and changes nothing.
 
 **Losing the master** (TEN-533). `tenant child rehome` (`childRehome`,

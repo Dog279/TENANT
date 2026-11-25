@@ -65,6 +65,7 @@ config.json: embed_model
 config.json: fallbacks
 config.json: fleet
 config.json: fleet.listen
+config.json: fleet.remote_confirm
 config.json: gateway
 config.json: gateway.mode
 config.json: gateway.sse_addr

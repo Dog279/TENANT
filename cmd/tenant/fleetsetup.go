@@ -9,7 +9,9 @@ package main
 //
 // A machine joins by the code and nothing else: no discovery, no request to
 // join. The code pins the master before the machine sends anything, and the
-// six digits it then shows are typed on the master, at this computer.
+// six digits it then shows are typed on the master, at this computer (or,
+// where the operator turned remote confirmation on, in a signed-in dashboard
+// browser elsewhere: TEN-545).
 
 import (
 	"context"

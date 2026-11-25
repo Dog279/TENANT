@@ -18,6 +18,20 @@ Releases page.
   changed; `tenant fleet update --group <g>` updates a group's members in turn. Both keys are
   strict and bounded: unreadable, no machine can be confirmed or copied again until fixed. New
   events `security/4325` and `fleet/5003`. See docs/fleet-runbook.md, section 3a.
+- **A fleet machine can be confirmed from another computer, if you turn that on.** A pending
+  machine was confirmed only at the master: its terminal, or a browser signed in at the
+  dashboard's 127.0.0.1 address. On a master with no screen that meant a console for every
+  machine. `tenant fleet remote-confirm on` (or `/fleet remote-confirm on`), run by a person
+  at the master's terminal, lets a signed-in dashboard browser elsewhere confirm one: its page
+  then offers the form with one more field, the sign-in key again. It is off by default, has no
+  switch on the dashboard, and the command refuses to turn it on when its input is not a
+  terminal; a request that carries only the API key is still refused; wrong keys are slowed
+  per address as wrong sign-ins are; and the confirmation and every refusal are recorded with
+  the surface `dashboard-remote`, the session and address that asked, and what a proxy said of
+  who it passed on. The key again stops a session that leaked, not the key's holder: with this
+  on, whoever holds the sign-in key (the API key is the same key) can confirm a machine from
+  anywhere the dashboard is reached. The fleet runbook's sentence that there is "no dashboard
+  button" was wrong since the Fleet page shipped, and is corrected.
 
 - **An install script installs its own release.** The scripts asked GitHub for the latest
   release, which skips prereleases, so `install.ps1` or `install.sh` taken from a prerelease

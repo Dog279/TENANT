@@ -23,7 +23,11 @@ import (
 // The dashboard's path is one handler, handleFleetConfirm, which takes the
 // digits only from a browser signed in on the computer running Tenant
 // (internal/dashboard's TestFleetConfirmOnlyAtThisComputer): never with the
-// API key, by a tailnet or proxy name, or through a proxy.
+// API key, by a tailnet or proxy name, or through a proxy. Where the operator
+// turned remote confirmation on at the master's terminal (TEN-545), the same
+// handler takes them from a signed-in browser elsewhere that gives the
+// sign-in key again (TestFleetConfirmFromElsewhere): still one handler, and
+// still not a request that carries only the API key.
 func TestOnlyTheOperatorConfirmsAMachine(t *testing.T) {
 	type site struct{ file, fn string }
 	var (
@@ -31,6 +35,7 @@ func TestOnlyTheOperatorConfirmsAMachine(t *testing.T) {
 		opConfirms    []site // calls of fleetOps.confirmMachine
 		tuiConfirms   []site // calls of FleetControl.Confirm in the terminal app
 		dashConfirms  []site // calls of FleetControl.Confirm in the dashboard
+		ctlConfirms   []site // calls shaped like FleetControl.Confirm (four arguments) anywhere else
 		mentions      []string
 		toolNames     = map[string]string{}
 	)
@@ -114,6 +119,15 @@ func TestOnlyTheOperatorConfirmsAMachine(t *testing.T) {
 				switch {
 				case sel.Sel.Name == "confirmMachine":
 					opConfirms = append(opConfirms, site{rel, name})
+				case sel.Sel.Name == "Confirm" && len(call.Args) == 4 && !isContext(call.Args[0]):
+					// FleetControl.Confirm(machine, code, set, by): the dashboard's
+					// control, which only the dashboard's handler may ask. Anywhere
+					// else it would confirm with by "", as if at this computer.
+					if strings.HasPrefix(rel, "internal/dashboard/") {
+						dashConfirms = append(dashConfirms, site{rel, name})
+					} else {
+						ctlConfirms = append(ctlConfirms, site{rel, name})
+					}
 				case sel.Sel.Name == "Confirm" && len(call.Args) == 3 && !isContext(call.Args[0]) && !strings.HasPrefix(rel, "internal/fleet/"):
 					if strings.HasPrefix(rel, "internal/tui/") {
 						tuiConfirms = append(tuiConfirms, site{rel, name})
@@ -140,7 +154,10 @@ func TestOnlyTheOperatorConfirmsAMachine(t *testing.T) {
 		t.Errorf("a machine is confirmed from %v, want only the command line, the terminal and the dashboard's Fleet page: %v", opConfirms, want)
 	}
 	if want := []site{{"internal/dashboard/fleet.go", "Server.handleFleetConfirm"}}; !slices.Equal(dashConfirms, want) {
-		t.Errorf("the dashboard confirms a machine from %v, want only %v: the one handler that takes the digits from a browser on this computer", dashConfirms, want)
+		t.Errorf("the dashboard confirms a machine from %v, want only %v: the one handler that takes the digits from a browser on this computer, or from one elsewhere with the sign-in key again where the operator turned that on", dashConfirms, want)
+	}
+	if len(ctlConfirms) > 0 {
+		t.Errorf("the dashboard's fleet control is asked to confirm a machine from %v: only the dashboard's own handler calls it", ctlConfirms)
 	}
 	if want := []site{{"internal/tui/cmd_fleet.go", "slashFleet"}}; !slices.Equal(tuiConfirms, want) {
 		t.Errorf("the terminal app confirms a machine from %v, want only %v", tuiConfirms, want)

@@ -17,12 +17,18 @@ package dashboard
 // the spec takes it from the local dashboard only. Here that is a browser
 // signed in on the computer running Tenant (atThisComputer): the digits are
 // not taken from the API key, through `tailscale serve` or a proxy, or from
-// another address. The other forms follow the rest of the dashboard: any
-// signed-in browser, with the confirm step where a change lets the agent do
-// more or cannot be undone.
+// another address. The operator can widen that at the master's terminal
+// (fleet.remote_confirm, TEN-545; DESIGN.md §5): a signed-in browser
+// elsewhere may then confirm a machine by giving the sign-in key again. A
+// request that carries only the API key still confirms nothing; that keeps a
+// script from confirming by accident, and is no boundary against whoever
+// holds the key, which is the sign-in key too. The other forms follow the rest
+// of the dashboard: any signed-in browser, with the confirm step where a change lets
+// the agent do more or cannot be undone.
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -30,6 +36,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -52,9 +59,12 @@ type FleetControl interface {
 	Init(listen string, addresses []string, by string) error
 	// Confirm makes a pending machine a confirmed one: code is the six digits
 	// that machine shows on its own screen, set the category=mode pairs the
-	// operator chose for it alone. The dashboard calls it from one place, for a
-	// browser signed in on this computer (handleFleetConfirm).
-	Confirm(machine, code string, set []string) error
+	// operator chose for it alone. by is "" for a browser signed in on this
+	// computer; else it says which signed-in browser elsewhere asked, for the
+	// Security record, and the control confirms only while the operator's
+	// setting allows that (FleetView.RemoteConfirm). The dashboard calls it
+	// from one place (handleFleetConfirm).
+	Confirm(machine, code string, set []string, by string) error
 	Rename(machine, name string) error
 	// Revoke ends a machine; deleteSettings also removes its record and its
 	// approval settings, where keeping them leaves both under its id.
@@ -133,9 +143,13 @@ type FleetView struct {
 	// NoFresh: what a machine confirmed now would start with can't be worked
 	// out (the fleet's rules can't be read), so no machine has a drift to show
 	// and none can be confirmed or given a fresh copy.
-	NoFresh  bool
-	Machines []FleetMachine
-	Rules    []ToolRuleRow // the fleet's rules: what every newly confirmed machine starts with
+	NoFresh bool
+	// RemoteConfirm: the operator let a signed-in browser that is not on this
+	// computer confirm a machine, with the sign-in key again
+	// (fleet.remote_confirm, off unless set at the master's terminal).
+	RemoteConfirm bool
+	Machines      []FleetMachine
+	Rules         []ToolRuleRow // the fleet's rules: what every newly confirmed machine starts with
 }
 
 // FleetMachine is one machine, render-ready. OS, User, Version, Sandbox and
@@ -320,7 +334,7 @@ func (s *Server) mountFleetSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /fleet/{id}", s.handleFleetMachinePage)
 	mux.HandleFunc("GET /api/fleet", s.handleFleetAPI)
 	// Confirming has no second click: typing the machine's six digits is the
-	// step. Revoking, replacing a machine's settings, and anything that lets
+	// step (and, from a browser elsewhere, the sign-in key again). Revoking, replacing a machine's settings, and anything that lets
 	// the agent do more on it ask first (DESIGN.md §5).
 	mux.HandleFunc("POST /fleet/confirm", s.handleFleetConfirm)
 	// Making this Tenant a master opens the fleet port and nothing else: no
@@ -328,8 +342,8 @@ func (s *Server) mountFleetSSR(mux *http.ServeMux) {
 	// browser, never the API key (handleFleetInit).
 	mux.HandleFunc("POST /fleet/init", s.handleFleetInit)
 	// A code joins nothing by itself: the machine that spends it waits until
-	// its six digits are typed on this computer. Making one needs a signed-in
-	// browser, never the API key (handleFleetAdd).
+	// its six digits are typed where a machine is confirmed (handleFleetConfirm).
+	// Making one needs a signed-in browser, never the API key (handleFleetAdd).
 	mux.HandleFunc("POST /fleet/add", s.handleFleetAdd)
 	mux.HandleFunc("POST /fleet/rename", s.handleFleetRename)
 	mux.HandleFunc("POST /fleet/revoke", needConfirm(nil, s.handleFleetRevoke))
@@ -352,8 +366,15 @@ const (
 	fleetGone       = "That machine isn't part of this fleet. Nothing changed."
 	fleetUnreadable = "The list of machines can't be read right now. Until it can, no machine is called. The Logs page has the reason."
 	// fleetNotHere is the 403 a confirmation gets from anywhere but a browser
-	// signed in on the computer running Tenant.
-	fleetNotHere = "Nothing changed: a machine is confirmed in a browser on the computer running Tenant, signed in to the dashboard at its 127.0.0.1 or localhost address, or in the terminal."
+	// signed in on the computer running Tenant, unless the operator turned
+	// remote confirmation on and the request is a signed-in browser's.
+	fleetNotHere = "Nothing changed: a machine is confirmed in a browser on the computer running Tenant, signed in to the dashboard at its 127.0.0.1 or localhost address, or in the terminal. A signed-in browser elsewhere can confirm one only after tenant fleet remote-confirm on is run in a terminal on that computer."
+	// The step-up a browser elsewhere takes: the sign-in key again.
+	fleetKeyWrong = "Nothing changed: that isn't the dashboard's sign-in key. From this browser a machine is confirmed with the key again, as the file dashboard-auth-token on the computer running Tenant holds it."
+	fleetKeyInURL = "Nothing changed: the sign-in key goes in the form, never in the address. The key in that address may now be in your browser's history: to change it, delete the file dashboard-auth-token and restart Tenant."
+	// surfaceRemote is the surface of a Security record this page files for a
+	// confirmation asked from a browser that is not on this computer.
+	surfaceRemote = "dashboard-remote"
 	// fleetAddSignIn is the 403 a request to make a code gets without a
 	// signed-in browser behind it.
 	fleetAddSignIn = "No code was made: a code for a new machine is made from the Fleet page in a signed-in browser, or with tenant fleet enroll in a terminal on the computer running Tenant."
@@ -371,7 +392,10 @@ type fleetPageData struct {
 	Problem    string        // the plain line when the machines can't be listed
 	One        *FleetMachine // a machine's own page; nil is the list
 	Local      bool          // this browser may confirm a machine (atThisComputer)
-	Msg, Err   string
+	// Remote: this browser is elsewhere and may confirm a machine by giving
+	// the sign-in key again (the operator turned remote confirmation on).
+	Remote   bool
+	Msg, Err string
 	// Added is the code this request made, shown in this answer only.
 	Added *FleetEnrollment
 }
@@ -383,6 +407,7 @@ func (s *Server) fleetData(r *http.Request, id string) fleetPageData {
 		return d
 	}
 	d.Configured, d.View, d.Local = true, s.fleet.View(), s.atThisComputer(r)
+	d.Remote = !d.Local && d.View.RemoteConfirm && s.validCookie(r)
 	if d.View.Err != nil {
 		d.Problem = s.flashFor(r.Context(), "fleet list", d.View.Err, fleetUnreadable)
 	}
@@ -465,9 +490,60 @@ func (s *Server) atThisComputer(r *http.Request) bool {
 }
 
 // confirmRefused files the Security record of a confirmation the dashboard
-// turned away itself (wrong digits are the control's to record).
-func confirmRefused(r *http.Request, m FleetMachine, actor, reason string) {
-	_ = catalog.FleetConfirmRefused.Audit(auditCtx(r), "name", m.Name, "machine", m.ID, "reason", reason, "actor", actor, "surface", "dashboard")
+// turned away itself (wrong digits are the control's to record). surface is
+// "dashboard", or surfaceRemote for a browser that is not on this computer.
+func confirmRefused(r *http.Request, m FleetMachine, actor, reason, surface string) {
+	_ = catalog.FleetConfirmRefused.Audit(auditCtx(r), "name", m.Name, "machine", m.ID, "reason", reason, "actor", actor, "surface", surface)
+}
+
+// proxySaid is what a proxy on this computer says of who it passed on, for the
+// record of a confirmation asked from elsewhere: behind `tailscale serve` or a
+// reverse proxy every request arrives from loopback, and the address alone
+// says nothing. It is the tailnet login the proxy names, else the address it
+// forwards for: another party's words, cut short and in quotes they cannot
+// close, marked as not checked. Nothing is decided by it. A request that did
+// not come from this computer has no proxy here to speak for it: "".
+func proxySaid(r *http.Request) string {
+	if !fromLoopback(r) {
+		return ""
+	}
+	said := r.Header.Get("Tailscale-User-Login")
+	if said == "" {
+		said = r.Header.Get("X-Forwarded-For")
+	}
+	if said == "" {
+		return ""
+	}
+	if len(said) > 128 {
+		said = said[:128]
+	}
+	return "; its proxy says " + strconv.QuoteToASCII(said) + " (not checked)"
+}
+
+// keyAgain is the step-up a browser that is not on this computer takes before
+// it confirms a machine: the dashboard's sign-in key, in the body, compared as
+// sign-in compares it and counted against the same per-address wait. A
+// session someone stole or left open is then not enough. It returns what the
+// page says and what the Security record says when the key does not pass, ""
+// when it does.
+func (s *Server) keyAgain(r *http.Request) (said, reason string) {
+	key, inBody := bodyOnly(r, "key")
+	wait := s.loginWait(r.RemoteAddr)
+	switch {
+	case !inBody:
+		KeyInURL.Log(r.Context(), "cred", "dashboard sign-in key")
+		return fleetKeyInURL, "the sign-in key was sent in the address"
+	case wait > 0:
+		SignInFailed.Log(r.Context(), "remote", r.RemoteAddr, "throttled", wait.String())
+		return fmt.Sprintf("Nothing changed: too many wrong keys from this address. Try again in %d seconds.", int(wait/time.Second)+1),
+			"too many wrong sign-in keys from this address"
+	case s.cfg.Auth == "" || subtle.ConstantTimeCompare([]byte(key), []byte(s.cfg.Auth)) != 1:
+		s.loginFailed(r.RemoteAddr)
+		SignInFailed.Log(r.Context(), "remote", r.RemoteAddr)
+		return fleetKeyWrong, "the sign-in key given again was wrong"
+	}
+	s.loginOK(r.RemoteAddr)
+	return "", ""
 }
 
 // handleFleetConfirm is POST /fleet/confirm (machine, code, set…): the six
@@ -475,6 +551,19 @@ func confirmRefused(r *http.Request, m FleetMachine, actor, reason string) {
 // computer. It is the dashboard's only way to confirm a machine. Attempts are
 // taken one at a time and slowed per machine as sign-in is per address: after
 // loginFreeTries failures each further one doubles a wait, up to loginMaxWait.
+//
+// Where the operator turned remote confirmation on (FleetView.RemoteConfirm,
+// TEN-545), a signed-in browser that is not on this computer may send the
+// form too, with what makes up for "at this computer": it must be the page's
+// own form (a live session and its Origin, never the API key), and it gives
+// the sign-in key again in a key field (keyAgain). The per-machine wait is the
+// same, and every refusal and the confirmation itself are recorded as asked
+// from elsewhere (surfaceRemote), with the session and the address, and what
+// a proxy on this computer said of who it passed on (proxySaid).
+//
+// The key again stops a session without the key: a cookie that leaked, a
+// browser left signed in. It does not stop whoever holds the key, who can sign
+// in and send this form from anywhere the dashboard is reached (DESIGN.md §5).
 func (s *Server) handleFleetConfirm(w http.ResponseWriter, r *http.Request) {
 	if s.fleet == nil {
 		s.fleetDone(w, r, "", "", "")
@@ -483,10 +572,16 @@ func (s *Server) handleFleetConfirm(w http.ResponseWriter, r *http.Request) {
 	m, found := s.fleetMachine(r)
 	// The page's own form, sent by the browser that shows it: secure() checked
 	// the Origin of a cookie's request already, and this route takes no other.
+	by, actor, surface := "", "operator", "dashboard"
 	if !s.atThisComputer(r) || r.Header.Get("Origin") == "" || !s.checkOrigin(r) {
-		confirmRefused(r, m, r.RemoteAddr, "not asked from a browser signed in on the computer running Tenant")
-		http.Error(w, fleetNotHere, http.StatusForbidden)
-		return
+		session, ok := s.signedInBrowser(r)
+		if !ok || !s.fleet.View().RemoteConfirm {
+			confirmRefused(r, m, r.RemoteAddr, "not asked from a browser signed in on the computer running Tenant", surface)
+			http.Error(w, fleetNotHere, http.StatusForbidden)
+			return
+		}
+		by, surface = "dashboard session "+sessionTag(session)+" from "+r.RemoteAddr+proxySaid(r), surfaceRemote
+		actor = by
 	}
 	if !found {
 		s.fleetDone(w, r, "", "", fleetGone)
@@ -494,12 +589,20 @@ func (s *Server) handleFleetConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	s.confirmMu.Lock()
 	defer s.confirmMu.Unlock()
+	if by != "" {
+		if said, reason := s.keyAgain(r); said != "" {
+			confirmRefused(r, m, actor, reason, surface)
+			s.fleetDone(w, r, m.ID, "", said)
+			return
+		}
+	}
 	// ponytail: the counts live in sign-in's table, which starts again when it
 	// passes 10,000 addresses. Its own table if that is ever worth an attack: a
-	// guess still needs a browser signed in on this computer.
+	// guess still needs a browser signed in on this computer, or elsewhere with
+	// the key.
 	tries := "fleet confirm " + m.ID // no address reads like it
 	if wait := s.loginWait(tries); wait > 0 {
-		confirmRefused(r, m, "operator", "too many failed attempts")
+		confirmRefused(r, m, actor, "too many failed attempts", surface)
 		in := "a second"
 		if wait > time.Second {
 			in = fmt.Sprintf("%d seconds", int((wait+time.Second-1)/time.Second))
@@ -513,7 +616,7 @@ func (s *Server) handleFleetConfirm(w http.ResponseWriter, r *http.Request) {
 			set = append(set, pair)
 		}
 	}
-	if err := s.fleet.Confirm(m.ID, r.FormValue("code"), set); err != nil {
+	if err := s.fleet.Confirm(m.ID, r.FormValue("code"), set, by); err != nil {
 		s.loginFailed(tries)
 		s.fleetDone(w, r, m.ID, "", s.flashFor(r.Context(), "fleet confirm", err, "Couldn't confirm that machine. Nothing changed."))
 		return
@@ -544,7 +647,8 @@ const maxFleetAddresses = 2048
 //
 // It takes a signed-in browser's session only, as Add machine does: the API
 // key makes no fleet. It opens the fleet port; no machine joins by it without
-// a code and, on this computer, its six digits (handleFleetConfirm).
+// a code and its six digits, typed where a machine is confirmed
+// (handleFleetConfirm).
 func (s *Server) handleFleetInit(w http.ResponseWriter, r *http.Request) {
 	if s.fleet == nil {
 		s.fleetDone(w, r, "", "", "")
@@ -583,7 +687,8 @@ const maxFleetName = 63
 // It takes a signed-in browser's session only, with the page's anti-forgery
 // check (an Origin equal to the dashboard's): the API key makes no code. A
 // code is the first half of a machine joining; the other half, the six
-// digits, stays at this computer (handleFleetConfirm).
+// digits, stays at this computer unless the operator turned remote
+// confirmation on there (handleFleetConfirm).
 func (s *Server) handleFleetAdd(w http.ResponseWriter, r *http.Request) {
 	if s.fleet == nil {
 		s.fleetDone(w, r, "", "", "")

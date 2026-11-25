@@ -316,6 +316,10 @@ func (f fleetTUIControl) Relay(args []string) (string, error) {
 	return out, err
 }
 
+func (f fleetTUIControl) RemoteConfirm(args []string) (string, error) {
+	return fleetRemoteConfirmSwitch(f.ops, f.lc, args)
+}
+
 // fleetNames is a list of machine ids as their names, for display; an id no
 // machine has any more shows as itself.
 func fleetNames(ids []string) []string {

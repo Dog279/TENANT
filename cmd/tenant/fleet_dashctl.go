@@ -7,8 +7,10 @@ package main
 // so the page gets printable ASCII in quotes the text cannot close.
 //
 // Confirm is the dashboard's one way to confirm a machine. The dashboard
-// calls it only for a browser signed in on this computer
-// (internal/dashboard/fleet.go, atThisComputer); nothing else in the
+// calls it for a browser signed in on this computer
+// (internal/dashboard/fleet.go, atThisComputer) or, while the operator has
+// remote confirmation on (fleet.remote_confirm, TEN-545), for a signed-in
+// browser elsewhere that gave the sign-in key again; nothing else in the
 // dashboard, no relay and no tool reaches it (fleet_reach_test.go).
 
 import (
@@ -98,7 +100,7 @@ func (d dashFleet) View() dashboard.FleetView {
 		v.Dial = strings.Join(fleetDefaultAddresses(v.Listen), ", ")
 		return v
 	}
-	v.Master = true
+	v.Master, v.RemoteConfirm = true, fleetRemoteConfirmOn(d.ops.cfgDir)
 	if rec, _, err := d.ops.store.Recovery(); err == nil && rec == "" {
 		v.NoRecovery = true
 	}
@@ -236,17 +238,27 @@ func (d dashFleet) machine(id string) (fleet.Machine, error) {
 }
 
 // Confirm takes the six digits a pending machine shows. The Security records
-// of a confirmation and of a refused one are fleetOps.confirmMachine's.
-func (d dashFleet) Confirm(id, code string, pairs []string) error {
+// of a confirmation and of a refused one are fleetOps.confirmMachine's. by
+// names a signed-in browser that is not on this computer: it confirms only
+// while config.json says so now (read here again, whatever the page showed
+// when it was drawn), and its records carry the remote surface and by.
+func (d dashFleet) Confirm(id, code string, pairs []string, by string) error {
 	m, err := d.machine(id)
 	if err != nil {
 		return err
+	}
+	ops := d.ops
+	if by != "" {
+		if !fleetRemoteConfirmOn(ops.cfgDir) {
+			return dashboard.PlainError("Nothing changed: confirming a machine from a browser that is not on the computer running Tenant is turned off. It is turned on in a terminal there: tenant fleet remote-confirm on")
+		}
+		ops.surface, ops.by = surfaceDashboardRemote, by
 	}
 	set, err := parseSet(pairs)
 	if err != nil {
 		return err
 	}
-	_, _, err = d.ops.confirmMachine(m.ID, code, set)
+	_, _, err = ops.confirmMachine(m.ID, code, set)
 	switch {
 	case errors.Is(err, fleet.ErrWrongCode):
 		return dashboard.PlainError("Those aren't the six digits that machine shows. Nothing changed. If they never match, the machine waiting here is not the one in front of you: revoke it.")

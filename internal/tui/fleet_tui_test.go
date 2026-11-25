@@ -116,6 +116,9 @@ func (d fakeDefaults) UnsetPermission(cat string) (bool, error) {
 func (f *fakeFleet) Relay(args []string) (string, error) {
 	return f.note(append([]string{"relay"}, args...)...), nil
 }
+func (f *fakeFleet) RemoteConfirm(args []string) (string, error) {
+	return f.note(append([]string{"remote-confirm"}, args...)...), nil
+}
 
 func newFleetModel(f FleetControl) *model {
 	m := newModel(context.Background(), Config{Fleet: f, Perms: &fakeFleetPerms{modes: map[string]string{"exec": "allow"}, rules: map[string]string{}}})
@@ -180,7 +183,7 @@ func TestSlashFleetChangesNeedTheKeyboard(t *testing.T) {
 	f := newFakeFleet()
 	m := newFleetModel(f)
 	for _, line := range []string{
-		"/fleet enroll web2", "/fleet confirm web1 123456", "/fleet confirm web1 123 456 exec=allow", "/fleet revoke web1 delete", "/fleet revoke web1 keep", "/fleet relay discord on",
+		"/fleet enroll web2", "/fleet confirm web1 123456", "/fleet confirm web1 123 456 exec=allow", "/fleet revoke web1 delete", "/fleet revoke web1 keep", "/fleet relay discord on", "/fleet remote-confirm on",
 	} {
 		slash(m, line)
 		if len(f.calls) != 0 {
@@ -193,7 +196,7 @@ func TestSlashFleetChangesNeedTheKeyboard(t *testing.T) {
 	// What only looks is answered either way.
 	for line, want := range map[string]string{
 		"/fleet": "status", "/fleet show web1": "show web1", "/fleet confirm web1": "confirm web1 code=",
-		"/fleet revoke web1": "revoke web1 scheme=", "/fleet relay": "relay", "/fleet relay discord": "relay discord",
+		"/fleet revoke web1": "revoke web1 scheme=", "/fleet relay": "relay", "/fleet relay discord": "relay discord", "/fleet remote-confirm": "remote-confirm",
 	} {
 		f.calls = nil
 		slash(m, line)
@@ -208,6 +211,7 @@ func TestSlashFleetChangesNeedTheKeyboard(t *testing.T) {
 		"/fleet revoke web1 DELETE":                       "revoke web1 scheme=delete",
 		"/fleet enroll web2":                              "enroll web2",
 		"/fleet relay imessage on":                        "relay imessage on",
+		"/fleet remote-confirm off":                       "remote-confirm off",
 	} {
 		f.calls = nil
 		typeLine(m, line)
@@ -218,7 +222,7 @@ func TestSlashFleetChangesNeedTheKeyboard(t *testing.T) {
 			t.Fatal("the keyboard mark outlived the line it was set for")
 		}
 	}
-	for _, line := range []string{"/fleet bogus", "/fleet show", "/fleet enroll", "/fleet enroll a b", "/fleet confirm", "/fleet revoke", "/fleet revoke a b c", "/fleet relay a b c"} {
+	for _, line := range []string{"/fleet bogus", "/fleet show", "/fleet enroll", "/fleet enroll a b", "/fleet confirm", "/fleet revoke", "/fleet revoke a b c", "/fleet relay a b c", "/fleet remote-confirm on now"} {
 		f.calls = nil
 		typeLine(m, line)
 		if len(f.calls) != 0 || !strings.Contains(lastMsg(m), "usage: /fleet") {
