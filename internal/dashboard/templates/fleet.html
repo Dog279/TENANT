@@ -318,6 +318,7 @@
   {{if or .Local .Remote}}
   <form method="POST" action="/fleet/confirm" data-on:submit__prevent__throttle.1s="@post('/fleet/confirm', {contentType:'form', retryMaxCount:0})">
     <input type="hidden" name="machine" value="{{$m.ID}}">
+    <input type="hidden" name="start" value="{{$m.Start.Key}}">
     {{template "fl-start" .}}
     <p class="mt">Until you confirm it, this Tenant sends the machine nothing. Confirm it only if the six digits on the machine's own screen are the ones you type here: they tie this record to that machine, and to no other that got hold of its enrollment code.</p>
     {{if .Remote}}<div class="banner info mt">This browser is not on the computer running Tenant. Remote confirmation is on there, so this browser can confirm the machine once you give the dashboard's sign-in key again. Read the six digits from the machine's own screen yourself, or have someone you trust at it read them to you: digits that arrive any other way prove nothing.</div>{{end}}

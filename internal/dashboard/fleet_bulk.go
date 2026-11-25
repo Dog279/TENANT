@@ -39,6 +39,9 @@ const (
 	fleetDefaultsBroken   = "The fleet's default safety settings can't be read right now. Until they can, no machine can be confirmed or given a fresh copy. The Logs page has the reason."
 	fleetGroupName        = "Nothing changed. A group's name is up to 63 letters, digits, dots, dashes or underscores, starts with a letter or a digit, isn't all, doesn't look like a machine id (m and 16 hex digits), and isn't another group's."
 	fleetMovesNone        = "No machine's settings changed: Apply lays a group's rules over its members."
+	// fleetLayersChanged answers the second post of a step whose layers are no
+	// longer the ones it showed.
+	fleetLayersChanged = "Nothing changed: the fleet's rules, its defaults, a group or this Tenant's own settings were edited since this step was drawn. Read it again, then confirm."
 )
 
 var (
@@ -503,11 +506,38 @@ func (s *Server) handleFleetGroupApply(w http.ResponseWriter, r *http.Request) {
 	}
 	d := s.fleetGroupData(r, g.Name)
 	req := fleetBulkReq{op: FleetBulkOp{Action: FleetBulkApply}, machines: d.Members, unknown: d.Strays}
+	fields := []HiddenField{{"group", g.Name}}
 	if r.FormValue("confirm") != "yes" {
-		s.fleetStep(w, r, d, req, "/fleet/groups/apply", []HiddenField{{"group", g.Name}}, d.Group.Href())
+		s.fleetStep(w, r, d, req, "/fleet/groups/apply", fields, d.Group.Href(), "")
 		return
 	}
+	if s.layersChanged(r, d.View) {
+		s.fleetStep(w, r, d, req, "/fleet/groups/apply", fields, d.Group.Href(), fleetLayersChanged)
+		return
+	}
+	// The step named its machines, and its form carries them: a machine put in
+	// the group since is not among them, and is left for the next Apply.
+	if named := r.Form["machine"]; len(named) > maxFleetSelection*4 { // more than a group holds
+		s.fleetGroupDone(w, r, g.Name, "", "Nothing changed: that is more machines than a group holds.")
+		return
+	} else if len(named) > 0 {
+		req.unknown = nil
+		req.machines = slices.DeleteFunc(slices.Clone(d.Members), func(m FleetMachine) bool { return !slices.Contains(named, m.ID) })
+		if len(req.machines) == 0 {
+			s.fleetGroupDone(w, r, g.Name, "", "None of the machines this step named is in the group any more. Nothing changed.")
+			return
+		}
+	}
 	s.fleetBulkDo(w, r, d, req)
+}
+
+// layersChanged reports whether a step's second post carries the name of
+// layers that are no longer the fleet's (FleetView.LayersKey): something a
+// step showed was edited before its button was pressed. A form without the
+// field is not checked; the step's own always has it where it applies.
+func (s *Server) layersChanged(r *http.Request, v FleetView) bool {
+	shown := r.FormValue("layers")
+	return shown != "" && shown != v.LayersKey
 }
 
 // --- many machines ---
@@ -667,6 +697,12 @@ func (req fleetBulkReq) needsStep() bool {
 	return true
 }
 
+// laysLayers is whether the change lays the fleet's layers over machines
+// (Apply, Copy again): then its step is held to the layers it showed.
+func (req fleetBulkReq) laysLayers() bool {
+	return !req.update && (req.op.Action == FleetBulkApply || req.op.Action == FleetBulkCopy)
+}
+
 // skip is why a machine will not take the change, where that is known
 // before it is tried; "" when it may.
 func (req fleetBulkReq) skip(m FleetMachine) string {
@@ -705,7 +741,8 @@ func (s *Server) handleFleetBulk(w http.ResponseWriter, r *http.Request) {
 		s.fleetDone(w, r, "", "", why)
 		return
 	}
-	if req.needsStep() && r.FormValue("confirm") != "yes" {
+	changed := r.FormValue("confirm") == "yes" && req.laysLayers() && s.layersChanged(r, d.View)
+	if req.needsStep() && r.FormValue("confirm") != "yes" || changed {
 		back, fields := "/fleet", req.fields
 		if d.Filter != "" && !d.NoGroup {
 			// The answer shows the list under the same filter. The second post
@@ -713,7 +750,11 @@ func (s *Server) handleFleetBulk(w http.ResponseWriter, r *http.Request) {
 			back += "?group=" + url.QueryEscape(d.Filter)
 			fields = append(slices.Clone(fields), HiddenField{"group", d.Filter})
 		}
-		s.fleetStep(w, r, d, req, "/fleet/bulk", fields, back)
+		warn := ""
+		if changed {
+			warn = fleetLayersChanged
+		}
+		s.fleetStep(w, r, d, req, "/fleet/bulk", fields, back, warn)
 		return
 	}
 	s.fleetBulkDo(w, r, d, req)
@@ -721,13 +762,16 @@ func (s *Server) handleFleetBulk(w http.ResponseWriter, r *http.Request) {
 
 // fleetStep answers with the confirm step: in place of #fleet-body for a
 // Datastar post, a whole page otherwise. Its form carries the machines it
-// names, by id, and the action's fields (a group's Apply carries the group
-// alone: its second post takes the members the group has then). With no
-// machine that can take the change there is nothing to confirm: the answer
-// says why for each.
-func (s *Server) fleetStep(w http.ResponseWriter, r *http.Request, d fleetPageData, req fleetBulkReq, route string, fields []HiddenField, back string) {
+// names, by id, and the action's fields; where it lays the fleet's layers it
+// also carries their name (FleetView.LayersKey), and its second post is held
+// to both. With no machine that can take the change there is nothing to
+// confirm: the answer says why for each. warn is said above a step that is
+// drawn again because what it showed had changed.
+func (s *Server) fleetStep(w http.ResponseWriter, r *http.Request, d fleetPageData, req fleetBulkReq, route string, fields []HiddenField, back, warn string) {
 	st := &fleetBulkStep{Route: route, Back: back, Hidden: slices.Clone(fields)}
-	byID := route == "/fleet/bulk"
+	if req.laysLayers() && d.View.LayersKey != "" {
+		st.Hidden = append(st.Hidden, HiddenField{"layers", d.View.LayersKey})
+	}
 	for _, id := range req.unknown {
 		st.Skips = append(st.Skips, fleetBulkLine{id, "isn't part of this fleet"})
 	}
@@ -740,9 +784,7 @@ func (s *Server) fleetStep(w http.ResponseWriter, r *http.Request, d fleetPageDa
 		if len(st.Names) < fleetStepNames {
 			st.Names = append(st.Names, m.Name)
 		}
-		if byID {
-			st.Hidden = append(st.Hidden, HiddenField{"machine", m.ID})
-		}
+		st.Hidden = append(st.Hidden, HiddenField{"machine", m.ID})
 	}
 	st.More = st.Count - len(st.Names)
 	if st.Count == 0 {
@@ -772,14 +814,14 @@ func (s *Server) fleetStep(w http.ResponseWriter, r *http.Request, d fleetPageDa
 		st.What = "The rule " + visibleText(o.Pattern) + " is removed from " + n + ". What it matched then follows each machine's safety settings, which may let your agent do it without asking you."
 		st.Yes = "Yes, remove it from " + n
 	case o.Action == FleetBulkApply:
-		st.What = "The fleet's rules, then the rules of each machine's groups in name order, are laid over the approval settings of " + n + ". A rule of a machine's own that one of them covers is replaced; safety settings stay as they are."
+		st.What = "The fleet's rules, then the rules of each machine's groups in name order, are laid over the approval settings of " + n + ". A rule of a machine's own that one of them covers is replaced, a block included, and each machine's record in the Security log says which; safety settings stay as they are."
 		st.Yes = "Yes, apply to " + n
 	case o.Action == FleetBulkCopy:
 		st.What = "The approval settings of " + n + " are replaced by a fresh copy of this Tenant's, with the fleet's rules and their groups' rules. Anything set or allowed for one of them alone goes."
 		st.Yes, st.Danger = "Yes, copy again on "+n, true
 	}
 	d.Step = st
-	s.fleetAnswer(w, r, d, "", "")
+	s.fleetAnswer(w, r, d, "", warn)
 }
 
 // fleetBulkDo does the change, or starts the rollout, on the machines the

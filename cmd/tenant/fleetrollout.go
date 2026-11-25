@@ -48,7 +48,8 @@ type fleetRolloutMachine struct {
 
 // fleetRolloutState is a rollout, as far as it has got. Stopped is "" while
 // it runs on its own and once it ended on its own, "stopped by the operator",
-// or "stopped at <name>" after a machine rolled back or failed.
+// "stopped at <name>" after a machine rolled back or failed, or "stopped when
+// this Tenant no longer held the fleet's links".
 type fleetRolloutState struct {
 	Started, Finished time.Time
 	Limit             int
@@ -68,12 +69,19 @@ type fleetRollout struct {
 		State(machine string) (fleetUpdateState, bool)
 	}
 
+	// holds reports whether mgr is still the manager that holds the fleet's
+	// links; nil (tests) is always. A rollout whose manager has gone starts
+	// no more machines: their links are another manager's now, or nobody's.
+	holds func(mgr *fleet.Manager) bool
+
 	mu   sync.Mutex
 	cur  *fleetRolloutState
 	stop chan struct{} // closed by Stop
 }
 
-func newFleetRollout(u *fleetUpdates) *fleetRollout { return &fleetRollout{updates: u} }
+func newFleetRollout(u *fleetUpdates) *fleetRollout {
+	return &fleetRollout{updates: u, holds: func(mgr *fleet.Manager) bool { return fleetManager() == mgr }}
+}
 
 // State is a copy of the current or last rollout; ok is false when there was
 // none.
@@ -175,6 +183,11 @@ func (r *fleetRollout) run(mgr *fleet.Manager, s *fleetRolloutState, o fleetUpda
 				r.set(s, i, fleetUpdFailed, lastLine(u.Lines))
 			}
 			inFlight--
+		}
+		if r.holds != nil && next < len(s.Machines) && r.stopped(s) == "" && !r.holds(mgr) {
+			r.mu.Lock()
+			s.Stopped = "stopped when this Tenant no longer held the fleet's links"
+			r.mu.Unlock()
 		}
 		for inFlight < s.Limit && next < len(s.Machines) && r.stopped(s) == "" {
 			if err := r.updates.Start(mgr, s.Machines[next].ID, o); err != nil {

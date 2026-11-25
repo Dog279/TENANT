@@ -20,7 +20,9 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -161,6 +163,12 @@ type fleetOps struct {
 	// computer (a dashboard session elsewhere); "" otherwise. It goes into the
 	// confirmation's records.
 	by string
+	// shown is the scheme the operator was shown on the confirm screen, as
+	// schemeShown names it; "" where no screen came first in this process.
+	// confirmMachine refuses when what the machine would start with has
+	// changed since: a default, a fleet rule or a group may have been edited
+	// between the screen and the digits.
+	shown string
 	// schemes is the fleet's approval schemes, saved when changed. The command
 	// line reads them from the settings file at each call, so what it saves
 	// over is what is there now.
@@ -298,6 +306,9 @@ func (o fleetOps) confirmMachine(ref, code string, set map[string]string) (fleet
 	if err != nil {
 		return m, p, err
 	}
+	if o.shown != "" && schemeShown(p.Scheme) != o.shown {
+		return refuse(errors.New("what this machine would start with changed since the screen you read (a default, a fleet rule or one of its groups was edited): look at it again, then confirm"))
+	}
 	if err := f.Put(m.ID, p.Scheme); err != nil {
 		return m, p, err
 	}
@@ -321,7 +332,12 @@ func (o fleetOps) confirmMachine(ref, code string, set map[string]string) (fleet
 		Set      map[string]string `json:"set_by_the_operator,omitempty"`
 		Kept     bool              `json:"scheme_kept_with_the_id,omitempty"`
 		By       string            `json:"asked_by,omitempty"`
-	}{got.Reported, set, p.Kept, o.by})
+		// The layers laid over its copy of the master's scheme (TEN-546): the
+		// default categories set for new machines, and its groups in the order
+		// their rules were laid. The fleet's rules are in the scheme itself.
+		Defaults map[string]string `json:"fleet_defaults,omitempty"`
+		Groups   []string          `json:"groups_laid,omitempty"`
+	}{got.Reported, set, p.Kept, o.by, p.Defaults, groupNames(p.Groups)})
 	o.audit(got, "confirmed", string(detail)+inventory)
 	return got, p, nil
 }
@@ -452,6 +468,7 @@ func (p fleetPreview) ruleNote(pattern, mode string) string {
 func (o fleetOps) recopy(f *approval.Fleet, m fleet.Machine, from string) (said string, err error) {
 	switch from {
 	case "defaults":
+		before, _ := f.Scheme(m.ID)
 		groups, err := f.Reapply(m.ID)
 		if err != nil {
 			return "", err
@@ -459,6 +476,11 @@ func (o fleetOps) recopy(f *approval.Fleet, m fleet.Machine, from string) (said 
 		said = "the fleet's rules laid over its approval scheme again"
 		if len(groups) > 0 {
 			said += ", then the rules of group(s) " + strings.Join(groups, ", ")
+		}
+		// Which of its own rules a laid rule replaced: a block among them is
+		// gone from this machine, and the record is where that is said.
+		if after, err := f.Scheme(m.ID); err == nil {
+			said += replacedRules(before, after)
 		}
 		o.audit(m, "scheme changed", said)
 	case "master":
@@ -490,6 +512,41 @@ func (o fleetOps) recopy(f *approval.Fleet, m fleet.Machine, from string) (said 
 		return "", fmt.Errorf("--from %s: want defaults or master", fleetQuote(from))
 	}
 	return said, nil
+}
+
+// schemeShown names a scheme as it was shown to the operator, so that a later
+// step can tell whether it is still the same one: the first 16 hex digits of
+// the SHA-256 of its JSON (whose keys encoding/json sorts).
+func schemeShown(s approval.Scheme) string {
+	b, _ := json.Marshal(s)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:8])
+}
+
+func groupNames(groups []approval.Group) []string {
+	var out []string
+	for _, g := range groups {
+		out = append(out, g.Name)
+	}
+	return out
+}
+
+// replacedRules says which rules of before are gone or changed in after, as
+// Apply's record tells it: each with the mode it had, ten at most.
+func replacedRules(before, after approval.Scheme) string {
+	var gone []string
+	for _, p := range slices.Sorted(maps.Keys(before.ToolRules)) {
+		if mode := before.ToolRules[p]; after.ToolRules[p] != mode {
+			gone = append(gone, fleetRule(p)+" (was "+mode+")")
+		}
+	}
+	switch n := len(gone); {
+	case n == 0:
+		return ""
+	case n > 10:
+		return fmt.Sprintf("; of its own rules, replaced: %s and %d more", strings.Join(gone[:10], ", "), n-10)
+	}
+	return "; of its own rules, replaced: " + strings.Join(gone, ", ")
 }
 
 // listText is the fleet's machines, one per line. links is the state of each
@@ -1315,6 +1372,7 @@ func fleetConfirmCmd(args []string) error {
 		return err
 	}
 	fmt.Println(confirmScreen(m, p))
+	cli.ops.shown = schemeShown(p.Scheme) // what is confirmed is what this screen showed
 	// The digits are typed by a person, at a terminal, after reading the
 	// screen above. There is no flag for them: a command a script or the agent
 	// runs cannot confirm a machine.

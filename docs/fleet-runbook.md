@@ -315,6 +315,17 @@ tenant fleet permissions --defaults set exec ask    # unset <category>: back to 
 `--group`/`--all`) lays the fleet's rules and then the rules of all of that machine's groups,
 in name order, over the scheme it has; its categories stay. A member that is pending, revoked
 or whose scheme cannot be read is skipped and named in the answer, and the command exits 1.
+A laid rule replaces every rule of the machine's own that it answers for, **a block included**:
+a group rule `os_exec(git *)` allow removes the machine's `os_exec(git status)` deny. The
+answer and the machine's Security record say which rules were replaced and what they were.
+
+**A pending machine in a group** starts with the group's rules when it is confirmed, and the
+confirm screen shows them (`group <name>`). The confirmation lays what that screen showed: if a
+default, a fleet rule or one of its groups is edited between the screen and the digits,
+`tenant fleet confirm` and the dashboard's form confirm nothing and say to read it again. The
+terminal app's `/fleet confirm <name> <digits>` is one line with no screen before it in the same
+step, so it is not held to one: read `/fleet confirm <name>` just before. The record of a
+confirmation names the defaults and the groups it laid, on every surface.
 
 **Bulk.** `tenant fleet permissions --group <group> | --all` takes the same edits as one
 machine (`set`, `add`, `rm`, `--from defaults|master`) and makes them to each machine in turn,
@@ -522,7 +533,9 @@ the next each time one ends:
 
 The Fleet page shows the rollout while it runs and afterwards (reload it): each machine as
 waiting, its live stage, done, skipped and why, rolled back, failed or not started. **Stop**
-starts no more machines; those updating finish. One rollout runs at a time. It is kept in the
+starts no more machines; those updating finish. So does the fleet port going down, or another
+process taking the fleet: the rollout starts nothing over links it no longer holds. One rollout
+runs at a time. It is kept in the
 running Tenant's memory: a restart of the master forgets it, though each machine still finishes
 or rolls back by itself. `tenant fleet update --all` and `--group <group>` stay as they were:
 one machine after the other, going on past a failure.

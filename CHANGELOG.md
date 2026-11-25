@@ -32,6 +32,14 @@ Releases page.
     time, kept in the running Tenant's memory. `tenant fleet update --all` is unchanged.
   - A change to the fleet's rules for new machines now leaves a Security record on every
     surface (`security/4325`), as a change to a default category or a group does.
+  - **What is done is what was shown.** A group's rule takes no step, since it moves no
+    machine; so the steps that do move machines hold to what they showed. A confirmation whose
+    machine would no longer start with the settings on its screen (a default, a fleet rule or
+    one of its groups was edited meanwhile) confirms nothing, on the command line and on the
+    Fleet page; Apply and Copy again on the page are refused and drawn again the same way, and
+    a group's Apply reaches only the members its step named. The record of a confirmation names
+    the defaults and groups it laid, and Apply's record says which of a machine's own rules it
+    replaced.
 - **A fleet machine can be confirmed from another computer, if you turn that on.** A pending
   machine was confirmed only at the master: its terminal, or a browser signed in at the
   dashboard's 127.0.0.1 address. On a master with no screen that meant a console for every

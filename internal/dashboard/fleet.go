@@ -250,6 +250,11 @@ type FleetView struct {
 	// fixed (the page says so; the reason goes to the log).
 	Groups    []FleetGroup
 	GroupsErr error
+	// LayersKey names everything Apply fleet rules and Copy again lay, as it
+	// is at this read: this Tenant's own settings, the defaults, the fleet's
+	// rules and the groups. "" when it can't be worked out. A confirm step
+	// carries it, and its second post is refused when it has changed.
+	LayersKey string
 	// Rollout is the current or last rollout of this process; nil with none,
 	// and in a process that does not hold the fleet.
 	Rollout *FleetRollout
@@ -390,6 +395,11 @@ type FleetStart struct {
 	Kept  bool // kept under its id from the machine that had it before
 	Perms []FleetStartPerm
 	Rules []FleetStartRule
+	// Key names these settings, so the confirm form can carry it: when it
+	// comes back and the machine's start is no longer this one (a default, a
+	// fleet rule or one of its groups was edited meanwhile), the page shows
+	// the new start and asks again instead of confirming what nobody read.
+	Key string
 }
 
 // FleetStartPerm is one category of a FleetStart; Note says where its mode
@@ -547,8 +557,11 @@ func (s *Server) mountFleetSSR(mux *http.ServeMux) {
 
 // The page's fixed words.
 const (
-	fleetGone       = "That machine isn't part of this fleet. Nothing changed."
-	fleetUnreadable = "The list of machines can't be read right now. Until it can, no machine is called. The Logs page has the reason."
+	fleetGone = "That machine isn't part of this fleet. Nothing changed."
+	// fleetStartChanged answers a confirmation whose form listed settings the
+	// machine would no longer start with.
+	fleetStartChanged = "Nothing changed: what this machine would start with was edited since this page was drawn (a default, a fleet rule or one of its groups). Read it again below, then confirm."
+	fleetUnreadable   = "The list of machines can't be read right now. Until it can, no machine is called. The Logs page has the reason."
 	// fleetNotHere is the 403 a confirmation gets from anywhere but a browser
 	// signed in on the computer running Tenant, unless the operator turned
 	// remote confirmation on and the request is a signed-in browser's.
@@ -800,6 +813,16 @@ func (s *Server) handleFleetConfirm(w http.ResponseWriter, r *http.Request) {
 			s.fleetDone(w, r, m.ID, "", said)
 			return
 		}
+	}
+	// What is confirmed is what the page showed (TEN-546): the form carries
+	// the name of the settings it listed, and one of them may have been edited
+	// since, a group's rules without any step. Then nothing is confirmed, no
+	// attempt is counted, and the answer is the page as it reads now. A form
+	// without the field is not checked: the page's own always has it.
+	if shown := r.FormValue("start"); shown != "" && (m.Start == nil || m.Start.Key != shown) {
+		d := s.fleetData(r, m.ID) // drawn again in place: the form now lists, and carries, what it would start with
+		s.formWarn(w, r, m.Href(), fleetStartChanged, func() (string, error) { return part(s.tmpl.fleet, "fleet-body", d) })
+		return
 	}
 	// ponytail: the counts live in sign-in's table, which starts again when it
 	// passes 10,000 addresses. Its own table if that is ever worth an attack: a

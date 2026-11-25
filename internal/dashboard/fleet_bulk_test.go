@@ -771,20 +771,48 @@ func TestFleetGroups(t *testing.T) {
 		t.Errorf("a name another group has in another case: %q", errMsg)
 	}
 
-	// Apply: the step names its members; the second post takes the members
-	// the group has then, and says how each went.
+	// Apply: the step names the members that can take it and carries them by
+	// id, with the name of the layers it showed. The second post is held to
+	// both: it applies to those machines only, while they are still members,
+	// and not at all once a rule or a group was edited since.
+	f.mu.Lock()
+	f.view.LayersKey = "layers-1"
+	f.mu.Unlock()
 	rec := sendForm(s.Handler(), http.MethodPost, "/fleet/groups/apply", url.Values{"group": {"web"}}, here)
 	if body := rec.Body.String(); !strings.Contains(body, "laid over the approval settings of 1 machine.") || !strings.Contains(body, "<li>"+longName(3)+": ") || !strings.Contains(body, "<li>"+longName(0)+": ") ||
-		strings.Contains(body, `name="machine"`) || !strings.Contains(body, `<input type="hidden" name="group" value="web">`) {
+		strings.Count(body, `name="machine"`) != 1 || !strings.Contains(body, `<input type="hidden" name="machine" value="m0000000000000002">`) ||
+		!strings.Contains(body, `<input type="hidden" name="group" value="web">`) || !strings.Contains(body, `<input type="hidden" name="layers" value="layers-1">`) {
 		t.Errorf("the group's apply step:\n%.3000s", body)
 	}
-	before := len(f.called())
-	rec = sendForm(s.Handler(), http.MethodPost, "/fleet/groups/apply", url.Values{"group": {"web"}, "confirm": {"yes"}, "machine": {"m0000000000000005"}}, here)
-	if got := f.called()[before:]; !slices.Equal(got, []string{"bulk|apply|" + fleetPending + ",m0000000000000002,m0000000000000003|||"}) {
-		t.Errorf("apply took %q", got)
+	apply := func(form url.Values) (string, []string) {
+		before := len(f.called())
+		form.Set("group", "web")
+		form.Set("confirm", "yes")
+		rec := sendForm(s.Handler(), http.MethodPost, "/fleet/groups/apply", form, here)
+		_, _, errMsg := fleetFlash(rec)
+		return rec.Body.String() + errMsg, f.called()[before:]
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "Done on 1 of 3.") || !strings.Contains(body, `<strong class="nm">web</strong>`) {
-		t.Errorf("apply's answer:\n%.2000s", body)
+	// A machine the step did not name: not a member, so nothing is applied.
+	if said, calls := apply(url.Values{"machine": {"m0000000000000005"}, "layers": {"layers-1"}}); len(calls) != 0 || !strings.Contains(said, "None of the machines this step named is in the group any more.") {
+		t.Errorf("apply to a machine outside the group: %q, calls %q", said, calls)
+	}
+	// Something the step showed was edited since: the step is drawn again.
+	f.mu.Lock()
+	f.view.LayersKey = "layers-2"
+	f.mu.Unlock()
+	if said, calls := apply(url.Values{"machine": {"m0000000000000002"}, "layers": {"layers-1"}}); len(calls) != 0 || !strings.Contains(said, "were edited since this step was drawn") ||
+		!strings.Contains(said, `<input type="hidden" name="layers" value="layers-2">`) {
+		t.Errorf("apply after the layers changed: calls %q\n%.2000s", calls, said)
+	}
+	// The step's own second post: the one machine it named.
+	if said, calls := apply(url.Values{"machine": {"m0000000000000002"}, "layers": {"layers-2"}}); !slices.Equal(calls, []string{"bulk|apply|m0000000000000002|||"}) ||
+		!strings.Contains(said, "Done on 1 of 1.") || !strings.Contains(said, `<strong class="nm">web</strong>`) {
+		t.Errorf("apply's own second post took %q:\n%.2000s", calls, said)
+	}
+	// A post that names no machine (not the page's) takes the members the group
+	// has then, and says how each went.
+	if said, calls := apply(url.Values{}); !slices.Equal(calls, []string{"bulk|apply|" + fleetPending + ",m0000000000000002,m0000000000000003|||"}) || !strings.Contains(said, "Done on 1 of 3.") {
+		t.Errorf("apply with no machine named took %q:\n%.2000s", calls, said)
 	}
 	// Delete: always its step; a plain post, answered with the list.
 	if rec := sendForm(s.Handler(), http.MethodPost, "/fleet/groups/delete", url.Values{"group": {"web"}, "confirm": {"yes"}}, here); fleetMsg(rec) != "The group web is deleted. Its members' settings stay as they are." {
@@ -811,7 +839,7 @@ func TestFleetGroups(t *testing.T) {
 	if !c.has("2201 ", "action=fleet groups", "duplicate") {
 		t.Errorf("the reason isn't in the log: %q", c.lines())
 	}
-	before = len(f.called())
+	before := len(f.called())
 	if _, _, errMsg := fleetFlash(sendForm(s.Handler(), http.MethodPost, "/fleet/groups/apply", url.Values{"group": {"web"}, "confirm": {"yes"}}, here)); errMsg != fleetGroupsUnreadable || len(f.called()) != before {
 		t.Errorf("apply while groups can't be read: %q", errMsg)
 	}
@@ -911,5 +939,98 @@ func TestFleetBulkControlErrorsStayOffThePage(t *testing.T) {
 	}
 	if !c.has("2201 ", "fleet_groups is locked by pid 4242") {
 		t.Errorf("the reason isn't in the log: %q", c.lines())
+	}
+}
+
+// What is confirmed is what the page showed: the confirm form carries the
+// name of the settings it listed (FleetStart.Key), and when the machine would
+// no longer start with those (a group's rule was added meanwhile, which takes
+// no step), nothing is confirmed, no attempt is counted, and the page is drawn
+// again with what it would start with now.
+func TestFleetConfirmHoldsToWhatThePageShowed(t *testing.T) {
+	f := fleetFake(3)
+	f.view.Machines[0].Start.Key = "start-2"
+	s := fleetServer(f)
+	local := func(r *http.Request) { here(r); r.Header.Del("Origin") }
+	if body := sendForm(s.served(), http.MethodGet, "/fleet/"+fleetPending, nil, local).Body.String(); !strings.Contains(body, `<input type="hidden" name="start" value="start-2">`) {
+		t.Fatalf("the confirm form does not carry what it showed:\n%.3000s", body)
+	}
+	stale := url.Values{"machine": {fleetPending}, "code": {fleetCode}, "start": {"start-1"}}
+	rec := sendForm(s.Handler(), http.MethodPost, "/fleet/confirm", stale, here)
+	if page, msg, errMsg := fleetFlash(rec); page != "/fleet/"+fleetPending || msg != "" || errMsg != fleetStartChanged {
+		t.Errorf("a form that showed other settings: to %q, msg %q, err %q", page, msg, errMsg)
+	}
+	// In place, the form is drawn again: it now carries what the machine would start with.
+	rec = sendForm(s.Handler(), http.MethodPost, "/fleet/confirm", stale, and(here, datastar))
+	if body := rec.Body.String(); !strings.Contains(body, `id="fleet-body"`) || !strings.Contains(body, `name="start" value="start-2"`) || !strings.Contains(body, "was edited since this page was drawn") {
+		t.Errorf("in place, want the alert and the form drawn again:\n%.3000s", body)
+	}
+	if got := f.called(); len(got) != 0 || f.machine(fleetPending).State != "pending" || len(s.fails) != 0 {
+		t.Fatalf("a stale form reached the control, confirmed, or was counted as a wrong code: calls %q, fails %v", got, s.fails)
+	}
+	fresh := url.Values{"machine": {fleetPending}, "code": {fleetCode}, "start": {"start-2"}}
+	if _, msg, _ := fleetFlash(sendForm(s.Handler(), http.MethodPost, "/fleet/confirm", fresh, here)); !strings.Contains(msg, "is confirmed") || f.machine(fleetPending).State != "confirmed" {
+		t.Errorf("the form that showed the settings it starts with: %q, machine %s", msg, f.machine(fleetPending).State)
+	}
+}
+
+// A step that lays the fleet's layers (Apply, Copy again) carries their name;
+// when a rule, a default or a group was edited before its button is pressed,
+// its second post changes nothing and the step is drawn again. A change that
+// lays no layer is not held to them.
+func TestFleetBulkStepHoldsToTheLayersItShowed(t *testing.T) {
+	for _, action := range []string{"apply", "copy"} {
+		f := fleetFake(6)
+		f.view.LayersKey = "layers-1"
+		s := fleetServer(f)
+		form := url.Values{"action": {action}, "machine": {fleetConfirmed, "m0000000000000002"}}
+		if body := sendForm(s.Handler(), http.MethodPost, "/fleet/bulk", form, here).Body.String(); !strings.Contains(body, `<input type="hidden" name="layers" value="layers-1">`) {
+			t.Fatalf("%s: the step does not carry the layers it showed:\n%.2000s", action, body)
+		}
+		form.Set("confirm", "yes")
+		form.Set("layers", "layers-1")
+		f.mu.Lock()
+		f.view.LayersKey = "layers-2" // a group's rule was added meanwhile
+		f.mu.Unlock()
+		rec := sendForm(s.Handler(), http.MethodPost, "/fleet/bulk", form, here)
+		if body := rec.Body.String(); len(f.called()) != 0 || !strings.Contains(body, "were edited since this step was drawn") || !strings.Contains(body, "Before this goes ahead") ||
+			!strings.Contains(body, `name="layers" value="layers-2"`) {
+			t.Errorf("%s after the layers changed: calls %q\n%.2000s", action, f.called(), body)
+		}
+		form.Set("layers", "layers-2")
+		sendForm(s.Handler(), http.MethodPost, "/fleet/bulk", form, here)
+		if got := f.called(); len(got) != 1 || !strings.HasPrefix(got[0], "bulk|"+action+"|") {
+			t.Errorf("%s with the layers it showed: calls %q", action, got)
+		}
+	}
+	// Setting a category lays no layer: a stale name beside it is not looked at.
+	f := fleetFake(6)
+	f.view.LayersKey = "layers-2"
+	form := url.Values{"action": {"permission"}, "category": {"web"}, "cat_mode": {"allow"}, "machine": {fleetConfirmed}, "confirm": {"yes"}, "layers": {"layers-1"}}
+	sendForm(fleetServer(f).Handler(), http.MethodPost, "/fleet/bulk", form, here)
+	if got := f.called(); len(got) != 1 || !strings.HasPrefix(got[0], "bulk|permission|") {
+		t.Errorf("a category set with a stale layers field: calls %q", got)
+	}
+}
+
+// Removing a rule from many machines asks first as soon as ONE of them has it
+// as a rule that asks or blocks, whatever the others have: mixing machines
+// that have it as "don't ask" in the selection does not skip the step.
+func TestFleetBulkUnruleAsksWhenAnyMachineBlocks(t *testing.T) {
+	f := fleetFake(6)
+	allowed, blocked := "os_run("+longURL(1)+" *)", "os_run("+longURL(2)+" *)"
+	// The second machine (fleetConfirmed) has allowed as "don't ask" and blocked
+	// as a block; give the third both as "don't ask".
+	f.view.Machines[2].Rules = []ToolRuleRow{{Pattern: allowed, Mode: "allow"}, {Pattern: blocked, Mode: "allow"}}
+	s := fleetServer(f)
+	sel := []string{fleetConfirmed, "m0000000000000002"}
+	rec := sendForm(s.Handler(), http.MethodPost, "/fleet/bulk", url.Values{"action": {"unrule"}, "pattern": {blocked}, "machine": sel}, here)
+	if body := rec.Body.String(); len(f.called()) != 0 || !strings.Contains(body, "Before this goes ahead") || !strings.Contains(body, "is removed from 2 machines") {
+		t.Errorf("removing a rule one machine blocks with and another allows with: calls %q\n%.2000s", f.called(), body)
+	}
+	// Where every chosen machine that has it lets the tool go ahead, removing it only tightens.
+	sendForm(s.Handler(), http.MethodPost, "/fleet/bulk", url.Values{"action": {"unrule"}, "pattern": {allowed}, "machine": sel}, here)
+	if got := f.called(); len(got) != 1 || !strings.HasPrefix(got[0], "bulk|unrule|") {
+		t.Errorf("removing a rule every chosen machine allows with: calls %q", got)
 	}
 }

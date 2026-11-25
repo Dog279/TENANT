@@ -16,6 +16,9 @@ package main
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"maps"
 	"net"
@@ -140,6 +143,19 @@ func (d dashFleet) View() dashboard.FleetView {
 	}
 	groups, groupsErr := f.Groups()
 	v.GroupsErr = groupsErr
+	// LayersKey names everything Apply and Copy again lay, as it is now: this
+	// Tenant's own scheme, the defaults, the fleet's rules and the groups. A
+	// confirm step carries it, so that what is done is what the step showed.
+	if set, err := f.Defaults(); err == nil && localErr == nil && groupsErr == nil {
+		b, _ := json.Marshal(struct {
+			Local    approval.Scheme
+			Defaults map[string]string
+			Rules    map[string]string
+			Groups   []approval.Group
+		}{local, set, fleetRules, groups})
+		sum := sha256.Sum256(b)
+		v.LayersKey = hex.EncodeToString(sum[:8])
+	}
 	// differs: for each confirmed machine with settings, whether Apply would
 	// change them now. applyUnknown: that can't be worked out.
 	differs, applyUnknown := map[string]bool{}, false
@@ -261,7 +277,7 @@ func dashMachine(m fleet.Machine, link *fleet.MachineStatus) dashboard.FleetMach
 // rule a pending machine would start with, each with the screen's own note of
 // where it came from.
 func dashStart(p fleetPreview) *dashboard.FleetStart {
-	out := &dashboard.FleetStart{Kept: p.Kept}
+	out := &dashboard.FleetStart{Kept: p.Kept, Key: schemeShown(p.Scheme)}
 	modes := approval.SavedModes(p.Scheme.Permissions)
 	for _, c := range approval.Categories {
 		mode := modes[c].String()
