@@ -72,6 +72,16 @@ type Settings struct {
 	// Kept as written, like a FleetSchemes entry: unreadable, no new machine
 	// can be given a scheme.
 	FleetRules json.RawMessage `json:"fleet_rules,omitempty"`
+	// FleetPermissions are the category modes the operator set for new fleet
+	// machines (category → mode), only those: a category not in it comes from
+	// the master's copy. FleetGroups are the fleet's machine groups, by name:
+	// {"machines": [ids], "tool_rules": {pattern: mode}}. Both are laid over a
+	// machine's scheme only when it is confirmed, copied again or applied,
+	// never when a call is decided. Kept as written and read strictly by
+	// internal/approval: unreadable, no machine can be confirmed or copied
+	// again until it is fixed.
+	FleetPermissions json.RawMessage `json:"fleet_permissions,omitempty"`
+	FleetGroups      json.RawMessage `json:"fleet_groups,omitempty"`
 }
 
 // ProtectionAck is one entry under "protection_acknowledged".

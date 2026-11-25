@@ -138,9 +138,15 @@ var FleetCodeReplayed = Security.Event(4322, event.Error, "Fleet", "A spent flee
 
 var FleetMachineChanged = Security.Event(4323, event.Info, "Fleet", "Fleet machine {name}: {change}", "name", "machine", "change", "detail").
 	Keywords("audit.success").
-	Doc("The operator changed the fleet: change is initialised (this Tenant became a master), code issued, confirmed, renamed, revoked, removed (revoked, and its record and approval scheme deleted) or scheme changed (the machine's approval scheme was replaced by a fresh copy of the master's, or the fleet's rules were laid over it again; detail says which). For a confirmed machine, detail is what the machine reported about itself (its own words) and the categories the operator loosened. surface is where the operator was: cli, tui or dashboard.",
+	Doc("The operator changed the fleet: change is initialised (this Tenant became a master), code issued, confirmed, renamed, revoked, removed (revoked, and its record and approval scheme deleted), scheme changed (the machine's approval scheme was replaced by a fresh copy of the master's, or the fleet's rules and its groups' rules were laid over it again; detail says which and names the groups) or rule changed (one of its own rules set or removed). A change made to several machines at once has one record per machine. For a confirmed machine, detail is what the machine reported about itself (its own words) and the categories the operator loosened. surface is where the operator was: cli, tui or dashboard.",
 		"tenant fleet init, enroll, confirm, rename, revoke or permissions --from; /fleet confirm or revoke in the terminal; or the dashboard's Fleet page.",
 		"None when intended. Otherwise tenant fleet revoke the machine.")
+
+var FleetSettingsChanged = Security.Event(4325, event.Info, "Fleet", "Fleet {what}: {change}", "what", "change", "detail").
+	Keywords("audit.success").
+	Doc("The operator changed what the fleet lays over its machines' schemes on purpose: what is a group (group <name>) or the defaults for new machines. change is created, deleted, machines added, machines removed, rule set, rule removed, default set or default unset; detail says which. No machine's scheme moves with it: a machine changes when it is confirmed, copied again or applied, and each of those has its own record (security/4323). surface is where the operator was: cli, tui or dashboard.",
+		"tenant fleet group, tenant fleet permissions --defaults set|unset, /fleet group and /permissions fleet --defaults in the terminal, or the dashboard's Fleet page.",
+		"None when intended. A loosened default or an allow rule in a group reaches a machine only when it is applied: check the group's rules before tenant fleet group apply.")
 
 var FleetConfirmRefused = Security.Event(4324, event.Warning, "Fleet", "Fleet machine {name} was not confirmed: {reason}", "name", "machine", "reason").
 	Keywords("audit.failure").

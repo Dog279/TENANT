@@ -394,3 +394,42 @@ func TestFleet_GroupOperations(t *testing.T) {
 		t.Error("a default with a bad mode")
 	}
 }
+
+// While a key can't be read, every change to it is refused, and apply is
+// refused while the fleet's rules can't be read or the machine has no scheme.
+func TestFleet_LayersRefuseWhileUnreadable(t *testing.T) {
+	f := NewFleet(testCategorize)
+	f.LoadLayers(json.RawMessage(`{"exec":"sometimes"}`), json.RawMessage(`null`))
+	if _, err := f.UnsetDefault(CatExec); err == nil {
+		t.Error("unset with defaults that can't be read")
+	}
+	if _, err := f.Defaults(); err == nil {
+		t.Error("defaults that can't be read were listed")
+	}
+	for what, err := range map[string]error{
+		"group":  func() error { _, err := f.Group("x"); return err }(),
+		"groups": func() error { _, err := f.Groups(); return err }(),
+		"leave":  func() error { _, err := f.LeaveGroups("m1"); return err }(),
+		"delete": func() error { _, err := f.DeleteGroup("x"); return err }(),
+		"add":    func() error { _, err := f.AddMembers("x", []string{"m1"}); return err }(),
+		"rule":   f.SetGroupRule("x", "x_post", "deny"),
+	} {
+		if err == nil {
+			t.Errorf("%s with groups that can't be read", what)
+		}
+	}
+	g := NewFleet(testCategorize)
+	if _, err := g.CreateGroup("x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.SetGroupRule("x", "two words", "deny"); err == nil {
+		t.Error("a group rule with a bad pattern")
+	}
+	if _, err := g.Reapply("m1"); err == nil {
+		t.Error("applied to a machine with no scheme")
+	}
+	g.Load(raws("m1", `{}`), json.RawMessage(`{"x":"maybe"}`))
+	if _, err := g.Reapply("m1"); err == nil {
+		t.Error("applied with fleet rules that can't be read")
+	}
+}

@@ -107,7 +107,10 @@ func applySettingsFile(cfgDir, agentID string, broker *approvalBroker, rules *to
 	var fleetProblems []string
 	if err == nil {
 		fleetChanged, fleetProblems = defaultFleet.Load(fresh.FleetSchemes, fresh.FleetRules)
+		n, more := defaultFleet.LoadLayers(fresh.FleetPermissions, fresh.FleetGroups)
+		fleetChanged, fleetProblems = fleetChanged+n, append(fleetProblems, more...)
 		stg.FleetSchemes, stg.FleetRules = fresh.FleetSchemes, fresh.FleetRules
+		stg.FleetPermissions, stg.FleetGroups = fresh.FleetPermissions, fresh.FleetGroups
 	}
 	mu.Unlock()
 	if err != nil {

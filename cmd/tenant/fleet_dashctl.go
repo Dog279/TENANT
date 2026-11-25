@@ -115,16 +115,22 @@ func (d dashFleet) View() dashboard.FleetView {
 	}
 	fleetRules := f.Rules().Snapshot()
 	v.Rules = dashRuleRows(fleetRules)
-	// What a machine confirmed now would start with: the other side of each
-	// machine's drift. Without it (the fleet's rules can't be read) no drift
-	// is shown, and no pending machine can be confirmed.
-	var fresh *approval.Scheme
-	if local, err := d.ops.local(); err == nil {
-		if s, err := f.Inherit(local); err == nil {
-			fresh = &s
+	// What each machine confirmed now would start with, its groups' rules in
+	// it (Fresh): the other side of its drift. Without it (the fleet's rules,
+	// defaults or groups can't be read) no drift is shown, and no pending
+	// machine can be confirmed.
+	local, localErr := d.ops.local()
+	fresh := func(id string) *approval.Scheme {
+		if localErr != nil {
+			return nil
 		}
+		s, err := f.Fresh(id, local)
+		if err != nil {
+			return nil
+		}
+		return &s
 	}
-	v.NoFresh = fresh == nil
+	v.NoFresh = fresh("") == nil
 	links := fleetLinks()
 	for _, m := range machines {
 		var link *fleet.MachineStatus
@@ -154,8 +160,12 @@ func (d dashFleet) View() dashboard.FleetView {
 			for _, r := range b.Rules() {
 				mv.Rules = append(mv.Rules, dashboard.ToolRuleRow{Pattern: r.Pattern, Mode: r.Mode, Kind: r.Kind})
 			}
-			if s, err := f.Scheme(m.ID); err == nil && fresh != nil && m.State != fleet.StatePending && m.State != fleet.StateRevoked {
-				for _, dr := range s.Drift(*fresh) {
+			if s, err := f.Scheme(m.ID); err == nil && !v.NoFresh && m.State != fleet.StatePending && m.State != fleet.StateRevoked {
+				want := fresh(m.ID)
+				if want == nil {
+					want = &s // the layers changed under us: no drift this time
+				}
+				for _, dr := range s.Drift(*want) {
 					row := dashboard.FleetDrift{Rule: dr.Rule, Key: dr.Key, Have: dr.Have, Want: dr.Want}
 					if dr.Rule {
 						row.FleetRule = dr.Want != "" && fleetRules[dr.Key] == dr.Want
@@ -314,7 +324,8 @@ func (d dashFleet) Recopy(id, from string) error {
 	if err != nil {
 		return err
 	}
-	return d.ops.recopy(f, m, from)
+	_, err = d.ops.recopy(f, m, from)
+	return err
 }
 
 // Enroll makes a code for a new machine, as `tenant fleet enroll` does, with

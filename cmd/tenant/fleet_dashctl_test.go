@@ -147,17 +147,7 @@ func (d *fleetDash) page(path string) string {
 }
 
 // records lists the Security records of def as "actor@surface k=v …".
-func (d *fleetDash) records(def *event.Def) []string {
-	var out []string
-	for _, e := range d.ev.matching(def, "") {
-		l := e.Actor + "@" + e.Surface
-		for _, f := range e.Data {
-			l += " " + f.Key + "=" + f.Text()
-		}
-		out = append(out, l)
-	}
-	return out
-}
+func (d *fleetDash) records(def *event.Def) []string { return recordsOf(d.ev, def) }
 
 func hasRecord(records []string, parts ...string) bool {
 	for _, r := range records {

@@ -584,7 +584,7 @@ func TestFleetSchemeAtConfirm(t *testing.T) {
 	for _, bad := range [][]string{
 		{"permissions", "web1", "set", "exec", "sometimes"}, {"permissions", "web1", "set", "root", "allow"},
 		{"permissions", "web1", "add", "os_exec(*)", "allow"}, {"permissions", "web1", "add", "*", "allow"}, {"permissions", "web1", "rm", "no_such_rule"},
-		{"permissions", "web1", "--from", "elsewhere"}, {"permissions", "--defaults", "set", "exec", "allow"},
+		{"permissions", "web1", "--from", "elsewhere"}, {"permissions", "--defaults", "set", "exec", "sometimes"},
 		{"permissions", "--defaults", "add", "x", "maybe"},
 	} {
 		before := l.saved()

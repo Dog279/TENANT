@@ -499,10 +499,7 @@ func (f *Fleet) SetGroupRule(name, pattern, mode string) error {
 		if _, have := g.ToolRules[pattern]; !have && len(g.ToolRules) >= maxGroupRules {
 			return false, fmt.Errorf("group %s has %d rules, as many as a group holds", g.Name, maxGroupRules)
 		}
-		if g.ToolRules == nil {
-			g.ToolRules = map[string]string{}
-		}
-		g.ToolRules[pattern] = m.String()
+		g.ToolRules[pattern] = m.String() // never nil: decodeGroups and CreateGroup make the map
 		return true, nil
 	})
 	return err

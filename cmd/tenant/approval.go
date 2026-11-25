@@ -56,13 +56,22 @@ var (
 // than what the fleet believes it wrote.
 func loadFleetSettings(stg *settings, mu *sync.Mutex, cfgDir, agentID string, tell func(string)) {
 	_, problems := defaultFleet.Load(stg.FleetSchemes, stg.FleetRules)
-	for _, p := range problems {
+	_, more := defaultFleet.LoadLayers(stg.FleetPermissions, stg.FleetGroups)
+	for _, p := range append(problems, more...) {
 		tell("permissions: " + p)
 	}
 	defaultFleet.SetPersist(func(snapshot func() (map[string]json.RawMessage, json.RawMessage)) {
 		mu.Lock()
 		defer mu.Unlock()
 		stg.FleetSchemes, stg.FleetRules = snapshot()
+		saveSettingsOrTell(stg, cfgDir, agentID, tell)
+	})
+	// The default categories and the groups (fleet_permissions, fleet_groups):
+	// their own hook, under the same lock and the same contract.
+	defaultFleet.SetPersistLayers(func(snapshot func() (json.RawMessage, json.RawMessage)) {
+		mu.Lock()
+		defer mu.Unlock()
+		stg.FleetPermissions, stg.FleetGroups = snapshot()
 		saveSettingsOrTell(stg, cfgDir, agentID, tell)
 	})
 }

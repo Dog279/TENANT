@@ -254,6 +254,8 @@ settings.json: exec_profiles.*.memory_mb
 settings.json: exec_profiles.*.network
 settings.json: exec_profiles.*.read_roots
 settings.json: exec_profiles.*.write_roots
+settings.json: fleet_groups
+settings.json: fleet_permissions
 settings.json: fleet_rules
 settings.json: fleet_schemes
 settings.json: known_categories
