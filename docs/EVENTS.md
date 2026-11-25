@@ -5955,7 +5955,7 @@ Writes the `security` log.
 - **Keywords:** `audit.success`
 - **Find it:** `provider:security id:4323`
 
-**What it means.** The operator changed the fleet: change is initialised (this Tenant became a master), code issued, confirmed, renamed, revoked, removed (revoked, and its record and approval scheme deleted) or scheme changed (the machine's approval scheme was replaced by a fresh copy of the master's, or the fleet's rules were laid over it again; detail says which). For a confirmed machine, detail is what the machine reported about itself (its own words) and the categories the operator loosened. surface is where the operator was: cli, tui or dashboard.
+**What it means.** The operator changed the fleet: change is initialised (this Tenant became a master), code issued, confirmed, renamed, revoked, removed (revoked, and its record and approval scheme deleted) or scheme changed (the machine's approval scheme was replaced by a fresh copy of the master's, or the fleet's rules were laid over it again; detail says which). For a confirmed machine, detail is what the machine reported about itself (its own words) and the categories the operator loosened. surface is where the operator was: cli, tui, dashboard, or dashboard-remote for a machine confirmed from a signed-in browser that is not on the computer running Tenant (detail then names the session and its address in asked_by). change is also remote confirmation turned on or off: whether such a browser may confirm a machine at all.
 
 **Why it happens.** tenant fleet init, enroll, confirm, rename, revoke or permissions --from; /fleet confirm or revoke in the terminal; or the dashboard's Fleet page.
 
@@ -5970,11 +5970,11 @@ Writes the `security` log.
 - **Keywords:** `audit.failure`
 - **Find it:** `provider:security id:4324`
 
-**What it means.** A confirmation of a pending fleet machine was refused, and the machine stays pending. On the dashboard the actor is the operator when a browser signed in on the computer running Tenant asked, and otherwise the address the request came from.
+**What it means.** A confirmation of a pending fleet machine was refused, and the machine stays pending. On the dashboard the actor is the operator when a browser signed in on the computer running Tenant asked, and otherwise the address the request came from. With remote confirmation turned on, a refusal of a signed-in browser elsewhere has the surface dashboard-remote and names its session and address.
 
-**Why it happens.** The six digits typed are not the ones that machine shows (a typo, or the pending machine is not the one in front of you), or the machine is not waiting for confirmation. On the dashboard also: the request did not come from a browser signed in on the computer running Tenant (it came with the API key, by a tailnet or proxy name, through a proxy or from another address), or too many attempts for that machine failed and the next ones have to wait.
+**Why it happens.** The six digits typed are not the ones that machine shows (a typo, or the pending machine is not the one in front of you), or the machine is not waiting for confirmation. On the dashboard also: the request did not come from a browser signed in on the computer running Tenant (it came with the API key, by a tailnet or proxy name, through a proxy or from another address) while remote confirmation is off; or too many attempts for that machine failed and the next ones have to wait. With remote confirmation on: the sign-in key given again was wrong, was sent in the address, or too many wrong keys came from that address.
 
-**What to do.** Read the six digits from the machine's own screen and try again. If they never match, the pending machine is not yours: tenant fleet revoke it. A machine is confirmed in the terminal, or in a browser on the computer running Tenant at the dashboard's 127.0.0.1 address; a refusal from an address you don't know means someone who can reach the dashboard tried.
+**What to do.** Read the six digits from the machine's own screen and try again. If they never match, the pending machine is not yours: tenant fleet revoke it. A machine is confirmed in the terminal, or in a browser on the computer running Tenant at the dashboard's 127.0.0.1 address, or, after tenant fleet remote-confirm on, in a signed-in browser elsewhere with the sign-in key again; a refusal from an address you don't know means someone who can reach the dashboard tried. Wrong keys from a signed-in session mean someone has a session and not the key: sign out everywhere by restarting Tenant, and turn remote confirmation off.
 
 ### security 4501
 

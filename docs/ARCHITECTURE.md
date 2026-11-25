@@ -1420,7 +1420,11 @@ nothing. A machine is
 confirmed there only from a browser signed in on the computer running Tenant
 (`Server.atThisComputer`: loopback peer, loopback Host, no proxy header, the
 session cookie and never the API key); `TestOnlyTheOperatorConfirmsAMachine`
-holds the dashboard to that one handler. `GET /api/fleet` is the page as JSON
+holds the dashboard to that one handler. The operator can widen that at the
+master's terminal (`fleet.remote_confirm`, TEN-545, off by default): the same
+handler then takes the digits from a signed-in browser elsewhere that gives
+the sign-in key again (`keyAgain`), recorded with the surface
+`dashboard-remote`; the API key still confirms nothing. `GET /api/fleet` is the page as JSON
 and changes nothing.
 
 **Losing the master** (TEN-533). `tenant child rehome` (`childRehome`,

@@ -122,6 +122,22 @@ mux.HandleFunc("POST /safety/mode", needConfirm(confirmUnless("mode", "ask", "de
 
 Every route that changes something is in `reviewedMutations` (security_test.go), the TEN-213 ledger, with when it confirms; `TestRouteInventory` posts each one on the real mux, every spelling of "more" included, and fails on a route nobody classified.
 
+### Confirming a fleet machine from another computer (TEN-545)
+
+Confirming a pending fleet machine is the one action that is not open to "any signed-in browser". The six digits tie the record to the machine the person is looking at. By default they are also taken only at the computer running Tenant (`atThisComputer`: loopback peer, loopback name, no proxy header, a live session, never the API key), which ties the person to the master: a session cookie that leaked, a browser left signed in somewhere, or someone on the tailnet who should only look cannot confirm a machine of their own.
+
+A master with no screen (Server Core, a headless box) needs a console for every machine under that rule. Decision, 2026-11-24: the operator can turn on confirming from a signed-in browser elsewhere. What stands in for "at this computer":
+
+- **Off by default, and switched only at the master's terminal.** `fleet.remote_confirm` in `config.json`, set by `tenant fleet remote-confirm on|off` or `/fleet remote-confirm`. There is no switch on the dashboard: a session elsewhere must not open the door it then walks through. The running Tenant reads the file again at each confirmation, in the handler and in the control behind it; a file that can't be read is off.
+- **The sign-in key again, every time.** The form from a browser elsewhere has a key field (`keyAgain`). It is compared as sign-in compares it, taken from the body only, and wrong keys are slowed per address by sign-in's own count. A session alone is not enough.
+- **The page's own form only.** A live session and the dashboard's Origin (`signedInBrowser`). The API key confirms nothing, on or off.
+- **The per-machine wait is unchanged**, and attempts are still taken one at a time.
+- **The records say where.** Every refusal and the confirmation itself carry the surface `dashboard-remote` with the session's tag and address (`security/4323`, `security/4324`, `fleet/1002`, `fleet/2102`). Turning the setting on or off is a Security record too.
+
+Weighed and not built: a list of addresses that may confirm. The LAN listener already refuses every source outside the private ranges and the operator's list before sign-in (`lan.go`); behind `tailscale serve` or a proxy every request arrives from loopback, so such a list would decide by a header the proxy wrote. The key is the check that holds on every route.
+
+What nothing stands in for: with this on, the digits no longer show that the person typing them is at the master. They still have to come from the machine's own screen, and the form says so. Leave it off on a master you can sit at.
+
 
 A tap on a component's button or a form's Send counts as the operator speaking: it starts a turn like a typed message, and never asks first. It is still a message the model proposed, so the bubble says "via choices" or "via form", and a component can never send a slash command.
 

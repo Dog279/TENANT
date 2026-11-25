@@ -5,6 +5,18 @@ Releases page.
 
 ## Unreleased
 
+- **A fleet machine can be confirmed from another computer, if you turn that on.** A pending
+  machine was confirmed only at the master: its terminal, or a browser signed in at the
+  dashboard's 127.0.0.1 address. On a master with no screen that meant a console for every
+  machine. `tenant fleet remote-confirm on` (or `/fleet remote-confirm on`), run at the
+  master's terminal, lets a signed-in dashboard browser elsewhere confirm one: its page then
+  offers the form with one more field, the sign-in key again. It is off by default and has no
+  switch on the dashboard; the API key still confirms nothing; wrong keys are slowed per
+  address as wrong sign-ins are; and the confirmation and every refusal are recorded with the
+  surface `dashboard-remote` and the session and address that asked. The fleet runbook's
+  sentence that there is "no dashboard button" was wrong since the Fleet page shipped, and is
+  corrected.
+
 - **An install script installs its own release.** The scripts asked GitHub for the latest
   release, which skips prereleases, so `install.ps1` or `install.sh` taken from a prerelease
   installed 0.1.0, and the fleet's paste line then failed with `unknown command: child`. The

@@ -45,6 +45,10 @@ type FleetControl interface {
 	// Relay shows or sets whether a relay's turns may reach the fleet: args is
 	// nothing, a relay, or a relay and on|off.
 	Relay(args []string) (string, error)
+	// RemoteConfirm shows or sets whether a signed-in dashboard browser on
+	// another computer may confirm a machine, with the sign-in key again:
+	// args is nothing, or on|off.
+	RemoteConfirm(args []string) (string, error)
 }
 
 // FleetInit is an init that has done everything but the recovery key.
@@ -113,7 +117,7 @@ type CronFleetControl interface {
 	SetFleet(id string, machines []string) (CronJobView, error)
 }
 
-const fleetUsage = "usage: /fleet   |   /fleet init [--listen ADDR] [--address HOST:PORT]...   |   /fleet show <name>   |   /fleet enroll <name>   |   /fleet confirm <name> [<six digits> [category=mode ...]]   |   /fleet revoke <name> [keep|delete]   |   /fleet relay [discord|imessage [on|off]]   (a machine's permissions: /permissions fleet <name>)"
+const fleetUsage = "usage: /fleet   |   /fleet init [--listen ADDR] [--address HOST:PORT]...   |   /fleet show <name>   |   /fleet enroll <name>   |   /fleet confirm <name> [<six digits> [category=mode ...]]   |   /fleet revoke <name> [keep|delete]   |   /fleet relay [discord|imessage [on|off]]   |   /fleet remote-confirm [on|off]   (a machine's permissions: /permissions fleet <name>)"
 
 // slashFleet runs /fleet.
 func slashFleet(m *model, line string) tea.Cmd {
@@ -200,6 +204,11 @@ func slashFleet(m *model, line string) tea.Cmd {
 			return nil
 		}
 		return answer(func() (string, error) { return fc.Relay(f[1:]) })
+	case sub == "remote-confirm" && len(f) <= 2:
+		if len(f) == 2 && !typed() {
+			return nil
+		}
+		return answer(func() (string, error) { return fc.RemoteConfirm(f[1:]) })
 	}
 	m.sysChat(fleetUsage)
 	return nil
@@ -254,6 +263,7 @@ func fleetCommands() []*slashCommand {
 				{Syntax: "/fleet confirm <name> <six digits> [category=mode ...]", Desc: "confirm it with the digits it shows; a pair sets that category for this machine alone"},
 				{Syntax: "/fleet revoke <name> [keep|delete]", Desc: "end a machine; keep or delete its approval scheme"},
 				{Syntax: "/fleet relay [discord|imessage [on|off]]", Desc: "whether a relay's turns may reach the fleet at all (default off); a machine's permissions: /permissions fleet <name>"},
+				{Syntax: "/fleet remote-confirm [on|off]", Desc: "whether a signed-in dashboard browser on another computer may confirm a machine, with the sign-in key again (default off)"},
 			}},
 	}
 }

@@ -11,7 +11,9 @@ package main
 // Confirming a machine is the one step that lets a master call it. It is
 // taken here, in the terminal's /fleet confirm and on the dashboard's Fleet
 // page opened on this computer, and nowhere else: no tool, no relay and no
-// approval card leads to it (fleetOps.confirmMachine).
+// approval card leads to it (fleetOps.confirmMachine). The operator can let a
+// signed-in browser elsewhere take it too, with the sign-in key again
+// (`tenant fleet remote-confirm`, off by default; TEN-545).
 
 import (
 	"bufio"
@@ -154,7 +156,11 @@ type fleetOps struct {
 	cfgDir  string
 	dataDir string // where the machines' memory is kept (fleetmemory.go)
 	store   *fleet.Store
-	surface string // cli | tui, for the Security record
+	surface string // cli | tui | dashboard | dashboard-remote, for the Security record
+	// by says who asked for a confirmation when it is not the operator at this
+	// computer (a dashboard session elsewhere); "" otherwise. It goes into the
+	// confirmation's records.
+	by string
 	// schemes is the fleet's approval schemes, saved when changed. The command
 	// line reads them from the settings file at each call, so what it saves
 	// over is what is there now.
@@ -247,8 +253,10 @@ func (o fleetOps) audit(m fleet.Machine, change, detail string) {
 // outside the store's own package, and its own callers are the command line
 // (fleetConfirmCmd, which reads the digits from a terminal), the terminal
 // app's /fleet confirm and the dashboard's Fleet page, which takes the digits
-// only from a browser signed in on this computer (dashFleet.Confirm): nothing
-// a relay or a tool can reach.
+// from a browser signed in on this computer or, once the operator turned
+// remote confirmation on, from a signed-in browser elsewhere that gave the
+// sign-in key again (dashFleet.Confirm; o.by then says which): nothing a
+// relay, a tool or the API key can reach.
 //
 // The machine's scheme is saved first and the machine confirmed second, so a
 // machine is never callable without a scheme; if the confirmation fails, a
@@ -259,9 +267,13 @@ func (o fleetOps) confirmMachine(ref, code string, set map[string]string) (fleet
 		return m, fleetPreview{}, err
 	}
 	refuse := func(err error) (fleet.Machine, fleetPreview, error) {
-		_ = catalog.FleetConfirmRefused.Audit(context.Background(), "name", m.Name, "machine", m.ID, "reason", err.Error(),
+		reason := err.Error()
+		if o.by != "" {
+			reason += "; asked by " + o.by
+		}
+		_ = catalog.FleetConfirmRefused.Audit(context.Background(), "name", m.Name, "machine", m.ID, "reason", reason,
 			"actor", actorOperator, "surface", o.surface)
-		_ = fleet.ConfirmRefused.Audit(context.Background(), "name", m.Name, "machine", m.ID, "reason", err.Error(), "surface", o.surface)
+		_ = fleet.ConfirmRefused.Audit(context.Background(), "name", m.Name, "machine", m.ID, "reason", reason, "surface", o.surface)
 		return m, fleetPreview{}, err
 	}
 	if m.State != fleet.StatePending {
@@ -301,7 +313,8 @@ func (o fleetOps) confirmMachine(ref, code string, set map[string]string) (fleet
 		Reported fleet.Reported    `json:"reported_by_the_machine"`
 		Set      map[string]string `json:"set_by_the_operator,omitempty"`
 		Kept     bool              `json:"scheme_kept_with_the_id,omitempty"`
-	}{got.Reported, set, p.Kept})
+		By       string            `json:"asked_by,omitempty"`
+	}{got.Reported, set, p.Kept, o.by})
 	o.audit(got, "confirmed", string(detail)+inventory)
 	return got, p, nil
 }
@@ -519,6 +532,7 @@ func cmdFleet(_ context.Context, args []string) error {
 		"confirm": fleetConfirmCmd, "rename": fleetRenameCmd, "revoke": fleetRevokeCmd,
 		"permissions": fleetPermissionsCmd, "perms": fleetPermissionsCmd, "relay": fleetRelayCmd,
 		"update": fleetUpdateCmd, "recover": fleetRecoverCmd, "address": fleetAddressCmd,
+		"remote-confirm": fleetRemoteConfirmCmd,
 	}[args[0]]
 	if run == nil {
 		return fleetUsage()
@@ -550,6 +564,8 @@ func fleetUsage() error {
                           the rules every newly confirmed machine starts with
   relay [discord|imessage [on|off]]
                           whether a turn from that relay may reach the fleet at all (off by default)
+  remote-confirm [on|off] whether a signed-in dashboard browser on another computer may confirm a
+                          machine, with the sign-in key again (off by default)
   update <name> | --all [--version vX.Y.Z] [--allow-older] [--arch amd64|arm64]
                           send a machine a newer Tenant over its link, through the running
                           Tenant that holds the fleet; the machine rolls back if it fails
@@ -1468,4 +1484,58 @@ func fleetRelaySwitch(cfgDir string, lc *launchConfig, args []string) (string, e
 		on = lc.IMessage.AllowFleet
 	}
 	return relay + " is " + state(on), nil
+}
+
+func fleetRemoteConfirmCmd(args []string) error {
+	cli, err := openFleetCLI(flag.NewFlagSet("fleet remote-confirm", flag.ContinueOnError), args)
+	if err != nil {
+		return err
+	}
+	out, err := fleetRemoteConfirmSwitch(cli.ops, cli.c.lc, cli.pos)
+	if err != nil {
+		return err
+	}
+	fmt.Println(out)
+	return nil
+}
+
+// fleetRemoteConfirmSwitch shows or sets fleet.remote_confirm (TEN-545):
+// whether a signed-in dashboard browser that is not on this computer may
+// confirm a pending machine, once it gives the sign-in key again. It is set
+// here and in the terminal app, at this computer, and never from the
+// dashboard: a session elsewhere must not be able to open the door it then
+// walks through. The running Tenant reads config.json at each confirmation.
+func fleetRemoteConfirmSwitch(o fleetOps, lc *launchConfig, args []string) (string, error) {
+	state := func(on bool) string {
+		if on {
+			return "remote confirmation is on: a signed-in dashboard browser on another computer can confirm a pending machine, after giving the sign-in key again. The API key confirms nothing"
+		}
+		return "remote confirmation is off: a machine is confirmed at this computer only (a browser signed in at the dashboard's 127.0.0.1 address, or the terminal)"
+	}
+	switch len(args) {
+	case 0:
+		return state(fleetRemoteConfirmOn(o.cfgDir)), nil
+	case 1:
+		on, err := parseOnOff(args[0])
+		if err != nil {
+			return "", err
+		}
+		// Written whatever lc says it is: lc is this process's copy, and
+		// another process may have switched the file since.
+		if err := persistLaunchConfig(o.cfgDir, lc, func(lc *launchConfig) { lc.Fleet.RemoteConfirm = on }); err != nil {
+			return "", err
+		}
+		o.audit(fleet.Machine{Name: "(this master)"}, "remote confirmation turned "+map[bool]string{true: "on", false: "off"}[on],
+			"whether a signed-in dashboard browser on another computer may confirm a machine (fleet.remote_confirm)")
+		return state(on), nil
+	}
+	return "", errors.New("usage: fleet remote-confirm [on|off]")
+}
+
+// fleetRemoteConfirmOn is fleet.remote_confirm as config.json holds it now.
+// A file that cannot be read is off: the door is not left open on the
+// strength of a file nobody can read.
+func fleetRemoteConfirmOn(cfgDir string) bool {
+	lc, err := loadLaunchConfig(cfgDir)
+	return err == nil && lc.Fleet.RemoteConfirm
 }

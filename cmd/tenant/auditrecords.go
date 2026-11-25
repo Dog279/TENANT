@@ -26,7 +26,11 @@ const (
 
 	surfaceTUI       = "tui"
 	surfaceDashboard = "dashboard"
-	surfaceCLI       = "cli" // a tenant command
+	// surfaceDashboardRemote is a fleet machine confirmed from a signed-in
+	// browser that is not on this computer (TEN-545; the dashboard's own
+	// refusals of one carry the same word).
+	surfaceDashboardRemote = "dashboard-remote"
+	surfaceCLI             = "cli" // a tenant command
 )
 
 // saveCredentials saves creds and files a record for each secret the save

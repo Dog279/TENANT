@@ -244,7 +244,7 @@ func cliCommands() []*cliCommand {
 				{Syntax: "peer share …", Desc: "what each peer may see"},
 			}},
 		{Names: []string{"fleet"}, Section: "connect", Run: cmdFleet,
-			Sub:     []string{"init", "enroll", "list", "show", "confirm", "rename", "revoke", "permissions", "relay", "update", "recover"},
+			Sub:     []string{"init", "enroll", "list", "show", "confirm", "rename", "revoke", "permissions", "relay", "remote-confirm", "update", "recover"},
 			Flags:   []string{"--listen", "--address", "--ttl", "--adopt", "--set", "--keep-scheme", "--delete-scheme", "--defaults", "--from", "--wait"},
 			Summary: "own other machines from this one: enroll a machine as a child, confirm it, set what the agent may do there",
 			Rows: []cmdreg.Row{
@@ -259,6 +259,7 @@ func cliCommands() []*cliCommand {
 				{Syntax: "fleet permissions <name> --from defaults|master", Desc: "lay the fleet's rules over one machine again, or copy the master's local scheme again"},
 				{Syntax: "fleet permissions --defaults [add <pattern> <mode> | rm <pattern>]", Desc: "the rules every newly confirmed machine starts with"},
 				{Syntax: "fleet relay [discord|imessage [on|off]]", Desc: "whether a turn from that relay may reach the fleet at all (off by default)"},
+				{Syntax: "fleet remote-confirm [on|off]", Desc: "whether a signed-in dashboard browser on another computer may confirm a machine, with the sign-in key again (off by default)"},
 				{Syntax: "fleet update <name> | --all [--version vX.Y.Z] [--allow-older]", Desc: "send machines a newer Tenant over their links, fetched and verified here; each restarts into it, or rolls back if it does not reach the master within a minute"},
 				{Syntax: "fleet recover <name> [--was ID]", Desc: "read a machine's memory made under another fleet key (a master rebuilt from nothing) with the recovery identity, given at the terminal or on standard input, never an argument"},
 			}},

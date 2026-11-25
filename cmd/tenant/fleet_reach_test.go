@@ -23,7 +23,11 @@ import (
 // The dashboard's path is one handler, handleFleetConfirm, which takes the
 // digits only from a browser signed in on the computer running Tenant
 // (internal/dashboard's TestFleetConfirmOnlyAtThisComputer): never with the
-// API key, by a tailnet or proxy name, or through a proxy.
+// API key, by a tailnet or proxy name, or through a proxy. Where the operator
+// turned remote confirmation on at the master's terminal (TEN-545), the same
+// handler takes them from a signed-in browser elsewhere that gives the
+// sign-in key again (TestFleetConfirmFromElsewhere): still one handler, and
+// still never the API key.
 func TestOnlyTheOperatorConfirmsAMachine(t *testing.T) {
 	type site struct{ file, fn string }
 	var (
@@ -114,6 +118,8 @@ func TestOnlyTheOperatorConfirmsAMachine(t *testing.T) {
 				switch {
 				case sel.Sel.Name == "confirmMachine":
 					opConfirms = append(opConfirms, site{rel, name})
+				case sel.Sel.Name == "Confirm" && len(call.Args) == 4 && !isContext(call.Args[0]) && strings.HasPrefix(rel, "internal/dashboard/"):
+					dashConfirms = append(dashConfirms, site{rel, name}) // FleetControl.Confirm(machine, code, set, by)
 				case sel.Sel.Name == "Confirm" && len(call.Args) == 3 && !isContext(call.Args[0]) && !strings.HasPrefix(rel, "internal/fleet/"):
 					if strings.HasPrefix(rel, "internal/tui/") {
 						tuiConfirms = append(tuiConfirms, site{rel, name})

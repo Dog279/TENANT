@@ -78,7 +78,7 @@
     <label class="dim"><input type="radio" name="runs" value="boot"> runs as root or SYSTEM, from boot</label>
     <button type="submit" class="btn sm">Make a code</button>
   </form>
-  <div class="dim mt">This makes a one-time code and the line to paste on the new machine. The code joins nothing by itself: the machine shows six digits and waits here until they are typed on the computer running Tenant.</div>
+  <div class="dim mt">This makes a one-time code and the line to paste on the new machine. The code joins nothing by itself: the machine shows six digits and waits here until they are typed on the computer running Tenant{{if .View.RemoteConfirm}}, or in a signed-in browser elsewhere with the sign-in key again (remote confirmation is on){{end}}.</div>
 </div>
 <div class="card">
   <div class="card-head">The fleet's rules <span class="dim">· every newly confirmed machine starts with these, laid over the settings it copies from this Tenant</span></div>
@@ -108,14 +108,14 @@
   {{end}}
   <p class="mt">The code tells the machine to dial {{range $i, $a := .Addresses}}{{if $i}}, {{end}}<span class="nm">{{$a}}</span>{{end}}. Change the list in a terminal: <code>tenant fleet address add HOST:PORT</code>.</p>
   {{with .Warning}}<div class="banner err" role="alert">{{.}}</div>{{end}}
-  <p class="mt">The machine then shows six digits and waits. It appears under Machines as waiting for you (reload this page): open it and type those digits, in a browser on the computer running Tenant.</p>
+  <p class="mt">The machine then shows six digits and waits. It appears under Machines as waiting for you (reload this page): open it and type those digits, in a browser on the computer running Tenant (or in this one, where its page offers the form).</p>
 </div>
 {{end}}
 
 {{/* fl-start lists what a pending machine would start with. Its argument is
      the page: the choice per category shows only where the form around it
-     can be sent (.Local). */}}
-{{define "fl-start"}}{{$local := .Local}}{{with .One.Start}}
+     can be sent (.Local, or .Remote with the sign-in key again). */}}
+{{define "fl-start"}}{{$local := or .Local .Remote}}{{with .One.Start}}
 {{range .Perms}}
 <div class="perm">
   <div class="perm-text"><strong>{{.Title}}</strong>: {{template "fl-mode" .Mode}}{{with .Note}} <span class="dim">{{.}}</span>{{end}}
@@ -167,19 +167,21 @@
   <div class="dim">The settings this machine would start with can't be worked out right now: the fleet's rules can't be read. Until they can, it can't be confirmed.</div>
   {{else}}
   <p>{{if $m.Start.Kept}}It starts with the approval settings kept under its id from the machine that had this id before. Nothing is copied from this Tenant.{{else}}It starts with a copy of this Tenant's own approval settings. Run commands, Change files, Irreversible actions, Send messages and Leave the sandbox start no looser than Ask first, whatever this Tenant allows. The fleet's rules are laid over the copy, and they win.{{end}} After this the two are independent: a later change here does not move this machine.</p>
-  {{if .Local}}
+  {{if or .Local .Remote}}
   <form method="POST" action="/fleet/confirm" data-on:submit__prevent__throttle.1s="@post('/fleet/confirm', {contentType:'form', retryMaxCount:0})">
     <input type="hidden" name="machine" value="{{$m.ID}}">
     {{template "fl-start" .}}
     <p class="mt">Until you confirm it, this Tenant sends the machine nothing. Confirm it only if the six digits on the machine's own screen are the ones you type here: they tie this record to that machine, and to no other that got hold of its enrollment code.</p>
+    {{if .Remote}}<div class="banner info mt">This browser is not on the computer running Tenant. Remote confirmation is turned on there, so this browser can confirm the machine once you give the dashboard's sign-in key again. Read the six digits from the machine's own screen yourself, or have someone you trust at it read them to you: digits that arrive any other way prove nothing.</div>{{end}}
     <div class="cronactions">
       <input type="text" name="code" class="cinput short" inputmode="numeric" autocomplete="off" maxlength="11" pattern="[0-9 ]{6,11}" placeholder="six digits" aria-label="The six digits the machine shows" required>
+      {{if .Remote}}<input type="password" name="key" class="cinput" autocomplete="off" placeholder="the sign-in key, again" aria-label="The dashboard's sign-in key, again" required>{{end}}
       <button type="submit" class="btn on">Confirm this machine</button>
     </div>
   </form>
   {{else}}
   {{template "fl-start" .}}
-  <div class="banner info mt">A machine is confirmed on the computer running Tenant: open the dashboard there at its 127.0.0.1 address, sign in, and type the six digits the machine shows on its own screen. The terminal on that computer can confirm it too. This browser can't.</div>
+  <div class="banner info mt">A machine is confirmed on the computer running Tenant: open the dashboard there at its 127.0.0.1 address, sign in, and type the six digits the machine shows on its own screen. The terminal on that computer can confirm it too. This browser can't. To let a signed-in browser elsewhere confirm machines, with the sign-in key again, run <code>tenant fleet remote-confirm on</code> in a terminal on that computer.</div>
   {{end}}
   {{end}}
 </div>
