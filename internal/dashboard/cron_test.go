@@ -393,3 +393,46 @@ func TestCron_Inline(t *testing.T) {
 		t.Errorf("Delete without its confirm step over Datastar: %d with %d jobs left, want 428 and all 4", rec.Code, len(fc.Jobs()))
 	}
 }
+
+// The Custom card's boxes make one crontab line (TEN-547), or a plain reason
+// why they don't.
+func TestCustomSpec(t *testing.T) {
+	for _, c := range []struct {
+		form, spec, problem string
+	}{
+		{"repeat=weekly&minute=30&slot=0-9&slot=0-10&slot=0-11&slot=2-9&slot=2-10&slot=2-11", "30 9-11 * * 1,3", ""},
+		{"slot=6-8&slot=5-8", "0 8 * * 0,6", ""}, // Sunday is crontab's 0; weekly is the default
+		{"repeat=weekly&slot=0-9&slot=1-9&slot=2-9&slot=3-9&slot=4-9&slot=5-9&slot=6-9", "0 9 * * *", ""},
+		{"repeat=daily&minute=15&slot=3-7&slot=5-19", "15 7,19 * * *", ""},
+		{"repeat=monthly&date=2026-03-31&slot=0-6", "0 6 31 * *", ""},
+		{"repeat=yearly&date=2026-12-25&slot=0-6&slot=0-7", "0 6,7 25 12 *", ""},
+		{"repeat=weekly&slot=0-9&slot=1-10", "", "In one job every day runs at the same hours. Make the days match, or add a second job for the other hours."},
+		{"repeat=weekly", "", "Tick at least one hour in the week."},
+		{"repeat=monthly&slot=0-6", "", "Pick the date it runs on."},
+		{"slot=7-1", "", "That schedule didn't come through. Reload the page and try again."},
+		{"slot=0-24", "", "That schedule didn't come through. Reload the page and try again."},
+		{"minute=60&slot=0-1", "", "Pick the minutes past the hour, from 0 to 59."},
+	} {
+		f, _ := url.ParseQuery(c.form)
+		if spec, problem := customSpec(f); spec != c.spec || problem != c.problem {
+			t.Errorf("customSpec(%s) = %q, %q; want %q, %q", c.form, spec, problem, c.spec, c.problem)
+		}
+	}
+}
+
+// Custom on the add form reaches the control as one schedule, with the time
+// zone picked from the list; boxes that make no schedule add nothing and say
+// why (TEN-547).
+func TestCronAdd_CustomSchedule(t *testing.T) {
+	fc := &fakeCronCtl{}
+	s := cronServer(fc)
+	rec := sendForm(s.Handler(), http.MethodPost, "/cron/add", url.Values{"preset": {"custom"}, "repeat": {"weekly"}, "minute": {"15"},
+		"slot": {"0-9", "1-9", "2-9", "3-9", "4-9"}, "tz": {"Europe/Berlin"}, "prompt": {"report"}}, here)
+	if fc.addSpec != "15 9 * * 1-5" || fc.addTZ != "Europe/Berlin" || fc.addPrompt != "report" {
+		t.Errorf("custom add reached the control as spec %q, zone %q, prompt %q (%d %s)", fc.addSpec, fc.addTZ, fc.addPrompt, rec.Code, rec.Header().Get("Location"))
+	}
+	rec = sendForm(s.Handler(), http.MethodPost, "/cron/add", url.Values{"preset": {"custom"}, "prompt": {"report"}}, here)
+	if loc := rec.Header().Get("Location"); fc.addCalls != 1 || !strings.Contains(loc, url.QueryEscape("Tick at least one hour in the week.")) {
+		t.Errorf("an empty week: %d adds, sent to %q; want no add and the reason", fc.addCalls, loc)
+	}
+}

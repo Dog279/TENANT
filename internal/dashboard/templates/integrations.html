@@ -15,45 +15,48 @@
 
 <div class="dim mb">Connect your agent to outside tools. Setting up something that needs a sign-in (Google, Atlassian) opens a window <strong>on the computer running Tenant</strong>: do that step there.</div>
 
-{{range .Cards}}
-<div class="card" id="int-{{.ID}}">
-  <div class="ghead">
-    <span class="nm">{{.Label}}</span>
-    {{if .Configured}}<span class="on-tag">connected</span>{{else}}<span class="dim">not connected</span>{{end}}
-    {{if and .Configured (not .Enabled)}}<span class="dim">· off</span>{{end}}
-  </div>
-  {{if .SetupHint}}<div class="dim mb">{{.SetupHint}}</div>{{end}}
-  <form method="POST" action="/integrations/save" class="evalsched" data-on:submit__prevent__throttle.1s="@post('/integrations/save', {contentType:'form', retryMaxCount:0})" data-on:datastar-fetch="evt.detail.el === el && evt.detail.type === 'finished' && el.querySelectorAll('input[type=password]').forEach(i => { i.value = '' })">
-    <input type="hidden" name="integration" value="{{.ID}}">
-    {{range .Fields}}
-    <label>{{.Prompt}}
-      {{if .Options}}
-      <select name="{{.Key}}">
-        {{$labels := .OptionLabels}}{{range $i, $o := .Options}}<option value="{{$o}}">{{if lt $i (len $labels)}}{{index $labels $i}}{{else}}{{$o}}{{end}}</option>{{end}}
-      </select>
-      {{else if .Secret}}
-      <input type="password" name="{{.Key}}" class="cinput" autocomplete="off" placeholder="{{if .Required}}required{{else}}optional{{end}}">
-      {{else}}
-      <input type="text" name="{{.Key}}" class="cinput" value="{{.Default}}" placeholder="{{if .Required}}required{{else}}optional{{end}}">
-      {{end}}
-    </label>
-    {{end}}
-    <div class="cronactions">
-      <button type="submit" class="btn">Save</button>
+{{/* What you add is at the top, what you have is a list below it (TEN-547).
+     A service not connected yet is a closed card that opens to its settings;
+     a connected one is a row, with its settings behind Settings. */}}
+{{$any := false}}{{range .Cards}}{{if .Configured}}{{$any = true}}{{end}}{{end}}
+<h2>Add</h2>
+<div class="int-add">
+{{range .Cards}}{{if not .Configured}}
+<details class="card int-card" id="int-{{.ID}}" data-preserve-attr="open">
+  <summary><span class="nm">{{.Label}}</span> <span class="dim">not connected</span></summary>
+{{template "int-form" .}}
+</details>
+{{end}}{{else}}
+{{template "ui-empty" "No integrations are available in this version of Tenant."}}
+{{end}}
+{{if .GitHubConfigured}}
+<div class="card" id="github-add">
+  <div class="ghead"><span class="nm">GitHub: watch a repository</span></div>
+  <form method="POST" action="/integrations/github/repos/add" class="cronadd mt" data-on:submit__prevent__throttle.1s="@post('/integrations/github/repos/add', {contentType:'form', retryMaxCount:0})">
+    <div class="crow">
+      <input type="text" name="repo" placeholder="owner/name" class="cinput" required>
+      <button type="submit" class="btn">Watch</button>
     </div>
+    <div class="dim">A new repository starts watch-only; choose Allow changes to let your agent change it. The access token must cover every repository listed here. Changes apply when Tenant next starts.</div>
   </form>
-  <div class="cronactions mt">
-    <form method="POST" action="/integrations/test" class="inline" data-on:submit__prevent__throttle.1s="@post('/integrations/test', {contentType:'form', retryMaxCount:0})">
-      <input type="hidden" name="integration" value="{{.ID}}">
-      <button type="submit" class="btn sm">Test connection</button>
-    </form>
-    {{if .Configured}}
-    {{template "ui-confirm" (inline (confirm "/integrations/disconnect" "Disconnect" (printf "Your agent can no longer use %s, and its saved sign-in is deleted. To use it again you enter its settings again." .Label) "integration" .ID))}}
-    {{end}}
-  </div>
+</div>
+{{end}}
+</div>
+
+<h2>Connected</h2>
+{{if $any}}
+<div class="card int-list">
+{{range .Cards}}{{if .Configured}}
+<div class="row int-row" id="int-{{.ID}}">
+  <div><span class="nm">{{.Label}}</span> <span class="on-tag">connected</span>{{if not .Enabled}} <span class="dim">· off</span>{{end}}</div>
+  <details class="advanced int-set" data-preserve-attr="open"><summary>Settings</summary>
+{{template "int-form" .}}
+  </details>
+</div>
+{{end}}{{end}}
 </div>
 {{else}}
-{{template "ui-empty" "No integrations are available in this version of Tenant."}}
+{{template "ui-empty" "Nothing is connected yet. Open a service above to connect it."}}
 {{end}}
 
 {{end}}
@@ -92,16 +95,44 @@
     </div>
   </div>
   {{else}}
-  {{template "ui-empty" "No repositories watched yet. Add one below as owner/name."}}
+  {{template "ui-empty" "No repositories watched yet. Add one above as owner/name."}}
   {{end}}
-
-  <form method="POST" action="/integrations/github/repos/add" class="cronadd mt" data-on:submit__prevent__throttle.1s="@post('/integrations/github/repos/add', {contentType:'form', retryMaxCount:0})">
-    <div class="crow">
-      <input type="text" name="repo" placeholder="owner/name" class="cinput" required>
-      <button type="submit" class="btn">Watch</button>
-    </div>
-    <div class="dim">A new repository starts watch-only; choose Allow changes to let your agent change it. The access token must cover every repository listed here. Changes apply when Tenant next starts.</div>
-  </form>
 </div>
 {{end}}
 </div>{{end}}
+
+
+{{/* int-form is one integration's settings (an IntegrationCard): its hint,
+     the form that saves them, Test connection, and Disconnect once it is
+     connected. */}}
+{{define "int-form"}}
+  {{if .SetupHint}}<div class="dim mb">{{.SetupHint}}</div>{{end}}
+  <form method="POST" action="/integrations/save" class="evalsched" data-on:submit__prevent__throttle.1s="@post('/integrations/save', {contentType:'form', retryMaxCount:0})" data-on:datastar-fetch="evt.detail.el === el && evt.detail.type === 'finished' && el.querySelectorAll('input[type=password]').forEach(i => { i.value = '' })">
+    <input type="hidden" name="integration" value="{{.ID}}">
+    {{range .Fields}}
+    <label>{{.Prompt}}
+      {{if .Options}}
+      <select name="{{.Key}}">
+        {{$labels := .OptionLabels}}{{range $i, $o := .Options}}<option value="{{$o}}">{{if lt $i (len $labels)}}{{index $labels $i}}{{else}}{{$o}}{{end}}</option>{{end}}
+      </select>
+      {{else if .Secret}}
+      <input type="password" name="{{.Key}}" class="cinput" autocomplete="off" placeholder="{{if .Required}}required{{else}}optional{{end}}">
+      {{else}}
+      <input type="text" name="{{.Key}}" class="cinput" value="{{.Default}}" placeholder="{{if .Required}}required{{else}}optional{{end}}">
+      {{end}}
+    </label>
+    {{end}}
+    <div class="cronactions">
+      <button type="submit" class="btn">Save</button>
+    </div>
+  </form>
+  <div class="cronactions mt">
+    <form method="POST" action="/integrations/test" class="inline" data-on:submit__prevent__throttle.1s="@post('/integrations/test', {contentType:'form', retryMaxCount:0})">
+      <input type="hidden" name="integration" value="{{.ID}}">
+      <button type="submit" class="btn sm">Test connection</button>
+    </form>
+    {{if .Configured}}
+    {{template "ui-confirm" (inline (confirm "/integrations/disconnect" "Disconnect" (printf "Your agent can no longer use %s, and its saved sign-in is deleted. To use it again you enter its settings again." .Label) "integration" .ID))}}
+    {{end}}
+  </div>
+{{end}}

@@ -52,7 +52,7 @@ func (f *shrinkingAgents) changes() []string {
 // long pages. Far down each page a change keeps the scroll and the page (a
 // marker set before it survives), its toast says what happened, and the row
 // shows it. A double tap at one spot posts once where a second post would
-// do something: Deny, Add helper, Run again, Stop, and a Delete step's Yes,
+// do something: Deny, Add sub-agent, Run again, Stop, and a Delete step's Yes,
 // whose sheet closes under the finger (layout.html's tap guard keeps the
 // second tap off the Run again below it). On Research the live
 // panel still streams afterward, and a started question leaves the box
@@ -108,7 +108,7 @@ func TestV2PagesInlineInChrome(t *testing.T) {
 	}
 
 	// Helpers: Remove, far down the list, through its confirm step; then
-	// Add helper, double-tapped, adds once and leaves the form empty.
+	// Add sub-agent, double-tapped, adds once and leaves the form empty.
 	name, above := longName(11), `#agent-`+longName(10) // the operator's own, and the row above it
 	var typed string
 	err = run(ctx,
@@ -126,7 +126,7 @@ func TestV2PagesInlineInChrome(t *testing.T) {
 		doubleTap(`form[action="/agents/add"] button`),
 		toastSays("ok", "Added newhelper."),
 		tapsOpen,
-		stayed(t, "Add helper", `form[action="/agents/add"] button`, &before),
+		stayed(t, "Add sub-agent", `form[action="/agents/add"] button`, &before),
 		chromedp.Value(`form[action="/agents/add"] input[name=name]`, &typed, chromedp.ByQuery),
 	)
 	if err != nil {

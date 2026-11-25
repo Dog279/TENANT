@@ -4,21 +4,21 @@ How the web dashboard looks, talks and behaves (TEN-211). Every page follows it;
 
 ## 1. Who it's for
 
-The operator is not a developer. They run Tenant on a home computer or a Windows server, and they open the dashboard on a laptop or a phone to answer five questions. Each question has a page that answers it, and the status strip at the top of every page answers the urgent ones without a click.
+The operator is not a developer. They run Tenant on a home computer or a Windows server, and they open the dashboard on a laptop or a phone to answer five questions. Each question has a page that answers it, and the alerts bell at the top right of every page counts the urgent ones: one click shows them.
 
 | Question | Where it's answered |
 |---|---|
-| Is my agent healthy? | Overview, Logs; the status strip (busy, waiting) |
+| Is my agent healthy? | Overview, Logs; the alerts bell (busy, waiting) |
 | What has it learned, and is it getting better? | Memory, Skills, Quality, Research |
-| What can it do, and who can reach it? | Tools, Helpers, Remote services, Fleet, Integrations, Access |
-| Is anything waiting for my OK? | Approvals & safety; the strip's "N actions are waiting for your OK" on every page |
+| What can it do, and who can reach it? | Tools, Sub-agents, Remote services, Fleet, Integrations, Access |
+| Is anything waiting for my OK? | Approvals & safety; the red count on the alerts bell on every page, with "N actions are waiting for your OK" behind it |
 | Can I change this safely? | The confirm step and its consequence line (§5) |
 
 ## 2. Voice
 
 - Say what happens, to whom, in everyday words. "Your agent can no longer use X", not "Provider removed".
 - The consequence comes before the action: the confirm step says what changes, then offers "Yes, …".
-- Say "the computer running Tenant", "your agent", "your main model", "helper", "instructions", "step", "Autopilot".
+- Say "the computer running Tenant", "your agent", "your main model", "sub-agent", "instructions", "step", "Autopilot".
 - Name safety categories by their title (`PermissionInfo.Title`, from `approval.CategoryPlain`): Run commands, Change files, Irreversible actions, Act on websites, Send messages, Share private data, Connect remote services, Leave the sandbox.
 - A page's title is its nav label.
 - No uppercase warnings, no emoji status markers. Use a pill (`.risk`, `.on-tag`, `.tag-new`) instead.
@@ -38,7 +38,7 @@ The operator is not a developer. They run Tenant on a home computer or a Windows
 | exec, exec mode | run commands; "Let Discord messages make changes" |
 | egress | Share private data |
 | mcp, toolmux | remote services, tools |
-| planner, sub-agent, wiki | your main model, helper, your agent's notes |
+| planner, helper, wiki | your main model, sub-agent, your agent's notes |
 | broker, episodic, cycle, wave, SSE, CSRF, bearer, credentials.json | say what it does for the operator, or leave it out |
 | slash commands, backticked commands | a button, or a plain instruction |
 
@@ -46,19 +46,26 @@ Error text follows the same voice (§6): a control's raw error never reaches a p
 
 ## 3. Palette
 
-Dark only. Contrast measured against `--card` (#111a2e) and `--card2` (#0e1626); WCAG AA needs 4.5:1 for body text.
+Light and dark (TEN-547). The colours come from Web Awesome 3 (`templates/wa.css`, vendored: the default theme, native styles and utilities, free and MIT). `theme.js` puts `wa-dark` on `<html>`: the computer's setting until the operator picks one with the button at the top right, beside the alerts bell, which is kept in the browser. The button shows the scheme in use: a sun while the page is light, a moon while it is dark. `styles.css` keeps its token names and maps each to a Web Awesome token, so a rule never names a hex colour:
 
-| Token | Value | On card / card2 | Use |
-|---|---|---|---|
-| `--fg` | #e6edf6 | 14.71 / 15.33 | body text |
-| `--dim` | #8595b0 | 5.72 / 5.96 | secondary text |
-| `--label` | #7788a6 | 4.84 / 5.04 | small uppercase labels (`.card-head`, `.stat-label`, `.nav-group`, table heads) |
-| `--cyan` | #22d3ee | 9.60 / 10.01 | links, primary, active (with `--violet` in gradients) |
-| `--green` | #34d399 | 9.02 / 9.41 | on, ok, success |
-| `--amber` | #fbbf24 | 10.39 / 10.83 | needs you: waiting, busy, new |
-| `--red` | #fb7185 | 6.44 / 6.72 | error, destructive |
+| Token | Web Awesome token | Use |
+|---|---|---|
+| `--bg`, `--card2` | `--wa-color-surface-lowered` | the page, inset boxes, the table heads |
+| `--card` | `--wa-color-surface-default` | cards, the sidebar, the header, the confirm box |
+| `--line`, `--line2`, `--line3` | surface border, neutral border, a lighter mix | borders and row rules |
+| `--fg` | `--wa-color-text-normal` | body text |
+| `--dim`, `--label` | `--wa-color-text-quiet` | secondary text, small uppercase labels |
+| `--cyan` | `--wa-color-brand-on-quiet` | links and brand-coloured text (the name is historical) |
+| `--brand`, `--on-brand`, `--brand-quiet` | brand fill loud, brand on loud, brand fill quiet | the primary button, the logo, the current page |
+| `--green` | `--wa-color-success-on-quiet` | on, ok, success |
+| `--amber` | `--wa-color-warning-on-quiet` | needs you: waiting, busy, new |
+| `--red` | `--wa-color-danger-on-quiet` | error, destructive |
 
-Meaning is fixed: green = on or fine, amber = needs you, red = error or can't be undone, cyan-violet = the primary action or the current page.
+The "on-quiet" tokens are Web Awesome's text-on-surface colours, which meet WCAG AA in both schemes. Tints (a banner's border and background) are `color-mix()` of these. Our rules in `styles.css` are unlayered, so they win over wa.css, whose rules are all in `@layer`. Don't edit wa.css: regenerate it from the npm package (its header says how).
+
+A browser or an extension that darkens every site must leave the page alone, since it has its own dark: `:root{color-scheme:only light}` (and `only dark` under `wa-dark`) opts out of Chromium's forced dark mode, and `<meta name="darkreader-lock">` out of Dark Reader. Without them the light scheme was darkened a second time: dark grey, black cards, icons gone.
+
+Meaning is fixed: green = on or fine, amber = needs you, red = error or can't be undone, the brand blue = the primary action or the current page.
 
 ## 4. Components
 
@@ -74,7 +81,7 @@ Components the agent answers with (TEN-517): a `ui_render` tool call is drawn as
 
 Two kinds answer back (TEN-518): `.comp.comp-choices` is a row of `.btn.sm` buttons, and `.comp.comp-form` a `<form>` of `.field` labels with `.cinput` inputs and a `.btn.sm.on` submit. Both post to `/chat/send` through Datastar signals (`component`, `choice`, `f_<id>_<name>`); the server fills the message from the saved call and tags it, and the user bubble shows `.via` ("via form"). The only variable attribute values are the call id (`[A-Za-z0-9_-]`) and field names (`[a-z][a-z0-9_]*`), both checked before they are written; an id that fails the check draws the component static.
 
-Advanced options hide behind an expander. It is used for the Research options ("Research exactly what I typed") and the Helpers instructions editor:
+Advanced options hide behind an expander. It is used for the Research options ("Research exactly what I typed") and the Sub-agents instructions editor:
 
 ```html
 <details class="advanced"><summary>Advanced</summary>…</details>
@@ -84,7 +91,7 @@ The partials in `templates/ui.html` are parsed into every page set (`parseSSR` a
 
 ```html
 {{template "ui-flash" .}}                      <!-- .Msg → banner ok role=status; .Err → banner err role=alert -->
-{{template "ui-off" "Helpers aren't available on this Tenant."}}   <!-- a nil control -->
+{{template "ui-off" "Sub-agents aren't available on this Tenant."}}   <!-- a nil control -->
 {{template "ui-empty" "Nothing is waiting for you. When your agent needs your OK, it appears here right away."}}
 {{template "ui-busy" .Busy}}                   <!-- a BusyView: dot, title · since, detail, Stop/Cancel -->
 {{template "ui-confirm" (confirm "/models/remove" "Remove" (printf "Your agent can no longer use %s." .Name) "name" .Name)}}
@@ -158,19 +165,19 @@ Every page shows each of these that can happen to it, and a page test covers eac
 | loading | `.loading`, only where a result arrives after the page: the Quality check run, Research, connecting or testing a remote service, and Model's server check (shown while its post is out: `data-indicator:_checking` on the form, `data-show` on the text). Every other page renders complete. |
 | error | `ui-flash` with `?err=` (`role=alert`); on a page whose forms don't reload (§8), an error toast |
 | success | `ui-flash` with `?msg=` (`role=status`); on a page whose forms don't reload (§8), a toast |
-| busy | the status strip on every page, and `ui-busy` where a page has its own work (Research) |
+| busy | the alerts bell on every page (it turns amber, and the line is behind it), and `ui-busy` where a page has its own work (Research) |
 
-**Errors (D21).** A handler shows a control's error only when it is a `PlainError`, which an adapter returns for the failures it can phrase ("A helper named X already exists."). Anything else shows the action's fixed plain message, and the raw error goes to the log:
+**Errors (D21).** A handler shows a control's error only when it is a `PlainError`, which an adapter returns for the failures it can phrase ("A sub-agent named X already exists."). Anything else shows the action's fixed plain message, and the raw error goes to the log:
 
 ```go
-redirectFlash(w, r, "/agents", "", s.flashFor(r.Context(), "helper add", err, "Couldn't add that helper."))
+redirectFlash(w, r, "/agents", "", s.flashFor(r.Context(), "helper add", err, "Couldn't add that sub-agent."))
 ```
 
 Secret routes never put a control's error in a URL.
 
 **Logging (D29).** New dashboard code never calls `s.log.Warn` or `s.log.Error` and adds no events: it reuses `ActionFailed` (2201, through `flashFor`) and `RenderFailed` (3001).
 
-**The status strip.** `layout.html` holds `<div class="status-wrap" data-init="@get('/ui/status')" data-on-interval__duration.20s="@get('/ui/status')">`, which is never patched, around `#ui-status`. `statusView` fills it from the controls on each request: this dashboard's chat (Stop), the approval count, and the new-safety-check notices. The queued ("#N in line", Cancel) and "busy with" lines read serve's turn gate, but today only the dashboard's own chat enters it: scheduled jobs, Discord, iMessage and alert investigations run their own agents alongside and never block Chat, and the terminal app has no gate. Those two lines are future work (ticket: one turn gate for every surface); until then only "Your agent is answering a message" can show. While busy the strip polls itself every 3s; idle, it is exactly `<div id="ui-status" class="status-strip"></div>` and CSS hides it. The poll is left out of request logging.
+**The alerts bell (TEN-547; it was a strip across the top of every page).** `layout.html` puts a bell at the right of the header: `<button class="bell" popovertarget="alerts">`, drawn by CSS, with the popover `#alerts` under it. In the popover is `<div class="status-wrap" data-init="@get('/ui/status')" data-on-interval__duration.20s="@get('/ui/status')">`, which is never patched, around `#ui-status`. `statusView` fills it from the controls on each request: this dashboard's chat (Stop), the approval count, and the new-safety-check notices. `ui-status` also sends `#alert-n`, the red count on the bell: the approvals waiting plus the notices (`StatusView.AlertCount`), nothing for none, `99+` past 99. A busy agent is not an alert: it turns the bell amber. The queued ("#N in line", Cancel) and "busy with" lines read serve's turn gate, but today only the dashboard's own chat enters it: scheduled jobs, Discord, iMessage and alert investigations run their own agents alongside and never block Chat, and the terminal app has no gate. Those two lines are future work (ticket: one turn gate for every surface); until then only "Your agent is answering a message" can show. While busy `#ui-status` polls itself every 3s; idle, the answer is exactly `<div id="ui-status" class="status-strip"></div><span id="alert-n" class="bell-n"></span>`, and the popover says "Nothing needs you right now." The poll is left out of request logging.
 
 ## 7. Mobile
 
@@ -178,12 +185,18 @@ Secret routes never put a control's error in a URL.
 - Under 640px the nav is a drawer (the Popover API: Menu opens it, Esc or a tap outside closes it, Log out is at its bottom). The grid is `100dvh`, and the gutter is 16px.
 - Long names and URLs break anywhere (`.page{overflow-wrap:anywhere}`). Only these inner scrollers may be wider than their box, and they scroll inside it: `.table-wrap`, `.lg-grid`, `pre`, `.diff`, `.q-detail`, `.bubble.md table`, `.tool-io`.
 - Wide tables go in `<div class="table-wrap">`; the approval queue and the mode rows are cards.
+- The page uses the window's whole width. Wider than 1000px a page with a list is two columns, `<div class="cols">` of two `<div class="col">`: the forms and settings on the left, the list on the right, each scrolling on its own, so the page stays one screen tall (Research, Sub-agents, Tools, Scheduled jobs, Fleet, Approvals & safety). `.cols.swap` shows the first column on the right: the list comes first in the markup so a phone shows it first. `.cols.even` is two halves (Access: iMessage, Discord). A region that holds `.cols` fills the page by CSS (`:has(>.cols)`), so it needs no class. Memory's fact list scrolls inside the page the same way. Under 1000px the columns stack and the page scrolls.
+- One button size: `.btn.sm` is drawn as `.btn` (the name stays in the templates). A button never wraps or shrinks; the text beside it does.
+- On Access, a row of "what conversations may do" has its buttons in a column on the left and the words on the right (CSS `order`, wider than 640px), so the buttons line up whatever the words say.
+- Integrations lists what you add first (a closed card for each service not connected yet, and GitHub's "watch a repository"), then what is connected as a list, each row's settings behind Settings.
 - On touch screens buttons, nav links, the menu button and confirm summaries are at least 44px tall.
-- Under 640px an open `.confirm-box` becomes a bottom sheet, 16px from the sides and the bottom. While a step is open the page gets half a screen of room at its end, so the last step's Cancel can be scrolled above its sheet.
+- An open `.confirm-box` floats over the page (`position:fixed`), so opening or cancelling a step moves nothing and the page never jumps (TEN-547). Wider than 640px it hangs under its own button by CSS anchor positioning (`anchor-scope` keeps it on its own step) and flips up or left when there's no room; without anchor support, and under 640px, it is a sheet at the bottom centre, 16px from the bottom. On a phone the page gets half a screen of room at its end while a step is open, so the last step's Cancel can be scrolled above its sheet.
 
 ## 8. Datastar
 
-- Datastar (`/datastar.js`) is the only script. No hand-written JS, no inline `<script>`, no `on*=` attributes (`TestTemplates_NoInlineJS`). The browser enforces it: every answer carries `Content-Security-Policy: frame-ancestors 'none'; script-src 'self' 'unsafe-eval'; object-src 'none'; base-uri 'none'` (D31; Datastar evaluates its attributes, hence `unsafe-eval`) and `X-Content-Type-Options: nosniff`. An inline script, an `on*=` handler or a `javascript:` link doesn't run (`TestCSPInChrome`).
+- Scheduled jobs' add form: When is a list of common schedules and Custom. Custom opens a card with no script (`.cronadd:has(select[name=preset] option[value=custom]:checked)`): Daily, Weekly, Monthly or Yearly, the minutes past the hour, a date for Monthly and Yearly, and a week of hour boxes, `name="slot" value="<column>-<hour>"`, Monday first. The grid's `data-on:` expressions make a drag tick or clear the block between where it began and the pointer; without Datastar each box still ticks. `customSpec` turns the boxes into one crontab line, so in a weekly job every ticked day runs at the same hours, and it says so in plain words when they don't (`TestCustomSpec`). The time zone is a list. A typed schedule is behind "Type a schedule instead".
+
+- Datastar (`/datastar.js`) is the only page logic. The one other script is `/theme.js` (TEN-547), loaded blocking in `<head>` so the first paint has the right scheme; it only sets `wa-dark` and runs the theme toggle. No other hand-written JS, no inline `<script>`, no `on*=` attributes (`TestTemplates_NoInlineJS`). The browser enforces it: every answer carries `Content-Security-Policy: frame-ancestors 'none'; script-src 'self' 'unsafe-eval'; object-src 'none'; base-uri 'none'` (D31; Datastar evaluates its attributes, hence `unsafe-eval`) and `X-Content-Type-Options: nosniff`. An inline script, an `on*=` handler or a `javascript:` link doesn't run (`TestCSPInChrome`).
 - Use the colon syntax: `data-on:click`, `data-bind:text` (`TestTemplates_NoDeadHyphenDatastarAttrs`).
 - A `data-init` or `data-on-interval` that opens a GET goes only on a wrapper that is never patched; otherwise every patch opens another request. The one exception is the busy strip's own 3s poll, a one-shot GET.
 - Stream openers use `{retryMaxCount:1000000, retryMaxWait:5000}` (Research adds `openWhenHidden:true`).
@@ -239,8 +252,8 @@ The rules:
 
   A plain POST still gets the 303 and its flash. A Datastar POST gets three patches: `#toast` (mode `replace`, so a new toast starts its fade again), `#ui-status`, and `region()`, the page's changed part rendered from a `{{define}}` with a stable ID (`access-body` renders `#access-body`), which Datastar morphs. The scroll, the focus and text typed in an input stay; an open confirm step closes, because the new HTML has no `open`. An error changed nothing, so it leaves `region()` out: an open step stays open with what was typed in it. Errors still go through `flashFor`. The region holds the page's `ui-flash`, so a banner from a plain post goes with the first in-place answer.
   - `formWarn(w, r, page, warn, region)` is for a change that happened but needs the operator's eye (the model switched, but it can't answer yet): an alert toast, and the region, because it changed.
-  - `createDone` (Helpers' Add, Research's start, Model's server add) replaces the region whole instead of morphing it, so the form comes back empty. `createWarn` is the same with an alert toast: a server added whose tool calls weren't confirmed.
-- The regions, each a `{{define}}` of the same name: Access `#access-body`; Model `#models-body`; Provider keys `#keys-body`; Integrations `#integrations-body`; Skills `#skills-body`; Remote services `#mcp-body`; Tools `#tools-body` (a tool's own toggle patches its `#tool-<name>` row); Scheduled jobs `#jobs-flash`, `#jobs-add` (after an add, with a new form ID so its boxes are empty) and `#jobs-body`; Quality `#eval-body`; Memory `#mem-soul-body`, `#mem-facts-body`, `#mem-removed-body` (a Restore answers with its row alone, `#removed-<id>`, so the list doesn't get shorter under the finger) and `#mem-fact-body`; Approvals & safety `#safety-modes`; Helpers `#agents-body`; Research `#research-ask`, `#research-live` and `#research-history`; Autopilot `#goal-body`; Fleet `#fleet-body` (the list, one machine's page, a group's page, or the confirm step of a change to many machines); Logs below.
+  - `createDone` (Sub-agents' Add, Research's start, Model's server add) replaces the region whole instead of morphing it, so the form comes back empty. `createWarn` is the same with an alert toast: a server added whose tool calls weren't confirmed.
+- The regions, each a `{{define}}` of the same name: Access `#access-body`; Model `#models-body`; Provider keys `#keys-body`; Integrations `#integrations-body`; Skills `#skills-body`; Remote services `#mcp-body`; Tools `#tools-body` (a tool's own toggle patches its `#tool-<name>` row); Scheduled jobs `#jobs-flash`, `#jobs-add` (after an add, with a new form ID so its boxes are empty) and `#jobs-body`; Quality `#eval-body`; Memory `#mem-soul-body`, `#mem-facts-body`, `#mem-removed-body` (a Restore answers with its row alone, `#removed-<id>`, so the list doesn't get shorter under the finger) and `#mem-fact-body`; Approvals & safety `#safety-modes`; Sub-agents `#agents-body`; Research `#research-ask`, `#research-live` and `#research-history`; Autopilot `#goal-body`; Fleet `#fleet-body` (the list, one machine's page, a group's page, or the confirm step of a change to many machines); Logs below.
 - A region may be several elements, each with its ID, when a change touches parts that sit apart. Logs: saving a view redraws `#lg-tree`; a log's properties redraw `#lg-props` and `#lg-clear`, which sit inside their `<details>`, so an open section stays open; a clear also redraws `#lg-tree`, `#lg-grid`, `#lg-count` (counted now, not the page's `data-init`) and `#lg-detail`. A form carries what its answer needs to draw them (the log, the view and the grid's filter) as fields. Keep an element that opens a GET on `data-init` out of a region.
 - A form that holds a key (Model's "Add a cloud model" and "Add a model from a server on your network", a key's Add or Replace, an integration's Save) empties its key boxes when the reply arrives, after an error too, so a typed key never stays on the page; what else was typed stays. The server never puts a key into an input:
 

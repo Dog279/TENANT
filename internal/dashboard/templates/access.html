@@ -11,6 +11,9 @@
 {{template "ui-off" "Access settings aren't available on this Tenant."}}
 {{else}}
 
+{{/* iMessage on the left, Discord on the right on a wide screen (TEN-547). */}}
+<div class="cols even">
+<div class="col">
 <h2>iMessage</h2>
 {{if not .View.IMessageAvailable}}
 {{template "ui-off" "iMessage isn't available on this Tenant."}}
@@ -87,7 +90,8 @@
   {{end}}
 </div>
 {{end}}
-
+</div>
+<div class="col">
 <h2>Discord</h2>
 {{if not .View.DiscordAvailable}}
 {{template "ui-off" "Discord isn't available on this Tenant."}}
@@ -144,6 +148,8 @@
   {{end}}
 </div>
 {{end}}
+</div>
+</div>
 
 {{end}}
 </div>{{end}}

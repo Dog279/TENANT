@@ -205,11 +205,11 @@ func TestSettingsInlineFormsInChrome(t *testing.T) {
 	// under finds that spot on Yes: one with another row's button beneath
 	// the confirm box, or failing that its Allow changes.
 	const under = `(() => {
-		const yes = document.querySelector('#github-repos details[open] .confirm-box button'), box = yes.closest('.confirm-box'), r = yes.getBoundingClientRect(), y = r.top + r.height / 2;
+		const yes = document.querySelector('#github-repos details[open] .confirm-box button'), box = yes.closest('.confirm-box'), r = yes.getBoundingClientRect();
 		box.style.visibility = 'hidden';
 		let at = null;
 		for (const sel of ['#github-repos .row form button', '#github-repos .row summary']) {
-			for (let x = r.left + 2; x < r.right - 2 && !at; x += 4) {
+			for (let y = r.top + 2; y < r.bottom - 2 && !at; y += 4) for (let x = r.left + 2; x < r.right - 2 && !at; x += 4) {
 				if (document.elementFromPoint(x, y)?.closest(sel)) at = [x, y];
 			}
 		}

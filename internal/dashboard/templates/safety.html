@@ -1,9 +1,15 @@
 {{define "content"}}
 {{if not .Configured}}{{template "ui-flash" .}}{{template "ui-off" "Approvals and safety settings aren't available on this Tenant."}}{{else}}
+<div class="cols swap">
+<div class="col">
 <h2>Waiting for your OK</h2>
 <div class="queue-wrap" data-signals:_live="true" data-on:datastar-fetch="evt.detail.el === el && ($_live = !['error', 'retrying', 'retries-failed', 'finished'].includes(evt.detail.type))" data-init="@get('/events?only=approvals', {retryMaxCount:1000000, retryMaxWait:5000})">{{template "approvalq" .Queue}}</div>
 <p class="banner warn live-off" style="display:none" data-show="$_live === false">Live updates paused. Reload the page to see new requests.</p>
+</div>
+<div class="col">
 {{template "safety-modes" .}}
+</div>
+</div>
 {{end}}
 {{end}}
 

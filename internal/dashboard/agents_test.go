@@ -115,10 +115,10 @@ func TestAgents_States(t *testing.T) {
 		want       []string
 		not        []string
 	}{
-		{"off", "/agents", nil, []string{`class="card state-off"`, "Helpers aren&#39;t available on this Tenant."}, []string{"Add a helper"}},
-		{"empty", "/agents", &fakeAgents{}, []string{`<div class="empty">No helpers yet.`}, nil},
+		{"off", "/agents", nil, []string{`class="card state-off"`, "Sub-agents aren&#39;t available on this Tenant."}, []string{"Add a sub-agent"}},
+		{"empty", "/agents", &fakeAgents{}, []string{`<div class="empty">No sub-agents yet.`}, nil},
 		{"error", "/agents?err=Nope.", sampleAgents(), []string{`<div class="banner err" role="alert">Nope.</div>`}, nil},
-		{"read failed", "/agents", failing, []string{`role="alert">Couldn&#39;t read your helpers.`}, []string{"not configured", "No helpers yet"}},
+		{"read failed", "/agents", failing, []string{`role="alert">Couldn&#39;t read your sub-agents.`}, []string{"not configured", "No sub-agents yet"}},
 		{"success", "/agents?msg=Saved.", sampleAgents(), []string{`<div class="banner ok" role="status">Saved.</div>`}, nil},
 		{"busy", "/agents", sampleAgents(), []string{`class="status-wrap"`, `id="ui-status"`}, nil},
 	} {
@@ -185,7 +185,7 @@ func TestAgents_LimitsCard(t *testing.T) {
 		`Tokens per run <span class="tag">300000</span>`, "<code>max_tokens_per_run</code>",
 		`Estimated cost per run <span class="tag">off</span>`, "<code>max_cost_usd</code>",
 		`Time per run <span class="tag">off</span>`,
-		`Helpers at once <span class="tag">4</span>`,
+		`Sub-agents at once <span class="tag">4</span>`,
 		"not set (no cost estimate)",
 	} {
 		if !strings.Contains(body, want) {
@@ -207,7 +207,7 @@ func TestAgents_EditPanelAdvanced(t *testing.T) {
 	adv := body[strings.Index(body, `<details class="advanced" data-preserve-attr="open"><summary>Advanced</summary>`):]
 	adv = adv[:strings.Index(adv, "</details>\n")]
 	for _, want := range []string{`<textarea name="soul"`, "Smallest diff first.</textarea>", `action="/agents/soul"`, `class="confirm-step"`,
-		"Clear this helper&#39;s instructions? Its current instructions are deleted and can&#39;t be brought back here."} {
+		"Clear this sub-agent&#39;s instructions? Its current instructions are deleted and can&#39;t be brought back here."} {
 		if !strings.Contains(adv, want) {
 			t.Errorf("Advanced lacks %q:\n%s", want, adv)
 		}
@@ -304,13 +304,13 @@ func TestAgents_Changes(t *testing.T) {
 		page, msg string
 	}{
 		{"/agents/add", url.Values{"name": {" helper1 "}, "provider": {" cloud "}, "model": {" gpt-4o "}, "description": {" checks things "}},
-			"Add|helper1|cloud|gpt-4o|checks things", "/agents?", "Added helper1. Your main agent learns about new and renamed helpers when Tenant restarts; until then, ask for helper1 by name in chat."},
+			"Add|helper1|cloud|gpt-4o|checks things", "/agents?", "Added helper1. Your main agent learns about new and renamed sub-agents when Tenant restarts; until then, ask for helper1 by name in chat."},
 		{"/agents/model", url.Values{"name": {"QA"}, "provider": {"cloud"}, "model": {" gpt-4o "}},
 			"SetModel|QA|cloud|gpt-4o", "/agents?QA", "QA will use cloud · gpt-4o from its next task."},
 		{"/agents/model", url.Values{"name": {"QA"}, "provider": {"gpu"}},
 			"SetModel|QA|gpu|", "/agents?QA", "QA will use gpu from its next task."},
 		{"/agents/rename", url.Values{"name": {"researcher"}, "new_name": {" reader "}},
-			"Rename|researcher|reader", "/agents?", "Renamed researcher to reader. Your main agent learns about new and renamed helpers when Tenant restarts; until then, ask for reader by name in chat."},
+			"Rename|researcher|reader", "/agents?", "Renamed researcher to reader. Your main agent learns about new and renamed sub-agents when Tenant restarts; until then, ask for reader by name in chat."},
 		{"/agents/remove", url.Values{"name": {"researcher"}, "confirm": {"yes"}}, "Remove|researcher", "/agents?", "Removed researcher."},
 		{"/agents/reset", url.Values{"name": {"QA"}, "confirm": {"yes"}}, "Remove|QA", "/agents?", "QA is back to its built-in model and instructions."},
 		{"/agents/soul", url.Values{"name": {"QA"}, "confirm": {"yes"}}, "SetSoul|QA|", "/agents?QA", "Cleared QA's instructions."},
@@ -336,19 +336,19 @@ func TestAgents_Validation(t *testing.T) {
 		form url.Values
 		err  string
 	}{
-		{"/agents/add", url.Values{"name": {"h"}}, "Pick a model provider for the helper."},
+		{"/agents/add", url.Values{"name": {"h"}}, "Pick a model provider for the sub-agent."},
 		{"/agents/add", url.Values{"name": {strings.Repeat("n", 65)}, "provider": {"cloud"}}, "Keep the name to 64 characters or fewer."},
 		{"/agents/add", url.Values{"name": {"h"}, "provider": {"cloud"}, "description": {strings.Repeat("é", 501)}}, "Keep what it's for to 500 characters or fewer."},
-		{"/agents/model", url.Values{"name": {"QA"}}, "Pick a model provider for the helper."},
-		{"/agents/rename", url.Values{"name": {"researcher"}, "new_name": {"  "}}, "Type the helper's new name."},
+		{"/agents/model", url.Values{"name": {"QA"}}, "Pick a model provider for the sub-agent."},
+		{"/agents/rename", url.Values{"name": {"researcher"}, "new_name": {"  "}}, "Type the sub-agent's new name."},
 		{"/agents/rename", url.Values{"name": {"researcher"}, "new_name": {strings.Repeat("n", 65)}}, "Keep the name to 64 characters or fewer."},
 		{"/agents/add", url.Values{"name": {"h"}, "provider": {"cloud"}, "model": {strings.Repeat("m", 201)}}, "Keep the model name to 200 characters or fewer."},
 		{"/agents/model", url.Values{"name": {"QA"}, "provider": {"cloud"}, "model": {strings.Repeat("m", 201)}}, "Keep the model name to 200 characters or fewer."},
 		// Reset and Remove both end in the control's Remove: each acts only
 		// on its own kind of helper.
-		{"/agents/reset", url.Values{"name": {"researcher"}, "confirm": {"yes"}}, "Only a changed built-in helper can be reset."},
-		{"/agents/reset", url.Values{"name": {"Programmer"}, "confirm": {"yes"}}, "Only a changed built-in helper can be reset."},
-		{"/agents/remove", url.Values{"name": {"QA"}, "confirm": {"yes"}}, "Built-in helpers can't be removed. Reset undoes your changes to one."},
+		{"/agents/reset", url.Values{"name": {"researcher"}, "confirm": {"yes"}}, "Only a changed built-in sub-agent can be reset."},
+		{"/agents/reset", url.Values{"name": {"Programmer"}, "confirm": {"yes"}}, "Only a changed built-in sub-agent can be reset."},
+		{"/agents/remove", url.Values{"name": {"QA"}, "confirm": {"yes"}}, "Built-in sub-agents can't be removed. Reset undoes your changes to one."},
 	} {
 		fa := sampleAgents()
 		_, _, errMsg := agentsFlash(t, post(t, agentsServer(fa, cloudModels...), tc.path, tc.form))
@@ -381,12 +381,12 @@ func TestAgents_ControlErrors(t *testing.T) {
 	}
 	fa.err = errors.New(rawProviderErr)
 	for path, want := range map[string]string{
-		"/agents/add":    "Couldn't add that helper.",
-		"/agents/model":  "Couldn't change that helper's model.",
+		"/agents/add":    "Couldn't add that sub-agent.",
+		"/agents/model":  "Couldn't change that sub-agent's model.",
 		"/agents/soul":   "Couldn't save the instructions.",
-		"/agents/rename": "Couldn't rename that helper.",
-		"/agents/remove": "Couldn't remove that helper.",
-		"/agents/reset":  "Couldn't reset that helper.",
+		"/agents/rename": "Couldn't rename that sub-agent.",
+		"/agents/remove": "Couldn't remove that sub-agent.",
+		"/agents/reset":  "Couldn't reset that sub-agent.",
 	} {
 		name := "researcher"
 		if path == "/agents/reset" {
@@ -401,7 +401,7 @@ func TestAgents_ControlErrors(t *testing.T) {
 	// goes ahead.
 	fa = sampleAgents()
 	fa.loadErr = errors.New(rawStoreClosed)
-	for path, want := range map[string]string{"/agents/remove": "Couldn't remove that helper.", "/agents/reset": "Couldn't reset that helper."} {
+	for path, want := range map[string]string{"/agents/remove": "Couldn't remove that sub-agent.", "/agents/reset": "Couldn't reset that sub-agent."} {
 		if _, _, e := agentsFlash(t, post(t, agentsServer(fa, cloudModels...), path, url.Values{"name": {"QA"}, "confirm": {"yes"}})); e != want || len(fa.changes()) != 0 {
 			t.Errorf("%s with the list unreadable: err %q, calls %q", path, e, fa.changes())
 		}
@@ -412,7 +412,7 @@ func TestAgents_ControlErrors(t *testing.T) {
 	fa.rows = sampleAgents().rows
 	s := agentsServer(&soulFails{fa}, cloudModels...)
 	body := get(t, s, "/agents?edit=Programmer").Body.String()
-	if strings.Contains(body, `<textarea name="soul"`) || !strings.Contains(body, "Couldn&#39;t read this helper&#39;s instructions.") || strings.Contains(body, rawStoreClosed) {
+	if strings.Contains(body, `<textarea name="soul"`) || !strings.Contains(body, "Couldn&#39;t read this sub-agent&#39;s instructions.") || strings.Contains(body, rawStoreClosed) {
 		t.Errorf("a failed instructions read:\n%s", body)
 	}
 }

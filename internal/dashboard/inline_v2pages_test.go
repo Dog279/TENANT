@@ -55,9 +55,9 @@ func TestV2Pages_InlineAnswers(t *testing.T) {
 		{name: "helper rename", path: "/agents/rename", form: url.Values{"name": {"researcher"}, "new_name": {"reader"}}, srv: agents, toast: "Renamed researcher to reader.", region: helpers, lacks: `id="edit"`},
 		{name: "helper remove", path: "/agents/remove", form: url.Values{"name": {"researcher"}, "confirm": {"yes"}}, srv: agents, toast: "Removed researcher.", region: helpers},
 		{name: "helper reset", path: "/agents/reset", form: url.Values{"name": {"QA"}, "confirm": {"yes"}}, srv: agents, toast: "QA is back to its built-in model and instructions.", region: helpers},
-		{name: "helper refused", path: "/agents/add", form: url.Values{"name": {"h1"}}, srv: agents, toast: "Pick a model provider for the helper.", err: true, region: helpers},
+		{name: "helper refused", path: "/agents/add", form: url.Values{"name": {"h1"}}, srv: agents, toast: "Pick a model provider for the sub-agent.", err: true, region: helpers},
 		{name: "helpers off", path: "/agents/remove", form: url.Values{"name": {"x"}, "confirm": {"yes"}}, srv: func() *Server { return agentsServer(nil) }, region: helpers,
-			has: "Helpers aren't available on this Tenant."},
+			has: "Sub-agents aren't available on this Tenant."},
 
 		{name: "research start", path: "/research/start", form: url.Values{"question": {"Why?"}}, srv: research, toast: "Research started. Its progress shows below.", region: ask, create: true,
 			has: `<div id="research-live">`},
