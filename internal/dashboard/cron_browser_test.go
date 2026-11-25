@@ -77,9 +77,13 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 	c := newInlineChrome(t, s, "/cron", "cron")
 
 	// After Turn off, the Turn on step's button is where Turn off was: the
-	// page doesn't let the second tap open it.
+	// page doesn't let the second tap open it. The switch is under the add
+	// form, at the foot of a phone's first screen: 7px above the edge with
+	// Windows' fonts, below it with Linux's, where a tap at its place hit
+	// nothing. So it is scrolled to first, as markPlace does elsewhere.
 	var stepOpen bool
 	c.run("a double tap on the exec switch's Turn off",
+		chromedp.Evaluate(`document.querySelector('form[action="/cron/exec"] button').scrollIntoView({block: 'center'})`, nil),
 		doubleTap(`form[action="/cron/exec"] button`),
 		toastSays("ok", "Scheduled jobs can't make changes now."),
 		tapsOpen,
