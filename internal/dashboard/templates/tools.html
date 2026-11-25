@@ -20,30 +20,7 @@
 {{if .RulesOn}}
 <div class="card">
   <div class="card-head">Tool rules <span class="dim">· for one tool, or a group of tools, whatever its safety setting says. The most specific rule wins.</span></div>
-  {{range .Rules}}
-  <div class="ghead">
-    <span class="nm">{{.Plain}}</span>
-    <span class="{{if eq .Mode "deny"}}act-errtag{{else if eq .Mode "ask"}}risk{{else}}tag{{end}}">{{if eq .Mode "deny"}}blocked{{else if eq .Mode "ask"}}asks you first{{else}}runs without asking{{end}}</span>
-    <span class="sp"></span>
-    {{if eq .Mode "allow"}}
-    <form method="POST" action="/tools/rules/remove" class="inline" data-on:submit__prevent__throttle.1s="@post('/tools/rules/remove', {contentType:'form', retryMaxCount:0})">
-      <input type="hidden" name="pattern" value="{{.Pattern}}">
-      <button type="submit" class="btn sm">Remove</button>
-    </form>
-    {{else}}
-    {{template "ui-confirm" (inline (confirmGo "/tools/rules/remove" "Remove" (printf "%s then follows its safety setting, which may let your agent use it without asking you." .Plain) "pattern" .Pattern))}}
-    {{end}}
-  </div>
-  {{else}}
-  {{template "ui-empty" "No rules yet. A tool your safety settings don't cover asks you every time; add its name here to let it run, block it, or always ask."}}
-  {{end}}
-  <form method="POST" action="/tools/rules/add" class="cronactions mt" data-on:submit__prevent__throttle.1s="@post('/tools/rules/add', {contentType:'form', retryMaxCount:0})">
-    <input type="text" name="pattern" class="cinput wide" placeholder="a tool name, for example write_note or delete_*" required>
-    <input type="hidden" name="confirm" value="yes">
-    <button type="submit" name="mode" value="ask" class="btn sm">Ask first</button>
-    <button type="submit" name="mode" value="deny" class="btn sm">Block</button>
-    <details class="confirm-step go"><summary class="btn sm"><span class="c-open">Don't ask</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Don't ask"><p>Your agent can use the tools this rule matches without asking you, whatever their safety setting says.</p><button type="submit" name="mode" value="allow" class="btn sm">Yes, don't ask</button></div></details>
-  </form>
+  {{template "rule-editor" .Editor}}
   <details class="advanced"><summary>Advanced</summary>
     <div class="dim">A plain name (write_note) matches that tool from any service. A remote service's tool can be named exactly as the Logs page shows it, to match that one tool on that one service. A * matches many (delete_*). The rules also live in your agent's settings file on the computer running Tenant; a change made there applies at once.</div>
   </details>
