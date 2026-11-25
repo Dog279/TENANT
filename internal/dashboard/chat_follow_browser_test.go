@@ -25,7 +25,7 @@ func TestChatFollowsInChrome(t *testing.T) {
 		chromedp.Evaluate(add+`(80)`, nil),
 		chromedp.Poll(atBottom, nil, wait), // arriving lines keep it at the bottom
 		chromedp.Evaluate(log+`.scrollTop = 0`, nil),
-		chromedp.Sleep(200*time.Millisecond), // the scroll event lands
+		chromedp.Sleep(200*time.Millisecond),
 		chromedp.Evaluate(add+`(5)`, nil),
 		chromedp.Sleep(200*time.Millisecond),
 		chromedp.Evaluate(log+`.scrollTop`, &top),

@@ -22,11 +22,16 @@ addEventListener("click", (e) => {
 // to the bottom or send a message.
 addEventListener("DOMContentLoaded", () => {
   for (const el of document.querySelectorAll("#chat-log, #activity-rail")) {
-    let follow = true;
-    const down = () => { el.scrollTop = el.scrollHeight; };
-    el.jump = () => { follow = true; down(); };
-    el.addEventListener("scroll", () => { follow = el.scrollHeight - el.scrollTop - el.clientHeight < 48; });
-    new MutationObserver(() => follow && down()).observe(el, { childList: true, subtree: true, characterData: true });
+    // Whether to follow is read when a line arrives or the box changes size,
+    // from where the log stood before that (h and c are its content and box
+    // heights then): a scroll event comes a frame or more late, and a line
+    // that arrived first would pull a reader back down.
+    let h = 0, c = 0;
+    const down = () => { el.scrollTop = h = el.scrollHeight; c = el.clientHeight; };
+    const sync = () => { if (h - el.scrollTop - c < 48) down(); else { h = el.scrollHeight; c = el.clientHeight; } };
+    el.jump = down;
+    new MutationObserver(sync).observe(el, { childList: true, subtree: true, characterData: true });
+    new ResizeObserver(sync).observe(el);
     down();
   }
 });
