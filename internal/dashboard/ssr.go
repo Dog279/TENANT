@@ -36,16 +36,22 @@ func embedAsset(path string) []byte {
 }
 
 // ssrCSS / datastarJS are embedded assets served at /styles.css and
-// /datastar.js. Datastar (the vendored, MIT hypermedia runtime) is the ONLY JS
-// shipped — there is no hand-written JS; all logic lives in Go (TEN-108).
+// /datastar.js. Datastar (the vendored, MIT hypermedia runtime) carries all the
+// page logic; all logic lives in Go (TEN-108). waCSS is the vendored Web
+// Awesome stylesheet styles.css builds on, and themeJS only picks light or
+// dark before the first paint (TEN-547).
 var (
 	ssrCSS     = newAsset("/styles.css", "text/css; charset=utf-8", embedAsset("templates/styles.css"))
+	waCSS      = newAsset("/wa.css", "text/css; charset=utf-8", embedAsset("templates/wa.css"))
+	themeJS    = newAsset("/theme.js", "text/javascript; charset=utf-8", embedAsset("templates/theme.js"))
 	datastarJS = newAsset("/datastar.js", "text/javascript; charset=utf-8", embedAsset("templates/datastar.js"))
 )
 
 // assetFuncs give layout.html its asset links, which carry the content hash.
 var assetFuncs = template.FuncMap{
 	"stylesURL":   func() string { return ssrCSS.url },
+	"waURL":       func() string { return waCSS.url },
+	"themeURL":    func() string { return themeJS.url },
 	"datastarURL": func() string { return datastarJS.url },
 }
 
@@ -186,6 +192,8 @@ func parseSSR() *ssrTemplates {
 // SSR dashboard now owns GET / (GET /{$}) with no JS SPA behind it.
 func (s *Server) mountSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /styles.css", ssrCSS.serve)
+	mux.HandleFunc("GET /wa.css", waCSS.serve)
+	mux.HandleFunc("GET /theme.js", themeJS.serve)
 	mux.HandleFunc("GET /datastar.js", datastarJS.serve)
 	mux.HandleFunc("GET /{$}", s.handleDashboardPage)
 	mux.HandleFunc("GET /tools", s.handleToolsPage)

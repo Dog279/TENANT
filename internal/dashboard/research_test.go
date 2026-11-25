@@ -175,7 +175,7 @@ func TestResearchPage_States(t *testing.T) {
 		not  []string
 	}{
 		{name: "off", path: "/research", set: nil, want: []string{`class="card state-off"`}},
-		{name: "empty", path: "/research", want: []string{`class="empty"`, "No research yet", `id="research-live">`, "The report is kept in the list below.", `<details class="advanced" data-preserve-attr="open">`},
+		{name: "empty", path: "/research", want: []string{`class="empty"`, "No research yet", `id="research-live">`, "The report is kept under Past research.", `<details class="advanced" data-preserve-attr="open">`},
 			not: []string{`class="busy"`}},
 		{name: "saves to notes", path: "/research", set: func(f *fakeResearch, _ *Server) { f.live.SavesToNotes = true },
 			want: []string{"saved to your agent's notes so it can use what it learned later"}},
@@ -205,7 +205,7 @@ func TestResearchPage_States(t *testing.T) {
 			f.live = ResearchLiveView{Phase: "failed", Question: "q", Err: "Your agent's model didn't answer. Check the Model page, then try again."}
 		}, want: []string{`<div class="banner err" role="alert">Your agent&#39;s model didn&#39;t answer.`}},
 		{name: "stopped", path: "/research", set: func(f *fakeResearch, _ *Server) { f.live = ResearchLiveView{Phase: "stopped"} },
-			want: []string{"Stopped. No report was written. What was found so far is in the list below."}},
+			want: []string{"Stopped. No report was written. What was found so far is under Past research."}},
 		{name: "done", path: "/research", set: func(f *fakeResearch, _ *Server) {
 			f.live = ResearchLiveView{Phase: "done", RunID: "r-1", Report: report, Lines: []string{"Saved to your agent's notes as research/what-is-fakeness.md."}}
 		}, want: []string{`<a href="#ref-1" class="cite">[1]</a>`, `<li id="ref-1">`, "<summary>Details</summary>", `href="/logs?q=log:research"`}},

@@ -77,9 +77,13 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 	c := newInlineChrome(t, s, "/cron", "cron")
 
 	// After Turn off, the Turn on step's button is where Turn off was: the
-	// page doesn't let the second tap open it.
+	// page doesn't let the second tap open it. The switch is under the add
+	// form, at the foot of a phone's first screen: 7px above the edge with
+	// Windows' fonts, below it with Linux's, where a tap at its place hit
+	// nothing. So it is scrolled to first, as markPlace does elsewhere.
 	var stepOpen bool
 	c.run("a double tap on the exec switch's Turn off",
+		chromedp.Evaluate(`document.querySelector('form[action="/cron/exec"] button').scrollIntoView({block: 'center'})`, nil),
 		doubleTap(`form[action="/cron/exec"] button`),
 		toastSays("ok", "Scheduled jobs can't make changes now."),
 		tapsOpen,
@@ -149,6 +153,7 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 	c.run("Add",
 		tapsOpen,
 		markPlace(`#jobs-add`, `#jobs-add`, &at),
+		chromedp.Click(`#jobs-add details.advanced > summary`, chromedp.ByQuery), // a typed schedule is behind it
 		chromedp.SendKeys(`#jobs-add input[name=spec]`, "@weekly", chromedp.ByQuery),
 		chromedp.SendKeys(`#jobs-add input[name=prompt]`, "Send the weekly report.", chromedp.ByQuery),
 		chromedp.Click(`#jobs-add button[type=submit]`, chromedp.ByQuery),
@@ -158,13 +163,14 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 		chromedp.Evaluate(`document.getElementById('cron-new1') !== null`, &listed),
 		stayed(t, "Add", `#jobs-add`, &at),
 	)
-	if left != "|||" || !listed {
+	if left != "||" || !listed {
 		t.Errorf("Add: the boxes hold %q (want empty), the job listed %v", left, listed)
 	}
 
 	fc.set(func() { fc.addErr = errors.New("bad schedule") })
 	c.run("a failed add",
 		tapsOpen,
+		chromedp.Click(`#jobs-add details.advanced > summary`, chromedp.ByQuery),
 		chromedp.SendKeys(`#jobs-add input[name=spec]`, "every tuesday", chromedp.ByQuery),
 		chromedp.SendKeys(`#jobs-add input[name=prompt]`, "Report.", chromedp.ByQuery),
 		chromedp.Click(`#jobs-add button[type=submit]`, chromedp.ByQuery),
@@ -172,7 +178,7 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 		c.shot("add-error"),
 		chromedp.Evaluate(typed, &left),
 	)
-	if left != "|every tuesday||Report." {
+	if left != "Report.||every tuesday" {
 		t.Errorf("a failed add: the boxes hold %q, want what was typed", left)
 	}
 }

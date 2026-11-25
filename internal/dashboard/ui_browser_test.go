@@ -411,13 +411,15 @@ func TestUIShellInChrome(t *testing.T) {
 		t.Errorf("the open confirm step at 390px: %s", b)
 	}
 
-	// The busy strip: a chat turn shows on another page, and goes within 4s
-	// of the turn ending (the strip's 3s poll while busy).
+	// The busy line: a chat turn shows behind the bell on another page, and
+	// goes within 4s of the turn ending (the 3s poll while busy).
 	chatSend(t, s, "hello")
 	awaitStart(t, runner)
 	var busy string
 	err = run(ctx,
 		chromedp.Navigate(srv.URL+"/tools"),
+		chromedp.WaitReady(`#ui-status .busy`, chromedp.ByQuery),
+		chromedp.Click(`.bell`, chromedp.ByQuery),
 		chromedp.WaitVisible(`#ui-status .busy`, chromedp.ByQuery),
 		chromedp.Text(`#ui-status .busy`, &busy, chromedp.ByQuery),
 		shoot("busy"),
@@ -473,8 +475,9 @@ func TestLiveBannerInChrome(t *testing.T) {
 	}
 }
 
-// UX-9: on a phone the status strip stays short with two notices and a
-// waiting request (each notice is one line), and its links are 44px targets.
+// The alerts bell on a phone (TEN-547, once UX-9's strip): two notices and a
+// waiting request take no room on the page, the bell counts them, and a tap
+// opens them on the screen with 44px links.
 func TestStatusStripPhoneInChrome(t *testing.T) {
 	s := New(Config{Addr: "127.0.0.1:0", Auth: GenerateToken()}, nil, nil, nil, nil, nil)
 	s.SetApprovals(&fakeApprovals{pending: []PendingApproval{{ID: "ap-1"}}})
@@ -486,21 +489,28 @@ func TestStatusStripPhoneInChrome(t *testing.T) {
 	s.SetAccess(&fakeAccess{view: AccessView{DiscordAvailable: true, RelayConfigured: true,
 		DiscordPerms: []PermissionRow{{Category: "egress", New: true}, {Category: "mcp", New: true}, {Category: "sandbox", New: true}}}})
 	ctx, _ := chromeSignedIn(t, s, 390, 844, "/")
-	var strip float64
-	var small []string
+	var closed float64
+	var count string
+	var small, off []string
 	if err := run(ctx,
+		chromedp.WaitReady("#ui-status .notice", chromedp.ByQuery),
+		chromedp.Evaluate(`document.getElementById('alerts').getBoundingClientRect().height`, &closed),
+		chromedp.Text(`#alert-n`, &count, chromedp.ByQuery),
+		chromedp.Click(`.bell`, chromedp.ByQuery),
 		chromedp.WaitVisible("#ui-status .notice", chromedp.ByQuery),
-		chromedp.Evaluate(`document.getElementById('ui-status').getBoundingClientRect().height`, &strip),
 		chromedp.Evaluate(`[...document.querySelectorAll('#ui-status a')].filter(a => a.getBoundingClientRect().height < 44).map(a => a.textContent + ' ' + Math.round(a.getBoundingClientRect().height) + 'px')`, &small),
+		chromedp.Evaluate(`[document.getElementById('alerts'), ...document.querySelectorAll('#ui-status a')].map(e => e.getBoundingClientRect()).filter(r => r.left < 0 || r.right > innerWidth || r.top < 0 || r.bottom > innerHeight).map(r => Math.round(r.left) + ' to ' + Math.round(r.right))`, &off),
 	); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("strip %.0fpx", strip)
-	if strip > 200 {
-		t.Errorf("the strip takes %.0fpx of an 844px screen", strip)
+	if closed != 0 || count != "3" {
+		t.Errorf("closed, the alerts take %.0fpx and the bell says %q; want no room and 3 (1 waiting, 2 notices)", closed, count)
 	}
 	if len(small) > 0 {
-		t.Errorf("strip links under 44px: %q", small)
+		t.Errorf("alert links under 44px: %q", small)
+	}
+	if len(off) > 0 {
+		t.Errorf("open, the alerts run off a 390px screen: %q", off)
 	}
 }
 

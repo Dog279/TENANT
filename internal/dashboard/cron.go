@@ -15,9 +15,15 @@ package dashboard
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/rand"
+	"fmt"
 	"net/http"
+	"net/url"
+	"slices"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // CronControl is the runtime cron surface the dashboard drives. cmd/tenant
@@ -91,13 +97,14 @@ type cronPageData struct {
 	Configured bool
 	ExecOn     bool
 	Jobs       []CronJobView
-	AddKey     string // ends the add form's id; a new one empties its boxes (cronDone)
+	AddKey     string   // ends the add form's id; a new one empties its boxes (cronDone)
+	Days       []string // the week grid's columns, Monday first (customSpec)
 	Err        string
 	Msg        string
 }
 
 func (s *Server) cronData() cronPageData {
-	d := cronPageData{layoutData: layoutData{Title: "Scheduled jobs", Page: "cron"}}
+	d := cronPageData{layoutData: layoutData{Title: "Scheduled jobs", Page: "cron"}, Days: weekDays}
 	if s.cron != nil {
 		d.Configured = true
 		d.Jobs = s.cron.Jobs()
@@ -146,6 +153,13 @@ func (s *Server) handleCronAddForm(w http.ResponseWriter, r *http.Request) {
 	spec := strings.TrimSpace(r.FormValue("spec"))
 	if spec == "" { // a preset from the list, when nothing was typed (TEN-420)
 		spec = strings.TrimSpace(r.FormValue("preset"))
+	}
+	if spec == "custom" { // the Custom card's boxes (TEN-547)
+		var problem string
+		if spec, problem = customSpec(r.Form); problem != "" {
+			s.cronDone(w, r, "", problem, false)
+			return
+		}
 	}
 	prompt := strings.TrimSpace(r.FormValue("prompt"))
 	kind := strings.TrimSpace(r.FormValue("kind"))
@@ -257,4 +271,88 @@ func (s *Server) handleCronRunForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cronDone(w, r, name+" is running now. The result appears on the Logs page.", "", false)
+}
+
+// weekDays are the week grid's columns. A box's value is "<column>-<hour>".
+var weekDays = []string{"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
+
+// customSpec turns the Custom card's boxes into a schedule (TEN-547): the
+// hours ticked in the week grid, at minute past the hour, on the days they
+// are ticked under (weekly), every day (daily), or on the date's day of the
+// month (monthly) or its day and month (yearly). A schedule is one crontab
+// line, so in a weekly job every ticked day runs at the same hours. problem
+// is what to tell the operator when the boxes don't make a schedule.
+func customSpec(f url.Values) (spec, problem string) {
+	minute, err := strconv.Atoi(cmp.Or(f.Get("minute"), "0"))
+	if err != nil || minute < 0 || minute > 59 {
+		return "", "Pick the minutes past the hour, from 0 to 59."
+	}
+	byDay := map[int][]int{} // column (0 is Monday) to its hours
+	var hours []int
+	for _, slot := range f["slot"] {
+		d, h, _ := strings.Cut(slot, "-")
+		day, e1 := strconv.Atoi(d)
+		hour, e2 := strconv.Atoi(h)
+		if e1 != nil || e2 != nil || day < 0 || day > 6 || hour < 0 || hour > 23 {
+			return "", "That schedule didn't come through. Reload the page and try again."
+		}
+		byDay[day] = append(byDay[day], hour)
+		hours = append(hours, hour)
+	}
+	if len(hours) == 0 {
+		return "", "Tick at least one hour in the week."
+	}
+	slices.Sort(hours)
+	hours = slices.Compact(hours)
+	dom, mon, dow := "*", "*", "*"
+	switch repeat := f.Get("repeat"); repeat {
+	case "daily":
+	case "monthly", "yearly":
+		on, err := time.Parse(time.DateOnly, f.Get("date"))
+		if err != nil {
+			return "", "Pick the date it runs on."
+		}
+		dom = strconv.Itoa(on.Day())
+		if repeat == "yearly" {
+			mon = strconv.Itoa(int(on.Month()))
+		}
+	default: // weekly
+		var days []int
+		for day, hs := range byDay {
+			slices.Sort(hs)
+			if !slices.Equal(slices.Compact(hs), hours) {
+				return "", "In one job every day runs at the same hours. Make the days match, or add a second job for the other hours."
+			}
+			days = append(days, (day+1)%7) // crontab's 0 is Sunday
+		}
+		if len(days) < 7 {
+			slices.Sort(days)
+			dow = cronList(days)
+		}
+	}
+	return fmt.Sprintf("%d %s %s %s %s", minute, cronList(hours), dom, mon, dow), ""
+}
+
+// cronList writes sorted numbers as a crontab list, a run of three or more
+// as a range: 9-11,14.
+func cronList(n []int) string {
+	var b strings.Builder
+	for i := 0; i < len(n); {
+		j := i
+		for j+1 < len(n) && n[j+1] == n[j]+1 {
+			j++
+		}
+		if j-i < 2 {
+			j = i
+		}
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.Itoa(n[i]))
+		if j > i {
+			fmt.Fprintf(&b, "-%d", n[j])
+		}
+		i = j + 1
+	}
+	return b.String()
 }

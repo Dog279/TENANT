@@ -135,7 +135,7 @@ Some things your agent wants to do wait for you first: running a command, changi
 
 - on **Approvals & safety**, under "Waiting for your OK";
 - above the message box on **Chat**, when you are there;
-- on every page, in the line under the page title: "1 action is waiting for your OK", with an **Answer it** link. While your Chat message is the one waiting, that line reads "Your agent is answering a message · It's paused until you answer a request. Answer it";
+- on every page, on the bell at the top right: a red number counts what is waiting, and a click on the bell shows "1 action is waiting for your OK", with an **Answer it** link. While your Chat message is the one waiting, the bell turns amber and that line reads "Your agent is answering a message · It's paused until you answer a request. Answer it";
 - on **Overview**, in the "Waiting for your OK" count.
 
 Each request says what your agent wants to do, in which area, which of its tools asked, how long it has waited, and the full text of what it wants to run or send. Special characters that could hide text show as markers like ⟨U+202E⟩. A long request says so ("This request is 41 lines long. Read all of it before you allow it."): scroll through it before you answer.
@@ -182,7 +182,7 @@ There is no "always" button here. To stop being asked about a whole area, change
 - **Allow:** it goes ahead without asking. Choosing Allow opens a second step that explains it before anything changes.
 - **Deny:** it can't, and doesn't ask. One tap. Two settings are stronger than Deny, for their own tools only: a tool rule on **Tools** that lets a tool go ahead (**Don't ask**), and a remote service set to **Don't ask** on **Remote services**. Both ask first when you set them. Discord's lock (**Access**, Discord may not run commands) holds even over those.
 
-**New.** An area an update added, which you haven't chosen for yet, is marked **New**. It asks you first until you choose. A notice on every page links here, and **Keep them at Ask** chooses Ask for all of them at once.
+**New.** An area an update added, which you haven't chosen for yet, is marked **New**. It asks you first until you choose. A notice behind the bell on every page links here, and **Keep them at Ask** chooses Ask for all of them at once.
 
 **Why "Share private data" can ask when "Run commands" is Allow.** They are separate questions. "Run commands: Allow" lets a command run. "Share private data" asks about private information leaving the computer, whatever sends it.
 
@@ -207,7 +207,7 @@ The menu groups the pages. On a phone, **Menu** at the top opens it; **Log out**
 | **Quality** | How well your agent answers a set of test questions over time. | Nothing. A check takes a few minutes. |
 | **Research** | Ask a question your agent researches for a few minutes and writes up. The report is saved to your agent's notes. A source on this computer or your own network shows as plain text, not a link (section 2). | **Stop** a run (no report is written) and **Delete** one. |
 | **Tools** | Which tools your agent has, **All on** or **All off** for the tools that change things, and tool rules. | **All on**, a rule that lets a tool go ahead (**Don't ask**), and removing a rule that made a tool ask or blocked it. |
-| **Helpers** | Specialists your agent hands work to, each with its own model and instructions. A helper on a hosted model says "Sends its work to <provider>". | **Remove**, **Reset** and **Clear instructions**. |
+| **Sub-agents** | Specialists your agent hands work to, each with its own model and instructions. A sub-agent on a hosted model says "Sends its work to <provider>". | **Remove**, **Reset** and **Clear instructions**. |
 | **Remote services** | Outside services your agent can use. Connecting one that needs a sign-in opens a sign-in page on the computer running Tenant (section 7). An address that can't work is refused on the page; a connection that fails later is in **Logs** (`log:mcp*`). | **Disconnect**, and **Don't ask** (its tools go ahead without asking, even in an area set to Deny). **Ask first** and **Block** are one tap. |
 | **Scheduled jobs** | Jobs your agent runs on a timetable. | **Delete** a job, and turning on **Scheduled jobs may make changes**. |
 | **Fleet** | The other computers your agent can work on (its fleet): which are online, what each reports about itself, its memory, and what your agent may do on each. A machine's own page confirms it (on the computer running Tenant only, section 3), renames or revokes it, changes its settings and rules, and compares them with a fresh copy of this Tenant's. | **Revoke**, **Allow** for an area, a rule that lets a tool or a command go ahead (**Don't ask**), removing a rule that made one ask or blocked it, **Copy again** and **Apply fleet rules**. Confirming has no second step: typing the machine's six digits is the step. |

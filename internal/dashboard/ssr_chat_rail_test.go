@@ -71,7 +71,7 @@ func TestChatPage_HasTheActivityToggle(t *testing.T) {
 			t.Errorf("chat page missing %q", want)
 		}
 	}
-	if strings.Contains(body, "<script") && strings.Count(body, "<script") > strings.Count(body, "datastar.js") {
+	if strings.Contains(body, "<script") && strings.Count(body, "<script") > strings.Count(body, "datastar.js")+strings.Count(body, "theme.js") {
 		t.Fatal("the rail must add no script")
 	}
 }

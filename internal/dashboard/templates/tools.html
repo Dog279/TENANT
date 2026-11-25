@@ -12,6 +12,8 @@
      the plugin. */}}
 {{define "tools-body"}}<div id="tools-body">
 {{template "ui-flash" .}}
+<div class="cols">
+<div class="col">
 <div class="postbar">
   <span class="dim">Tools that change things:</span>
   <form method="POST" action="/posture" class="inline" data-on:submit__prevent__throttle.1s="@post('/posture', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="allow_send" value="false"><button type="submit" class="btn{{if not .ActTools}} on{{end}}">All off</button></form>
@@ -26,6 +28,8 @@
   </details>
 </div>
 {{end}}
+</div>
+<div class="col">
 {{range .Groups}}
 <div class="tgroup">
   <div class="ghead">
@@ -40,4 +44,6 @@
 {{else}}
 {{template "ui-empty" "No tools yet. Tools appear here as you connect services and turn features on."}}
 {{end}}
+</div>
+</div>
 </div>{{end}}

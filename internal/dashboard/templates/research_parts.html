@@ -20,7 +20,7 @@
   <ol class="research-qs">{{range .Questions}}<li>{{visibleText .}}</li>{{end}}</ol>
   {{- end}}
   {{if .Waiting}}<div class="banner warn">{{if eq .Waiting 1}}1 action is{{else}}{{.Waiting}} actions are{{end}} waiting for your OK. Research may be paused until you answer. <a href="/safety">Answer it</a></div>{{end}}
-  <div class="actions"><details class="confirm-step"{{if not .CloseStop}} data-preserve-attr="open"{{end}}><summary class="btn sm danger"><span class="c-open">Stop</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Stop"><p>Stop this research? It ends now and no report is written. What the helpers found so far stays in the list.</p><form method="POST" action="/research/stop" data-on:submit__prevent__throttle.1s="@post('/research/stop', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="confirm" value="yes"><button type="submit" class="btn sm danger">Yes, stop</button></form></div></details></div>
+  <div class="actions"><details class="confirm-step"{{if not .CloseStop}} data-preserve-attr="open"{{end}}><summary class="btn sm danger"><span class="c-open">Stop</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Stop"><p>Stop this research? It ends now and no report is written. What the sub-agents found so far stays in the list.</p><form method="POST" action="/research/stop" data-on:submit__prevent__throttle.1s="@post('/research/stop', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="confirm" value="yes"><button type="submit" class="btn sm danger">Yes, stop</button></form></div></details></div>
 </div>
 {{- else if eq .Phase "clarify"}}
 <div class="card research-run">
@@ -40,7 +40,7 @@
   <div class="banner err" role="alert">{{.Err}}</div>
 </div>
 {{- else if eq .Phase "stopped"}}
-<div class="banner info" role="status">Stopped. No report was written. What was found so far is in the list below.</div>
+<div class="banner info" role="status">Stopped. No report was written. What was found so far is under Past research.</div>
 {{- else if eq .Phase "done"}}{{with .Done}}
 <div class="card research-run">{{template "research-report" .}}</div>
 {{- end}}{{end}}
@@ -53,7 +53,7 @@
 {{define "research-history"}}<div id="research-history">
 <h2>Past research</h2>
 {{- if .Err}}<div class="banner err" role="alert">{{.Err}}</div>
-{{- else if not .Rows}}{{template "ui-empty" "No research yet. Ask a question above: each one and its report are listed here."}}
+{{- else if not .Rows}}{{template "ui-empty" "No research yet. Ask a question: each one and its report are listed here."}}
 {{- else}}{{range .Rows}}
 <div class="card research-row">
   <a href="{{.Path}}" class="research-q">{{visibleText .Question}}</a>
@@ -78,7 +78,7 @@
   <ul class="refs">{{range .Refs}}<li id="ref-{{.N}}">[{{.N}}] {{if .Web}}<a href="{{.URL}}" rel="noopener noreferrer nofollow" target="_blank">{{visibleText .URL}}</a>{{else}}{{visibleText .URL}}{{end}}</li>{{end}}</ul>
   {{- end}}
   {{- if .Findings}}
-  <details class="research-found" data-preserve-attr="open"><summary>What each helper found ({{len .Findings}})</summary>
+  <details class="research-found" data-preserve-attr="open"><summary>What each sub-agent found ({{len .Findings}})</summary>
   {{range .Findings}}<div class="research-finding"><b>{{visibleText .Question}}</b> <span class="dim">{{.State}}</span>{{if .Body}}<pre class="report">{{visibleText .Body}}</pre>{{end}}</div>{{end}}
   </details>
   {{- end}}
