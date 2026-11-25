@@ -97,9 +97,12 @@ type cronAgentDeps struct {
 	// since its job last ran (TEN-347): unattended, nobody saw them happen.
 	violations func(since time.Time) int
 
-	cfgDir    string    // protected from exec-job writes
-	dataDir   string    // protected from exec-job writes; holds the shell sandbox
-	allowExec *execGate // global kill-switch (LIVE): exec/shell jobs only run when on
+	cfgDir  string // protected from exec-job writes
+	dataDir string // protected from exec-job writes; holds the shell sandbox
+	// writeRoots are the folders an exec job may write under Tenant's install
+	// folder (cronWriteRoots: the wiki and <install>/work); nil = none.
+	writeRoots func() []string
+	allowExec  *execGate // global kill-switch (LIVE): exec/shell jobs only run when on
 
 	// ask is the approval broker's Ask: an alert's investigation, which runs
 	// on this stack, starts only once the operator approves it (TEN-400).
@@ -163,7 +166,7 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 		return nil, err
 	}
 
-	approver := cronExecApprover(d.cfgDir, d.dataDir)
+	approver := cronExecApproverWith(d.cfgDir, d.dataDir, d.writeRoots)
 	setAlertInvestigator(d) // alert rules' investigate action (loginvestigate.go)
 
 	execOn := func() bool { return d.allowExec != nil && d.allowExec.enabled() }
@@ -297,7 +300,15 @@ func withAuthBanner(summary string, probs []string) string {
 // asks nobody, so each verdict is its own Security record (and, under
 // logs.security.on_failure: deny, a grant it can't record is a denial).
 func cronExecApprover(cfgDir, dataDir string) offsiteConfirm {
-	allows := cronExecAllows(cfgDir, dataDir)
+	return cronExecApproverWith(cfgDir, dataDir, nil)
+}
+
+// cronExecApproverWith is cronExecApprover with the folders an exec job may
+// write inside Tenant's install folder. On a box that installs Tenant at the
+// root of its own folder (C:\Tenant) the wiki and the work folder live there,
+// and a job that cannot write its journal cannot do its job.
+func cronExecApproverWith(cfgDir, dataDir string, writeRoots func() []string) offsiteConfirm {
+	allows := cronExecAllows(cfgDir, dataDir, writeRoots)
 	return func(ctx context.Context, action, detail string) bool {
 		return approval.Verdict(ctx, categorize(action), action, detail, "cron", "cron", allows(action, detail))
 	}
@@ -306,7 +317,11 @@ func cronExecApprover(cfgDir, dataDir string) offsiteConfirm {
 // cronExecAllows is the cron-exec approver's rule alone, with no record: an
 // exec job's fleet call is checked by it as the origin's side of the two
 // checks (fleetOrigin), and the fleet files that verdict itself.
-func cronExecAllows(cfgDir, dataDir string) func(action, detail string) bool {
+//
+// writeRoots (read at each verdict, so a moved wiki is followed) carves
+// folders out of the install folder's protection; config and data stay
+// protected whatever they hold.
+func cronExecAllows(cfgDir, dataDir string, writeRoots func() []string) func(action, detail string) bool {
 	return func(action, detail string) bool {
 		switch categorize(action) {
 		case catSandbox:
@@ -325,7 +340,18 @@ func cronExecAllows(cfgDir, dataDir string) func(action, detail string) bool {
 			return cronExecDestructiveOverride(action)
 		case catWrite:
 			if mentionsDir(detail, cfgDir) || mentionsDir(detail, dataDir) ||
-				touchesProtected(detail, cfgDir, dataDir, exeDir()) {
+				touchesProtected(detail, cfgDir, dataDir) {
+				return false
+			}
+			// A wiki note's detail is a path relative to the wiki root, and
+			// the wiki tool confines it there (symlinks included).
+			if action == "wiki_save" {
+				break
+			}
+			if writeRoots != nil && insideRoots(detail, writeRoots()) {
+				break
+			}
+			if touchesProtected(detail, exeDir()) {
 				return false
 			}
 		case catEgress:
@@ -361,6 +387,38 @@ func unattendedEgress(detail string) bool {
 		return tool == "web_fill" || tool == "os_exec"
 	}
 	return true
+}
+
+// insideRoots reports whether every path a write approval's detail names
+// resolves (symlinks and missing parents included) inside one of roots.
+func insideRoots(detail string, roots []string) bool {
+	roots = dedupeNonEmpty(roots...)
+	paths := writeDetailPaths(detail)
+	if len(roots) == 0 || len(paths) == 0 {
+		return false
+	}
+	in := osys.Roots{Write: roots}
+	for _, p := range paths {
+		if in.Check(p, true) != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// cronWriteRoots is what an exec job may write under the install folder: the
+// wiki, wherever it is configured, and <install>/work.
+func cronWriteRoots(wiki *wikiLive) func() []string {
+	return func() []string {
+		var roots []string
+		if dir, _ := wiki.get(); dir != "" {
+			roots = append(roots, dir)
+		}
+		if exe := exeDir(); exe != "" {
+			roots = append(roots, filepath.Join(exe, "work"))
+		}
+		return roots
+	}
 }
 
 func mentionsDir(detail, dir string) bool {

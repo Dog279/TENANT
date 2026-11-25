@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -360,5 +361,35 @@ func TestUnattendedEgress(t *testing.T) {
 	}
 	if !approve(context.Background(), "sensitive_egress", detail("web_fill", "sensitive", "vault")) {
 		t.Error("the unattended approver refused a vault secret into a web form")
+	}
+}
+
+// An exec job may write its notes and its work folder although they sit under
+// Tenant's install folder; config, data and the rest of the install folder
+// stay protected, and a note saved through the wiki tool passes.
+func TestCronExecApproverWriteRoots(t *testing.T) {
+	wiki, work, cfg, data := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	ap := cronExecApproverWith(cfg, data, func() []string { return []string{wiki, work} })
+	ctx := context.Background()
+	for _, c := range []struct {
+		action, detail string
+		want           bool
+	}{
+		{"os_write", "write " + filepath.Join(wiki, "ops", "journal", "2026-W47.md"), true},
+		{"os_edit", "edit " + filepath.Join(wiki, "ops", "journal", "2026-W47.md"), true},
+		{"os_write", "OVERWRITE existing file " + filepath.Join(work, "sitefix", "audit.py"), true},
+		{"wiki_save", "write sitefix/keyscan-1124.md to your local wiki", true},
+		{"os_write", "write " + filepath.Join(cfg, "config.json"), false},
+		{"os_write", "write " + filepath.Join(data, "cron-history.json"), false},
+		{"os_write", "write " + filepath.Join(work, "..", filepath.Base(cfg), "config.json"), false},
+		{"os_write", "write " + filepath.Join(exeDir(), "serve.cmd"), false},
+	} {
+		if got := ap(ctx, c.action, c.detail); got != c.want {
+			t.Errorf("%s %q = %v, want %v", c.action, c.detail, got, c.want)
+		}
+	}
+	// Without roots, the install folder is protected whole, as before.
+	if cronExecApprover(cfg, data)(ctx, "os_write", "write "+filepath.Join(exeDir(), "work", "x.py")) {
+		t.Error("no roots: a write under the install folder must still be refused")
 	}
 }

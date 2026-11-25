@@ -5,6 +5,13 @@ Releases page.
 
 ## Unreleased
 
+- **Fixed: a scheduled exec job could not write its own notes** when Tenant runs from a folder
+  that also holds the wiki (an install at `C:\Tenant` with the wiki in `C:\Tenant\twiki`): the
+  guard that keeps an unattended job out of Tenant's own files took the whole install folder,
+  so every `wiki_save`, and every write into the wiki or `<install>/work`, was refused. The wiki
+  (wherever it is configured) and the install folder's `work` directory are the job's to write;
+  config, data and the rest of the install folder stay protected.
+
 ## 0.2.0 (2026-11-24)
 
 - **Fleet groups, default categories and bulk changes (TEN-546).** Machines can be put in named

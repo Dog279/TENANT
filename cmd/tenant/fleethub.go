@@ -181,7 +181,7 @@ func fleetOrigin(ctx context.Context) approval.Origin {
 		// there to ask either way.
 		var allows func(action, detail string) bool
 		if offsiteConfirmFrom(ctx) != nil {
-			allows = cronExecAllows(h.cfgDir, h.dataDir)
+			allows = cronExecAllows(h.cfgDir, h.dataDir, nil)
 		}
 		return approval.CronOrigin(ids, allows)
 	}
