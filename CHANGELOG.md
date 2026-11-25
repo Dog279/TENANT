@@ -28,6 +28,9 @@ Releases page.
 - **A scheduled exec job keeps the helper tools** (`spawn_agent`, `team_*`): a helper inherits the
   job's approver and exec surface, so the same unattended rules apply to it, and the `cron_*`
   tools stay refused. Jobs without exec still have no helper tools.
+- **The dashboard's chat follows the conversation.** New messages and the activity rail keep
+  the view at the newest line. Scrolling up holds your place; scrolling back to the bottom, or
+  sending a message, follows again.
 - **Fixed: a scheduled exec job could not write its own notes** when Tenant runs from a folder
   that also holds the wiki (an install at `C:\Tenant` with the wiki in `C:\Tenant\twiki`): the
   guard that keeps an unattended job out of Tenant's own files took the whole install folder,

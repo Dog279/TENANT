@@ -38,8 +38,8 @@ func embedAsset(path string) []byte {
 // ssrCSS / datastarJS are embedded assets served at /styles.css and
 // /datastar.js. Datastar (the vendored, MIT hypermedia runtime) carries all the
 // page logic; all logic lives in Go (TEN-108). waCSS is the vendored Web
-// Awesome stylesheet styles.css builds on, and themeJS only picks light or
-// dark before the first paint (TEN-547).
+// Awesome stylesheet styles.css builds on, and themeJS picks light or
+// dark before the first paint (TEN-547) and keeps the chat at its newest line.
 var (
 	ssrCSS     = newAsset("/styles.css", "text/css; charset=utf-8", embedAsset("templates/styles.css"))
 	waCSS      = newAsset("/wa.css", "text/css; charset=utf-8", embedAsset("templates/wa.css"))
