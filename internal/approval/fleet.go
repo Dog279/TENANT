@@ -17,11 +17,14 @@ package approval
 //
 // The schemes persist in settings.<agent>.json under "fleet_schemes", keyed
 // by the machine's immutable id, beside the fleet's own rules for new
-// machines ("fleet_rules"). The name of a machine keys nothing: it is a
-// label, and possibly the machine's own words.
+// machines ("fleet_rules"), the fleet's default categories
+// ("fleet_permissions") and its groups ("fleet_groups", fleetlayers.go). The
+// name of a machine keys nothing: it is a label, and possibly the machine's
+// own words.
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -471,6 +474,19 @@ type Fleet struct {
 	synced      map[string]string
 	syncedRules string
 	persist     func(snapshot func() (schemes map[string]json.RawMessage, rules json.RawMessage))
+
+	// The layers laid over a machine's scheme on purpose (fleetlayers.go):
+	// the default categories for new machines ("fleet_permissions") and the
+	// groups ("fleet_groups", keyed by name in lower case), each with why it
+	// can't be read and its text then, as for the rules.
+	defaults                     map[string]string
+	defaultsErr                  error
+	defaultsRaw                  json.RawMessage
+	groups                       map[string]Group
+	groupsErr                    error
+	groupsRaw                    json.RawMessage
+	syncedDefaults, syncedGroups string
+	persistLayers                func(snapshot func() (defaults, groups json.RawMessage))
 }
 
 // machine is one entry of "fleet_schemes".
@@ -486,8 +502,11 @@ func NewFleet(categorize func(action string) string) *Fleet {
 	f := &Fleet{
 		categorize: categorizeOrDestructive(categorize), log: logs.For("approvals"),
 		machines: map[string]*machine{}, rules: NewRules(), synced: map[string]string{},
+		defaults: map[string]string{}, groups: map[string]Group{},
 	}
 	f.syncedRules = syncKey(Scheme{ToolRules: map[string]string{}}, nil)
+	f.syncedDefaults = layerKey(f.defaults, nil, nil)
+	f.syncedGroups = layerKey(encodeGroups(f.groups), nil, nil)
 	f.rules.SetPersist(func(map[string]string) {
 		f.mu.Lock()
 		f.rulesErr, f.rulesRaw = nil, nil // an edit through Rules replaces text that was no rule set
@@ -651,15 +670,23 @@ func (f *Fleet) setLocked(id string, s Scheme) {
 // (so no launch-flag grant and no session grant is in it), with exec, write,
 // destructive, send and sandbox no looser than ask: their category modes,
 // and every allow rule that could reach them (a command rule, a glob, a tool
-// of one of those categories, a tool no table knows). The fleet's rules are
-// then laid over it and win (Scheme.Overlay). It changes nothing: Put makes
-// the scheme the machine's.
+// of one of those categories, a tool no table knows). Each of the fleet's
+// default categories then replaces the copy's mode, and the fleet's rules are
+// laid over it and win (Scheme.Overlay). It changes nothing: Put makes the
+// scheme the machine's. A machine's groups are Fresh's.
 func (f *Fleet) Inherit(local Scheme) (Scheme, error) {
 	f.mu.Lock()
-	err := f.rulesErr
+	var err error
+	switch {
+	case f.rulesErr != nil:
+		err = fmt.Errorf("fleet: the rules for new machines (fleet_rules) can't be read: %w", f.rulesErr)
+	case f.defaultsErr != nil:
+		err = f.defaultsUnreadable()
+	}
+	defaults := maps.Clone(f.defaults)
 	f.mu.Unlock()
 	if err != nil {
-		return Scheme{}, fmt.Errorf("fleet: the rules for new machines (fleet_rules) can't be read: %w", err)
+		return Scheme{}, err
 	}
 	s := Scheme{Permissions: make(map[string]string, len(Categories)), ToolRules: map[string]string{}}
 	modes := SavedModes(local.Permissions) // as the master reads them: an entry it skips is not copied
@@ -668,7 +695,7 @@ func (f *Fleet) Inherit(local Scheme) (Scheme, error) {
 		if m == ModeAllow && clamped[c] {
 			m = ModeAsk
 		}
-		s.Permissions[c] = m.String()
+		s.Permissions[c] = cmp.Or(defaults[c], m.String())
 	}
 	rules, _ := NormalizeRules(local.ToolRules)
 	for p, mode := range rules {
