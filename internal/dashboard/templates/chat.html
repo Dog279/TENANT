@@ -3,7 +3,7 @@
 <div class="chat" id="chat-log" data-init="@get('/events', {retryMaxCount:1000000, retryMaxWait:5000})">{{range .Transcript}}{{.}}{{end}}<div class="dim">Your conversation so far is above; new messages appear here live.</div></div>
 {{/* The activity rail (TEN-520): the same live lines the terminal app's
      feed shows, beside the chat, behind a native toggle. */}}
-<details class="activity"><summary>Show activity</summary><div id="activity-rail" class="rail"><div class="dim">What your agent does appears here as it happens.</div></div></details>
+<details class="activity"><summary>Show activity</summary><div class="rail"><div id="activity-rail" class="rail-lines"><div class="dim">What your agent does appears here as it happens.</div></div></div></details>
 </div>
 {{/* The approval queue (TEN-207): /events fills it, so a message that
      pauses for your OK shows its buttons here, without leaving the page. */}}

@@ -48,6 +48,10 @@ Releases page.
   - **Two columns.** On a wide screen Research, Sub-agents, Tools, Scheduled jobs, Fleet, a
     machine's page, Approvals & safety and Access put the forms and settings on one side and
     the list on the other, each scrolling on its own. A narrow screen stacks them as before.
+  - **Chat's activity list scrolls on its own.** Opened beside the chat, a long run's lines
+    ran down past the message box and made the whole page scroll. The list now keeps to the
+    height of the chat, scrolls inside it and follows the newest line, as the terminal app's
+    feed does.
   - **A confirm step no longer moves the page.** It opens as a box over the page: under its
     button on a wide screen, at the bottom of a phone's.
   - **Helpers are called Sub-agents on the dashboard:** the page, its words, and the run

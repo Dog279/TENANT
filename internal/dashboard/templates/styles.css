@@ -465,17 +465,26 @@ details.tool[open] summary{border-bottom:1px solid var(--line2)}
 /* The activity rail beside the chat (TEN-520). */
 .chat-row{flex:1;min-height:0;display:flex;gap:12px;align-items:stretch}
 .chat-row .chat{flex:1}
-.activity{flex:none;display:flex;flex-direction:column;min-height:0;max-width:40%}
+.activity{flex:none;display:flex;flex-direction:column;min-height:0;max-width:40%;overflow:auto}
+/* The rail is a child of the details' content box, not of the details: that
+   box takes the height left under the summary, so the rail scrolls inside the
+   chat row instead of running out of it. Where a browser has no such box the
+   details itself scrolls (the overflow above). */
+.activity::details-content{flex:1;min-height:0;display:flex;flex-direction:column}
 .activity summary{cursor:pointer;list-style:none;font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:var(--label);padding:4px 0;white-space:nowrap}
 .activity summary::-webkit-details-marker{display:none}
 .activity[open]{width:320px}
-.rail{flex:1;min-height:0;overflow:auto;font-size:12px;display:flex;flex-direction:column;gap:3px;padding:4px 0}
+/* column-reverse puts the scroll's start at the bottom: the rail opens on the
+   newest line and stays on it as lines arrive, with no script, and stays put
+   once scrolled up. The auto margin keeps a short list at the top. */
+.rail{flex:1;min-height:0;overflow:auto;font-size:12px;display:flex;flex-direction:column-reverse;padding:4px 0}
+.rail-lines{display:flex;flex-direction:column;gap:3px;margin-bottom:auto}
 .rail .line{color:var(--dim);overflow-wrap:anywhere}
 .rail .line time{color:var(--label);margin-right:6px;font-variant-numeric:tabular-nums}
 .rail .line.k-turn{color:var(--fg);margin-top:6px}
 .rail .line.k-err{color:var(--red)}
 .rail .line.k-ok{color:var(--green)}
-@media (max-width:600px){.chat-row{flex-direction:column}.activity{max-width:none}.activity[open]{width:auto}.rail{max-height:30vh}}
+@media (max-width:600px){.chat-row{flex-direction:column}.activity{max-width:none;flex:0 1 auto}.activity[open]{width:auto}.rail{max-height:30vh}}
 /* == TEN-533 fleet == */
 .fl-table{min-width:820px}
 .fl-table td:not(:first-child),.fl-facts td:not(:first-child){white-space:normal;overflow-wrap:anywhere}
