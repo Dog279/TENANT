@@ -128,8 +128,8 @@ func uiStatus(t *testing.T, s *Server) string {
 
 func TestUIStatus_IdleIsEmpty(t *testing.T) {
 	s := New(Config{}, &chatRunner{}, nil, nil, nil, nil)
-	if got, want := uiStatus(t, s), `<div id="ui-status" class="status-strip"></div>`; got != want {
-		t.Errorf("idle strip = %q, want exactly %q (CSS hides it with :empty)", got, want)
+	if got, want := uiStatus(t, s), `<div id="ui-status" class="status-strip"></div><span id="alert-n" class="bell-n"></span>`; got != want {
+		t.Errorf("idle strip = %q, want exactly %q (CSS tells an empty one with :empty)", got, want)
 	}
 }
 
@@ -183,7 +183,7 @@ func awaitStart(t *testing.T, b *blockRunner) {
 func awaitIdle(t *testing.T, s *Server) {
 	t.Helper()
 	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-		if uiStatus(t, s) == `<div id="ui-status" class="status-strip"></div>` {
+		if uiStatus(t, s) == `<div id="ui-status" class="status-strip"></div><span id="alert-n" class="bell-n"></span>` {
 			return
 		}
 	}
@@ -462,7 +462,7 @@ func TestNav_GroupsAndLabels(t *testing.T) {
 	want := []string{"/ Overview",
 		"[Activity]", "/chat Chat", "/goal Autopilot", "/logs Logs",
 		"[Knowledge]", "/memory Memory", "/skills Skills", "/eval Quality", "/research Research",
-		"[Capabilities]", "/tools Tools", "/agents Helpers", "/mcp Remote services", "/cron Scheduled jobs", "/fleet Fleet",
+		"[Capabilities]", "/tools Tools", "/agents Sub-agents", "/mcp Remote services", "/cron Scheduled jobs", "/fleet Fleet",
 		"[Safety]", "/safety Approvals & safety", "/access Access",
 		"[Settings]", "/models Model", "/integrations Integrations", "/settings/keys Provider keys",
 	}
@@ -498,7 +498,8 @@ func TestTemplates_NoInlineJS(t *testing.T) {
 	js := regexp.MustCompile(`(?i)<script|\son[a-z]+=`)
 	used := map[string]bool{}
 	walkTemplates(t, func(name, body string) {
-		body = strings.Replace(body, `<script type="module" src="{{datastarURL}}"></script>`, "", 1) // the one script: Datastar
+		body = strings.Replace(body, `<script type="module" src="{{datastarURL}}"></script>`, "", 1) // Datastar
+		body = strings.Replace(body, `<script src="{{themeURL}}"></script>`, "", 1)                  // light or dark (TEN-547)
 		if !js.MatchString(body) {
 			return
 		}
@@ -550,7 +551,7 @@ var bannedWords = []struct {
 	{"exec mode", regexp.MustCompile(`(?i)\bexec mode\b`)},
 	{"planner", regexp.MustCompile(`(?i)\bplanners?\b`)},
 	{"wiki", regexp.MustCompile(`(?i)\bwiki\b`)},
-	{"sub-agent", regexp.MustCompile(`(?i)\bsub-?agents?\b`)},
+	{"helper", regexp.MustCompile(`(?i)\bhelpers?\b`)}, // TEN-547: the page is Sub-agents
 	{"cycle", regexp.MustCompile(`(?i)\bcycles?\b`)},
 	{"wave", regexp.MustCompile(`(?i)\bwaves?\b`)},
 	{"turn", regexp.MustCompile(`(?i)\bturns?\b`)}, // the agent's, not "turn on"/"turn off" (turnOnOff)
@@ -648,6 +649,25 @@ func TestRendered_NoFieldNamedID(t *testing.T) {
 	for route, page := range renderAllPages(t, populated) {
 		if strings.Contains(page, ` name="id"`) {
 			t.Errorf("%s has a form field named id", route)
+		}
+	}
+}
+
+// The alerts bell counts the approvals waiting and the notices, says nothing
+// for none, and stops at 99+ (TEN-547).
+func TestStatusView_AlertCount(t *testing.T) {
+	for _, c := range []struct {
+		v    StatusView
+		want string
+	}{
+		{StatusView{}, ""},
+		{StatusView{Busy: &BusyView{Title: "busy"}}, ""},
+		{StatusView{Approvals: 12, Notices: make([]NoticeView, 2)}, "14"},
+		{StatusView{Approvals: 99}, "99"},
+		{StatusView{Approvals: 99, Notices: make([]NoticeView, 1)}, "99+"},
+	} {
+		if got := c.v.AlertCount(); got != c.want {
+			t.Errorf("AlertCount(%d approvals, %d notices) = %q, want %q", c.v.Approvals, len(c.v.Notices), got, c.want)
 		}
 	}
 }

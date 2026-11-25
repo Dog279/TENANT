@@ -1,9 +1,15 @@
 {{define "content"}}
 {{if not .Configured}}{{template "ui-flash" .}}{{template "ui-off" "Research isn't available on this Tenant."}}{{else}}
+<div class="cols">
+<div class="col">
 {{template "research-ask" .}}
 <div class="research-wrap" data-signals:_live="true" data-on:datastar-fetch="evt.detail.el === el && ($_live = !['error', 'retrying', 'retries-failed', 'finished'].includes(evt.detail.type))" data-init="@get('/research/live', {retryMaxCount:1000000, retryMaxWait:5000, openWhenHidden:true})">{{template "research-live" .Live}}</div>
 <p class="banner warn live-off" style="display:none" data-show="$_live === false">Live updates paused. Reload the page to see the latest progress.</p>
+</div>
+<div class="col">
 {{template "research-history" .History}}
+</div>
+</div>
 {{end}}
 {{end}}
 
@@ -24,7 +30,7 @@
     </details>
     <div class="actions"><button type="submit" class="btn on">Research this</button></div>
   </form>
-  <p class="dim">This takes a few minutes, sometimes up to 20. {{if .Live.SavesToNotes}}The finished report is saved to your agent's notes so it can use what it learned later.{{else}}The report is kept in the list below.{{end}} Chat keeps working meanwhile, but replies may be slower.</p>
+  <p class="dim">This takes a few minutes, sometimes up to 20. {{if .Live.SavesToNotes}}The finished report is saved to your agent's notes so it can use what it learned later.{{else}}The report is kept under Past research.{{end}} Chat keeps working meanwhile, but replies may be slower.</p>
   {{if .Live.WebOff}}<p class="dim">{{or .Live.WebOffWhy "Web browsing is turned off, so research can only use what your agent already has in its notes and memory."}}</p>{{end}}
 </div>
 </div>{{end}}

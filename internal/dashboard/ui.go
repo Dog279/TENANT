@@ -41,7 +41,7 @@ type ConfirmView struct {
 type HiddenField struct{ Name, Value string }
 
 // uiFuncs is parsed into every template set (parseSSR and logsTmpl).
-var uiFuncs = template.FuncMap{"confirm": confirmStep, "confirmGo": confirmGo, "inline": inlineStep, "visibleText": visibleText, "waited": waited}
+var uiFuncs = template.FuncMap{"mul5": func(n int) int { return n * 5 }, "confirm": confirmStep, "confirmGo": confirmGo, "inline": inlineStep, "visibleText": visibleText, "waited": waited}
 
 // confirmStep builds a ConfirmView: the action, the first button's label, one
 // plain consequence sentence, then name/value pairs for the hidden fields. An
@@ -222,6 +222,19 @@ type StatusView struct {
 	Busy      *BusyView
 	Approvals int          // len(Pending()), 0 when no approval control is wired
 	Notices   []NoticeView // main broker New → /safety; Access Discord/iMessage New → /access
+}
+
+// AlertCount is the number on the alerts bell: the approvals waiting plus
+// the notices, "" for none and "99+" past 99. Busy is not an alert.
+func (v StatusView) AlertCount() string {
+	n := v.Approvals + len(v.Notices)
+	switch {
+	case n <= 0:
+		return ""
+	case n > 99:
+		return "99+"
+	}
+	return strconv.Itoa(n)
 }
 
 // BusyView is one "agent busy" line (ui-busy).

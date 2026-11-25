@@ -1,6 +1,6 @@
 package dashboard
 
-// agents.go is the "Helpers" page (TEN-209): the named specialists the agent
+// agents.go is the "Sub-agents" page (TEN-209): the named specialists the agent
 // hands work to, each with its own model and instructions. It mirrors the
 // terminal app's /agents through the same control: list, add, change the
 // model (the instructions stay), set or clear the instructions, rename,
@@ -85,7 +85,7 @@ func (s *Server) handleAgentsPage(w http.ResponseWriter, r *http.Request) {
 // agentsData is the page with edit's panel open ("" = none), no flash.
 func (s *Server) agentsData(ctx context.Context, edit string) agentsPageData {
 	d := agentsPageData{
-		layoutData: layoutData{Title: "Helpers", Page: "agents"},
+		layoutData: layoutData{Title: "Sub-agents", Page: "agents"},
 		Configured: s.agents != nil,
 	}
 	if s.agents == nil {
@@ -107,14 +107,14 @@ func (s *Server) agentsData(ctx context.Context, edit string) agentsPageData {
 	d.Limits = rows
 	agents, err := s.agents.Agents()
 	if err != nil {
-		d.LoadErr = s.flashFor(ctx, "helpers list", err, "Couldn't read your helpers. Reload the page to try again.")
+		d.LoadErr = s.flashFor(ctx, "helpers list", err, "Couldn't read your sub-agents. Reload the page to try again.")
 	}
 	d.Agents = agents
 	if i := slices.IndexFunc(agents, func(a AgentProfileView) bool { return a.Name == edit }); i >= 0 {
 		// Without its current instructions the editor would offer an empty
 		// box, and saving that would lose them: no panel instead.
 		if soul, err := s.agents.Soul(agents[i].Name); err != nil {
-			d.LoadErr = s.flashFor(ctx, "helper instructions", err, "Couldn't read this helper's instructions. Reload the page to try again.")
+			d.LoadErr = s.flashFor(ctx, "helper instructions", err, "Couldn't read this sub-agent's instructions. Reload the page to try again.")
 		} else {
 			d.Edit, d.EditSoul = &agents[i], soul
 		}
@@ -155,7 +155,7 @@ func editPage(name string) string { return "/agents?" + url.Values{"edit": {name
 // learnsOnRestart is the note after an add or a rename: the main agent's list
 // of helpers is written at launch (the terminal app behaves the same).
 func (s *Server) learnsOnRestart(name string) string {
-	msg := "Your main agent learns about new and renamed helpers when Tenant restarts; until then, ask for " + name + " by name in chat."
+	msg := "Your main agent learns about new and renamed sub-agents when Tenant restarts; until then, ask for " + name + " by name in chat."
 	if how := s.agents.RestartNote(); how != "" {
 		msg += " " + how
 	}
@@ -182,7 +182,7 @@ func (s *Server) handleAgentAdd(w http.ResponseWriter, r *http.Request) {
 	desc := strings.TrimSpace(r.FormValue("description"))
 	switch {
 	case provider == "":
-		s.agentsDone(w, r, "", "", "Pick a model provider for the helper.")
+		s.agentsDone(w, r, "", "", "Pick a model provider for the sub-agent.")
 		return
 	case utf8.RuneCountInString(name) > 64:
 		s.agentsDone(w, r, "", "", "Keep the name to 64 characters or fewer.")
@@ -195,7 +195,7 @@ func (s *Server) handleAgentAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.agents.Add(name, provider, model, desc); err != nil {
-		s.agentsDone(w, r, "", "", s.flashFor(r.Context(), "helper add", err, "Couldn't add that helper."))
+		s.agentsDone(w, r, "", "", s.flashFor(r.Context(), "helper add", err, "Couldn't add that sub-agent."))
 		return
 	}
 	s.createDone(w, r, "/agents", "Added "+name+". "+s.learnsOnRestart(name), s.agentsRegion(r, ""))
@@ -210,14 +210,14 @@ func (s *Server) handleAgentModel(w http.ResponseWriter, r *http.Request) {
 	model := strings.TrimSpace(r.FormValue("model"))
 	switch {
 	case provider == "":
-		s.agentsDone(w, r, name, "", "Pick a model provider for the helper.")
+		s.agentsDone(w, r, name, "", "Pick a model provider for the sub-agent.")
 		return
 	case tooLongModel(model):
 		s.agentsDone(w, r, name, "", "Keep the model name to 200 characters or fewer.")
 		return
 	}
 	if err := s.agents.SetModel(name, provider, model); err != nil {
-		s.agentsDone(w, r, name, "", s.flashFor(r.Context(), "helper model", err, "Couldn't change that helper's model."))
+		s.agentsDone(w, r, name, "", s.flashFor(r.Context(), "helper model", err, "Couldn't change that sub-agent's model."))
 		return
 	}
 	uses := provider
@@ -252,14 +252,14 @@ func (s *Server) handleAgentRename(w http.ResponseWriter, r *http.Request) {
 	to := strings.TrimSpace(r.FormValue("new_name"))
 	switch {
 	case to == "":
-		s.agentsDone(w, r, name, "", "Type the helper's new name.")
+		s.agentsDone(w, r, name, "", "Type the sub-agent's new name.")
 		return
 	case utf8.RuneCountInString(to) > 64:
 		s.agentsDone(w, r, name, "", "Keep the name to 64 characters or fewer.")
 		return
 	}
 	if err := s.agents.Rename(name, to); err != nil {
-		s.agentsDone(w, r, name, "", s.flashFor(r.Context(), "helper rename", err, "Couldn't rename that helper."))
+		s.agentsDone(w, r, name, "", s.flashFor(r.Context(), "helper rename", err, "Couldn't rename that sub-agent."))
 		return
 	}
 	s.agentsDone(w, r, "", "Renamed "+name+" to "+to+". "+s.learnsOnRestart(to), "")
@@ -272,14 +272,14 @@ func (s *Server) handleAgentRemove(w http.ResponseWriter, r *http.Request) {
 	}
 	custom, err := s.isCustomized(name)
 	if err == nil && custom {
-		s.agentsDone(w, r, "", "", "Built-in helpers can't be removed. Reset undoes your changes to one.")
+		s.agentsDone(w, r, "", "", "Built-in sub-agents can't be removed. Reset undoes your changes to one.")
 		return
 	}
 	if err == nil {
 		err = s.agents.Remove(name)
 	}
 	if err != nil {
-		s.agentsDone(w, r, "", "", s.flashFor(r.Context(), "helper remove", err, "Couldn't remove that helper."))
+		s.agentsDone(w, r, "", "", s.flashFor(r.Context(), "helper remove", err, "Couldn't remove that sub-agent."))
 		return
 	}
 	s.agentsDone(w, r, "", "Removed "+name+".", "")
@@ -294,14 +294,14 @@ func (s *Server) handleAgentReset(w http.ResponseWriter, r *http.Request) {
 	}
 	custom, err := s.isCustomized(name)
 	if err == nil && !custom {
-		s.agentsDone(w, r, "", "", "Only a changed built-in helper can be reset.")
+		s.agentsDone(w, r, "", "", "Only a changed built-in sub-agent can be reset.")
 		return
 	}
 	if err == nil {
 		err = s.agents.Remove(name)
 	}
 	if err != nil {
-		s.agentsDone(w, r, "", "", s.flashFor(r.Context(), "helper reset", err, "Couldn't reset that helper."))
+		s.agentsDone(w, r, "", "", s.flashFor(r.Context(), "helper reset", err, "Couldn't reset that sub-agent."))
 		return
 	}
 	s.agentsDone(w, r, "", name+" is back to its built-in model and instructions.", "")

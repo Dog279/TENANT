@@ -8,9 +8,36 @@
      URL; a helper's name is a form field. */}}
 {{define "agents-body"}}<div id="agents-body">
 {{template "ui-flash" .}}
-{{if not .Configured}}{{template "ui-off" "Helpers aren't available on this Tenant."}}{{else}}
+{{if not .Configured}}{{template "ui-off" "Sub-agents aren't available on this Tenant."}}{{else}}
 {{if .LoadErr}}<div class="banner err" role="alert">{{.LoadErr}}</div>{{end}}
 
+{{/* Two columns on a wide screen (TEN-547): the list is first here, so a
+     phone shows it first, and .swap puts it on the right. A row's Edit link
+     covers the whole row; it opens that sub-agent's card on the left. */}}
+<div class="cols swap">
+<div class="col">
+<div class="card">
+  <div class="card-head">Your sub-agents</div>
+  <div class="dim">A sub-agent is a specialist your agent can hand work to. Each one uses a specific model and follows its own instructions. Choose one to change it.</div>
+  {{range .Agents}}
+  <div class="row agent-row{{if $.Edit}}{{if eq $.Edit.Name .Name}} on{{end}}{{end}}" id="agent-{{.Name}}">
+    <div class="agent-info">
+      <div class="nm">{{visibleText .Name}}{{if .Builtin}} <span class="tag">Built in</span>{{else if .Customized}} <span class="tag">Customized</span>{{end}}</div>
+      <div class="dim">{{if .Provider}}{{.Provider}}{{with .Model}} · {{.}}{{end}}{{else}}Uses your main model{{end}}</div>
+      {{with .SendsTo}}<div class="dim">Sends its work to {{.}}.</div>{{end}}
+      {{with .Description}}<div class="dim">{{visibleText .}}</div>{{end}}
+      {{if not .Valid}}<span class="risk">Needs attention: its model provider is missing</span>{{end}}
+    </div>
+    <div class="actions">
+      <a class="btn sm" href="/agents?edit={{.Name}}#edit">Edit</a>
+      {{if .Customized}}{{template "ui-confirm" (inline (confirm "/agents/reset" "Reset" (printf "Undo your changes to %s? It goes back to its built-in model and instructions." (visibleText .Name)) "name" .Name))}}
+      {{else if not .Builtin}}{{template "ui-confirm" (inline (confirm "/agents/remove" "Remove" (printf "Remove %s? Your agent can't hand work to it anymore and its instructions are deleted. This can't be undone." (visibleText .Name)) "name" .Name))}}{{end}}
+    </div>
+  </div>
+  {{else}}{{if not $.LoadErr}}{{template "ui-empty" "No sub-agents yet. Add one and your agent can hand it work."}}{{end}}{{end}}
+</div>
+</div>
+<div class="col">
 {{with .Edit}}
 <div class="card agent-edit" id="edit">
   <div class="card-head">Edit {{visibleText .Name}}</div>
@@ -48,50 +75,13 @@
       <textarea name="soul" class="cinput wide" rows="12" required aria-label="Instructions">{{$.EditSoul}}</textarea>
       <button type="submit" class="btn">Save instructions</button>
     </form>
-    {{if .HasSoul}}{{template "ui-confirm" (inline (confirm "/agents/soul" "Clear instructions" "Clear this helper's instructions? Its current instructions are deleted and can't be brought back here." "name" .Name))}}{{end}}
+    {{if .HasSoul}}{{template "ui-confirm" (inline (confirm "/agents/soul" "Clear instructions" "Clear this sub-agent's instructions? Its current instructions are deleted and can't be brought back here." "name" .Name))}}{{end}}
   </details>
   <a class="btn sm" href="/agents">Close</a>
 </div>
 {{end}}
-
 <div class="card">
-  <div class="card-head">Your helpers</div>
-  <div class="dim">A helper is a specialist your agent can hand work to. Each one uses a specific model and follows its own instructions.</div>
-  {{range .Agents}}
-  <div class="row agent-row" id="agent-{{.Name}}">
-    <div class="agent-info">
-      <div class="nm">{{visibleText .Name}}{{if .Builtin}} <span class="tag">Built in</span>{{else if .Customized}} <span class="tag">Customized</span>{{end}}</div>
-      <div class="dim">{{if .Provider}}{{.Provider}}{{with .Model}} · {{.}}{{end}}{{else}}Uses your main model{{end}}</div>
-      {{with .SendsTo}}<div class="dim">Sends its work to {{.}}.</div>{{end}}
-      {{with .Description}}<div class="dim">{{visibleText .}}</div>{{end}}
-      {{if not .Valid}}<span class="risk">Needs attention: its model provider is missing</span>{{end}}
-    </div>
-    <div class="actions">
-      <a class="btn sm" href="/agents?edit={{.Name}}#edit">Edit</a>
-      {{if .Customized}}{{template "ui-confirm" (inline (confirm "/agents/reset" "Reset" (printf "Undo your changes to %s? It goes back to its built-in model and instructions." (visibleText .Name)) "name" .Name))}}
-      {{else if not .Builtin}}{{template "ui-confirm" (inline (confirm "/agents/remove" "Remove" (printf "Remove %s? Your agent can't hand work to it anymore and its instructions are deleted. This can't be undone." (visibleText .Name)) "name" .Name))}}{{end}}
-    </div>
-  </div>
-  {{else}}{{if not $.LoadErr}}{{template "ui-empty" "No helpers yet. Add one below and your agent can hand it work."}}{{end}}{{end}}
-</div>
-
-{{if .Limits}}
-<div class="card" id="limits">
-  <div class="card-head">Run limits</div>
-  <div class="dim mb">Limits for one run of helpers. The run limits are off unless you set them: add the key under <code>"budgets"</code> in config.json with a value, and the next run follows it.</div>
-  {{range .Limits}}
-  <div class="row">
-    <div class="agent-info">
-      <div class="nm">{{.Name}} <span class="tag">{{.Value}}</span></div>
-      <div class="dim"><code>{{.Key}}</code> · {{.Note}}</div>
-    </div>
-  </div>
-  {{end}}
-</div>
-{{end}}
-
-<div class="card">
-  <div class="card-head">Add a helper</div>
+  <div class="card-head">Add a sub-agent</div>
   {{if .Providers}}
   <form method="POST" action="/agents/add" class="agent-form" data-on:submit__prevent__throttle.1s="@post('/agents/add', {contentType:'form', retryMaxCount:0})">
     <label>Name
@@ -106,11 +96,28 @@
     <label>What it's for
       <input type="text" name="description" class="cinput wide" maxlength="500" placeholder="for example: checks my writing for mistakes">
     </label>
-    <button type="submit" class="btn">Add helper</button>
+    <button type="submit" class="btn">Add sub-agent</button>
   </form>
   {{else}}{{template "agents-no-models"}}{{end}}
+</div>
+
+{{if .Limits}}
+<div class="card" id="limits">
+  <div class="card-head">Run limits</div>
+  <div class="dim mb">Limits for one run of sub-agents. The run limits are off unless you set them: add the key under <code>"budgets"</code> in config.json with a value, and the next run follows it.</div>
+  {{range .Limits}}
+  <div class="row">
+    <div class="agent-info">
+      <div class="nm">{{.Name}} <span class="tag">{{.Value}}</span></div>
+      <div class="dim"><code>{{.Key}}</code> · {{.Note}}</div>
+    </div>
+  </div>
+  {{end}}
+</div>
+{{end}}
+</div>
 </div>
 {{end}}
 </div>{{end}}
 
-{{define "agents-no-models"}}<div class="empty">A helper needs a model. Add one on the <a href="/models">Model page</a> first.</div>{{end}}
+{{define "agents-no-models"}}<div class="empty">A sub-agent needs a model. Add one on the <a href="/models">Model page</a> first.</div>{{end}}

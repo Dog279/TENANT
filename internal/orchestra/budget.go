@@ -159,9 +159,9 @@ func (b Budgets) LimitRows() []LimitRow {
 		{"Time per run", "max_wall_time", wall, `Set a duration like "30m" to stop a run that takes longer.`},
 		{"Tool calls per run", "max_tool_calls_per_run", num(b.MaxToolCallsPerRun), runNote},
 		{"Tool calls per answer", "max_tool_calls_per_turn", num(b.MaxToolCallsPerTurn), "Set a positive number to refuse one answer's tool calls past it (the run goes on)."},
-		{"Helpers per run", "max_agents_per_run", num(b.MaxAgentsPerRun), "Set a positive number to refuse more helpers in one run."},
+		{"Sub-agents per run", "max_agents_per_run", num(b.MaxAgentsPerRun), "Set a positive number to refuse more sub-agents in one run."},
 		{"Cost rates", "input_cost_per_million_usd, output_cost_per_million_usd", rates, "Your model's price per million tokens; needed for the cost estimate and limit."},
-		{"Helpers at once", "max_concurrent_subagents", num(b.MaxConcurrentSubagents), "Guards this machine; on by default."},
+		{"Sub-agents at once", "max_concurrent_subagents", num(b.MaxConcurrentSubagents), "Guards this machine; on by default."},
 		{"Browsers at once", "max_browser_instances", num(b.MaxBrowserInstances), "Guards this machine; on by default."},
 		{"Message history kept", "bus_history_cap", num(b.BusHistoryCap), "Guards memory; on by default."},
 	}

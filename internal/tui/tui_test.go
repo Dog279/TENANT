@@ -2233,7 +2233,7 @@ func (f *fakeAgentCtl) Remove(name string) (string, error) {
 func (f *fakeAgentCtl) Limits() ([]LimitRow, error) {
 	return []LimitRow{
 		{"Tokens per run", "max_tokens_per_run", "off", "Set a positive number to stop a run that goes past it."},
-		{"Helpers at once", "max_concurrent_subagents", "4", "Guards this machine; on by default."},
+		{"Sub-agents at once", "max_concurrent_subagents", "4", "Guards this machine; on by default."},
 	}, nil
 }
 func (f *fakeAgentCtl) Show(name string) (AgentDetail, error) {

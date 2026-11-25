@@ -149,6 +149,7 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 	c.run("Add",
 		tapsOpen,
 		markPlace(`#jobs-add`, `#jobs-add`, &at),
+		chromedp.Click(`#jobs-add details.advanced > summary`, chromedp.ByQuery), // a typed schedule is behind it
 		chromedp.SendKeys(`#jobs-add input[name=spec]`, "@weekly", chromedp.ByQuery),
 		chromedp.SendKeys(`#jobs-add input[name=prompt]`, "Send the weekly report.", chromedp.ByQuery),
 		chromedp.Click(`#jobs-add button[type=submit]`, chromedp.ByQuery),
@@ -158,13 +159,14 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 		chromedp.Evaluate(`document.getElementById('cron-new1') !== null`, &listed),
 		stayed(t, "Add", `#jobs-add`, &at),
 	)
-	if left != "|||" || !listed {
+	if left != "||" || !listed {
 		t.Errorf("Add: the boxes hold %q (want empty), the job listed %v", left, listed)
 	}
 
 	fc.set(func() { fc.addErr = errors.New("bad schedule") })
 	c.run("a failed add",
 		tapsOpen,
+		chromedp.Click(`#jobs-add details.advanced > summary`, chromedp.ByQuery),
 		chromedp.SendKeys(`#jobs-add input[name=spec]`, "every tuesday", chromedp.ByQuery),
 		chromedp.SendKeys(`#jobs-add input[name=prompt]`, "Report.", chromedp.ByQuery),
 		chromedp.Click(`#jobs-add button[type=submit]`, chromedp.ByQuery),
@@ -172,7 +174,7 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 		c.shot("add-error"),
 		chromedp.Evaluate(typed, &left),
 	)
-	if left != "|every tuesday||Report." {
+	if left != "Report.||every tuesday" {
 		t.Errorf("a failed add: the boxes hold %q, want what was typed", left)
 	}
 }
