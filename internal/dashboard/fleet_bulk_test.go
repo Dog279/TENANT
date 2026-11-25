@@ -895,3 +895,21 @@ func TestFleetBulkPagesShowWordsAsText(t *testing.T) {
 		}
 	}
 }
+
+// A change the control refuses says so in the page's fixed words; the raw
+// reason goes to the log, never to the page.
+func TestFleetBulkControlErrorsStayOffThePage(t *testing.T) {
+	c := installCapture(t)
+	for _, tc := range fleetChanges {
+		f := fleetFake(6)
+		f.view.Rollout = &FleetRollout{Running: true, Machines: []FleetRolloutMachine{{ID: fleetConfirmed, Status: "running"}}}
+		f.err = errors.New("raw: fleet_groups is locked by pid 4242")
+		rec := sendForm(fleetServer(f).Handler(), http.MethodPost, tc.path, withField(tc.form, "confirm", "yes"), here)
+		if body := rec.Body.String() + rec.Header().Get("Location"); strings.Contains(body, "4242") || strings.Contains(body, "raw") {
+			t.Errorf("%s: the control's own words reached the page: %d %s", tc.path, rec.Code, rec.Header().Get("Location"))
+		}
+	}
+	if !c.has("2201 ", "fleet_groups is locked by pid 4242") {
+		t.Errorf("the reason isn't in the log: %q", c.lines())
+	}
+}
