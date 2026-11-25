@@ -145,7 +145,7 @@ var FleetMachineChanged = Security.Event(4323, event.Info, "Fleet", "Fleet machi
 var FleetSettingsChanged = Security.Event(4325, event.Info, "Fleet", "Fleet {what}: {change}", "what", "change", "detail").
 	Keywords("audit.success").
 	Doc("The operator changed what the fleet lays over its machines' schemes on purpose: what is a group (group <name>) or the defaults for new machines. change is created, deleted, machines added, machines removed, rule set, rule removed, default set or default unset; detail says which. No machine's scheme moves with it: a machine changes when it is confirmed, copied again or applied, and each of those has its own record (security/4323). surface is where the operator was: cli, tui or dashboard.",
-		"tenant fleet group, tenant fleet permissions --defaults set|unset, /fleet group and /permissions fleet --defaults in the terminal, or the dashboard's Fleet page.",
+		"tenant fleet group, tenant fleet permissions --defaults set|unset|add|rm, /fleet group and /permissions fleet --defaults in the terminal, or the dashboard's Fleet page.",
 		"None when intended. A loosened default or an allow rule in a group reaches a machine only when it is applied: check the group's rules before tenant fleet group apply.")
 
 var FleetConfirmRefused = Security.Event(4324, event.Warning, "Fleet", "Fleet machine {name} was not confirmed: {reason}", "name", "machine", "reason").

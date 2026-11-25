@@ -544,28 +544,63 @@ func (f *Fleet) Fresh(id string, local Scheme) (Scheme, error) {
 // refused while the fleet's rules or its groups can't be read.
 func (f *Fleet) Reapply(id string) (groups []string, err error) {
 	f.mu.Lock()
-	m := f.machines[id]
-	switch {
-	case f.rulesErr != nil:
-		err = fmt.Errorf("fleet: the fleet's rules (fleet_rules) can't be read: %w", f.rulesErr)
-	case m == nil || m.b == nil:
-		err = fmt.Errorf("fleet: machine %s has no approval scheme that can be read", plain(id, 64))
-	}
-	var laid []Group
-	if err == nil {
-		laid, err = f.groupsOfLocked(id)
-	}
+	s, groups, err := f.appliedLocked(id)
 	if err != nil {
 		f.mu.Unlock()
 		return nil, err
-	}
-	s := m.scheme().Overlay(f.rules.Snapshot())
-	for _, g := range laid {
-		s = s.Overlay(g.ToolRules)
-		groups = append(groups, g.Name)
 	}
 	f.setLocked(id, s)
 	f.mu.Unlock()
 	f.save()
 	return groups, nil
+}
+
+// Applied is what Reapply would make of machine id's scheme now, and changes
+// nothing: for showing how far a machine is from its layers before the
+// operator applies them. It is refused where Reapply is.
+func (f *Fleet) Applied(id string) (Scheme, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, _, err := f.appliedLocked(id)
+	return s, err
+}
+
+// appliedLocked lays the fleet's rules and then the rules of each of id's
+// groups, in name order, over the scheme id has, and names the groups laid.
+// f.mu is held; nothing is changed.
+func (f *Fleet) appliedLocked(id string) (s Scheme, groups []string, err error) {
+	m := f.machines[id]
+	switch {
+	case f.rulesErr != nil:
+		return s, nil, fmt.Errorf("fleet: the fleet's rules (fleet_rules) can't be read: %w", f.rulesErr)
+	case m == nil || m.b == nil:
+		return s, nil, fmt.Errorf("fleet: machine %s has no approval scheme that can be read", plain(id, 64))
+	}
+	laid, err := f.groupsOfLocked(id)
+	if err != nil {
+		return s, nil, err
+	}
+	s = m.scheme().Overlay(f.rules.Snapshot())
+	for _, g := range laid {
+		s = s.Overlay(g.ToolRules)
+		groups = append(groups, g.Name)
+	}
+	return s, groups, nil
+}
+
+// MasterCopy is the category modes a new machine takes from local, the
+// master's local scheme, before any fleet default: the master's own, with
+// exec, write, destructive, send and sandbox no looser than ask (the first
+// step of Inherit).
+func MasterCopy(local Scheme) map[string]string {
+	out := make(map[string]string, len(Categories))
+	modes := SavedModes(local.Permissions) // as the master reads them: an entry it skips is not copied
+	for _, c := range Categories {
+		m := modes[c]
+		if m == ModeAllow && clamped[c] {
+			m = ModeAsk
+		}
+		out[c] = m.String()
+	}
+	return out
 }

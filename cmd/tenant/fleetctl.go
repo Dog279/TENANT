@@ -1430,11 +1430,33 @@ func permEdit(cats *approvalBroker, rules tui.ToolRuleControl, surface string, a
 }
 
 // fleetRuleSet is the fleet's rules for new machines as an editor takes them.
-type fleetRuleSet struct{ r *toolRules }
+// With o, each change is recorded (fleetOps.auditSettings): a rule that lets a
+// tool run on every machine confirmed from now on is not a quiet change.
+type fleetRuleSet struct {
+	r *toolRules
+	o *fleetOps
+}
 
-func (s fleetRuleSet) Rules() []tui.ToolRuleInfo               { return s.r.Rules() }
-func (s fleetRuleSet) SetRule(pattern, mode string) error      { return s.r.Set(pattern, mode) }
-func (s fleetRuleSet) RemoveRule(pattern string) (bool, error) { return s.r.Remove(pattern), nil }
+func (s fleetRuleSet) Rules() []tui.ToolRuleInfo { return s.r.Rules() }
+
+func (s fleetRuleSet) SetRule(pattern, mode string) error {
+	if err := s.r.Set(pattern, mode); err != nil {
+		return err
+	}
+	if s.o != nil {
+		m, _ := approval.ParseMode(mode)
+		s.o.auditSettings(defaultsWhat, "rule set", strings.TrimSpace(pattern)+" "+m.String())
+	}
+	return nil
+}
+
+func (s fleetRuleSet) RemoveRule(pattern string) (bool, error) {
+	had := s.r.Remove(pattern)
+	if had && s.o != nil {
+		s.o.auditSettings(defaultsWhat, "rule removed", strings.TrimSpace(pattern))
+	}
+	return had, nil
+}
 
 func fleetPermissionsCmd(args []string) error {
 	fs := flag.NewFlagSet("fleet permissions", flag.ContinueOnError)
@@ -1474,7 +1496,7 @@ func fleetPermissionsCmd(args []string) error {
 			fmt.Println(said + later)
 			return nil
 		case len(cli.pos) > 0:
-			done, err := permEdit(nil, fleetRuleSet{f.Rules()}, surfaceCLI, cli.pos)
+			done, err := permEdit(nil, fleetRuleSet{f.Rules(), &cli.ops}, surfaceCLI, cli.pos)
 			if err != nil {
 				return fmt.Errorf("fleet rules: %w", err)
 			}

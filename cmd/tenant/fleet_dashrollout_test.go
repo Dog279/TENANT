@@ -155,28 +155,6 @@ func TestFleetDashRolloutHeldElsewhere(t *testing.T) {
 	}
 }
 
-// The TEN-546 changes not wired in this build answer so, and change nothing.
-func TestFleetDashNotWiredYet(t *testing.T) {
-	var ctl dashFleet
-	var plain dashboard.PlainError
-	_, rmDef := ctl.RemoveDefaultRule("x")
-	_, rmRule := ctl.RemoveGroupRule("web", "x")
-	for name, err := range map[string]error{
-		"SetDefault": ctl.SetDefault("exec", "allow"), "SetDefaultRule": ctl.SetDefaultRule("x", "allow"), "RemoveDefaultRule": rmDef,
-		"CreateGroup": ctl.CreateGroup("web"), "DeleteGroup": ctl.DeleteGroup("web"), "AddMembers": ctl.AddMembers("web", []string{"m0000000000000001"}),
-		"RemoveMembers": ctl.RemoveMembers("web", nil), "SetGroupRule": ctl.SetGroupRule("web", "x", "deny"), "RemoveGroupRule": rmRule,
-	} {
-		if !errors.As(err, &plain) || err.Error() != "Nothing changed: this is not wired in this build yet." {
-			t.Errorf("%s: %v", name, err)
-		}
-	}
-	for _, r := range ctl.Bulk(dashboard.FleetBulkOp{Action: dashboard.FleetBulkApply}, []string{"m0000000000000001", "m0000000000000002"}) {
-		if r.Done || r.Said != "Nothing changed: this is not wired in this build yet." {
-			t.Errorf("Bulk: %+v", r)
-		}
-	}
-}
-
 func fleetRolloutOf(t *testing.T) *fleetRollout {
 	t.Helper()
 	ro := fleetRollouter()

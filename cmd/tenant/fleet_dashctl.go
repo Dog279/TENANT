@@ -105,8 +105,7 @@ func (d dashFleet) View() dashboard.FleetView {
 		v.NoRecovery = true
 	}
 	v.Holder, v.Here = fleetHolding()
-	// The rollout is this process's own, in memory. The defaults and the
-	// groups stay empty until the TEN-546 core is wired (see below).
+	// The rollout is this process's own, in memory.
 	if ro := fleetRollouter(); ro != nil {
 		if st, ok := ro.State(); ok {
 			v.Rollout = dashRollout(st, ro.updates)
@@ -124,11 +123,30 @@ func (d dashFleet) View() dashboard.FleetView {
 	}
 	fleetRules := f.Rules().Snapshot()
 	v.Rules = dashRuleRows(fleetRules)
+	local, localErr := d.ops.local()
+	// The fleet's default categories (fleet_permissions): what the operator
+	// set for new machines, over what this Tenant's own scheme would give,
+	// clamped (approval.MasterCopy).
+	if set, err := f.Defaults(); err != nil {
+		v.DefaultsErr = err
+	} else if localErr == nil {
+		copied := approval.MasterCopy(local)
+		for _, c := range approval.Categories {
+			v.Defaults = append(v.Defaults, dashboard.FleetDefault{
+				PermissionRow: dashboard.PermissionRow{Category: c, Mode: set[c], Title: approval.CategoryPlain[c].Title, Can: onMachine(approval.CategoryPlain[c].Can)},
+				Inherited:     copied[c],
+			})
+		}
+	}
+	groups, groupsErr := f.Groups()
+	v.GroupsErr = groupsErr
+	// differs: for each confirmed machine with settings, whether Apply would
+	// change them now. applyUnknown: that can't be worked out.
+	differs, applyUnknown := map[string]bool{}, false
 	// What each machine confirmed now would start with, its groups' rules in
 	// it (Fresh): the other side of its drift. Without it (the fleet's rules,
 	// defaults or groups can't be read) no drift is shown, and no pending
 	// machine can be confirmed.
-	local, localErr := d.ops.local()
 	fresh := func(id string) *approval.Scheme {
 		if localErr != nil {
 			return nil
@@ -148,6 +166,11 @@ func (d dashFleet) View() dashboard.FleetView {
 			link = &st
 		}
 		mv := dashMachine(m, link)
+		for _, g := range groups {
+			if _, in := slices.BinarySearch(g.Machines, m.ID); in {
+				mv.Groups = append(mv.Groups, g.Name)
+			}
+		}
 		// The memory column: what the holder's last comparison found, or
 		// its record of it (memoryStateIn decrypts nothing).
 		mv.Memory, mv.MemoryDetail = memoryStateIn(d.ops.dataDir, m.ID)
@@ -169,6 +192,13 @@ func (d dashFleet) View() dashboard.FleetView {
 			for _, r := range b.Rules() {
 				mv.Rules = append(mv.Rules, dashboard.ToolRuleRow{Pattern: r.Pattern, Mode: r.Mode, Kind: r.Kind})
 			}
+			if s, err := f.Scheme(m.ID); err == nil && m.State == fleet.StateConfirmed {
+				if applied, err := f.Applied(m.ID); err != nil {
+					applyUnknown = true
+				} else {
+					differs[m.ID] = len(s.Drift(applied)) > 0
+				}
+			}
 			if s, err := f.Scheme(m.ID); err == nil && !v.NoFresh && m.State != fleet.StatePending && m.State != fleet.StateRevoked {
 				want := fresh(m.ID)
 				if want == nil {
@@ -186,6 +216,18 @@ func (d dashFleet) View() dashboard.FleetView {
 			}
 		}
 		v.Machines = append(v.Machines, mv)
+	}
+	for _, g := range groups {
+		row := dashboard.FleetGroup{Name: g.Name, Members: g.Machines, Rules: dashRuleRows(g.ToolRules)}
+		for _, id := range g.Machines {
+			if differs[id] {
+				row.Differ++
+			}
+		}
+		if applyUnknown {
+			row.Differ = -1
+		}
+		v.Groups = append(v.Groups, row)
 	}
 	return v
 }
@@ -467,46 +509,127 @@ func dashRollout(st fleetRolloutState, upd interface {
 	return out
 }
 
-// TEN-546 integration: the methods below are wired to fleetOps when the core branch is merged.
+// --- the fleet's defaults, its groups and changes to many machines (TEN-546) ---
 //
-// Each answers "not wired" and changes nothing until then. What each must do
-// is its doc comment on dashboard.FleetControl; in short:
-//   - SetDefault: fleetOps' `permissions --defaults set|unset` on the
-//     settings key fleet_permissions (mode "" unsets), refusing while it
-//     can't be read; it moves no machine.
-//   - SetDefaultRule / RemoveDefaultRule: `permissions --defaults add|rm` on
-//     fleet_rules (removed reports whether there was one).
-//   - CreateGroup, DeleteGroup, AddMembers, RemoveMembers, SetGroupRule,
-//     RemoveGroupRule: fleetOps' group operations on fleet_groups, names
-//     case-insensitive, each change one Security record, none moving a
-//     machine; refusals as PlainError ("exists already", "not a group name").
-//   - Bulk: fleetOps.bulk over the ids with the single-machine operation of
-//     op.Action (permission, rule, unrule, apply = recopy "defaults" with the
-//     machine's groups, copy = recopy "master"), never stopping at a failure,
-//     one FleetBulkResult per id in the order given, Name through fleetName,
-//     Said a plain sentence.
-//   - View must then also fill Defaults (fleet_permissions over the
-//     categories, Inherited = the master's clamped mode), DefaultsErr,
-//     Groups (with Differ), GroupsErr and each machine's Groups.
+// Each is fleetOps' own operation (fleetgroups.go), so the Fleet page does
+// what `tenant fleet permissions --defaults`, `tenant fleet group` and
+// `tenant fleet permissions --group` do and files the same records, with the
+// dashboard as their surface. The page names a machine by its id only.
 
-// dashNotWired is what the page says of a TEN-546 change in this build.
-const dashNotWired = dashboard.PlainError("Nothing changed: this is not wired in this build yet.")
+// dashSaid is a refusal of one of these operations as the page says it: the
+// operation's own plain sentence. Its words are this Tenant's and the
+// operator's own (a group's name, a pattern), escaped where the fleet checks
+// them; no machine's words are in it.
+func dashSaid(err error) error {
+	if err == nil {
+		return nil
+	}
+	return dashboard.PlainError("Nothing changed: " + strings.TrimSuffix(strings.TrimPrefix(err.Error(), "fleet: "), ".") + ".")
+}
 
-func (d dashFleet) SetDefault(category, mode string) error              { return dashNotWired }
-func (d dashFleet) SetDefaultRule(pattern, mode string) error           { return dashNotWired }
-func (d dashFleet) RemoveDefaultRule(pattern string) (bool, error)      { return false, dashNotWired }
-func (d dashFleet) CreateGroup(name string) error                       { return dashNotWired }
-func (d dashFleet) DeleteGroup(group string) error                      { return dashNotWired }
-func (d dashFleet) AddMembers(group string, machines []string) error    { return dashNotWired }
-func (d dashFleet) RemoveMembers(group string, machines []string) error { return dashNotWired }
-func (d dashFleet) SetGroupRule(group, pattern, mode string) error      { return dashNotWired }
-func (d dashFleet) RemoveGroupRule(group, pattern string) (bool, error) { return false, dashNotWired }
+// SetDefault sets one of the fleet's default categories for new machines, or
+// with mode "" gives it back to this Tenant's own. It moves no machine.
+func (d dashFleet) SetDefault(category, mode string) error {
+	if mode == "" {
+		_, err := d.ops.unsetDefault(category)
+		return dashSaid(err)
+	}
+	return dashSaid(d.ops.setDefault(category, mode))
+}
 
-// Bulk answers every machine with "not wired": nothing is done to any.
-func (d dashFleet) Bulk(op dashboard.FleetBulkOp, machines []string) []dashboard.FleetBulkResult {
-	out := make([]dashboard.FleetBulkResult, len(machines))
-	for i, id := range machines {
-		out[i] = dashboard.FleetBulkResult{ID: id, Said: string(dashNotWired)}
+func (d dashFleet) SetDefaultRule(pattern, mode string) error {
+	return dashSaid(d.ops.setDefaultRule(pattern, mode))
+}
+
+func (d dashFleet) RemoveDefaultRule(pattern string) (bool, error) {
+	removed, err := d.ops.removeDefaultRule(pattern)
+	return removed, dashSaid(err)
+}
+
+func (d dashFleet) CreateGroup(name string) error {
+	_, err := d.ops.createGroup(name)
+	return dashSaid(err)
+}
+
+func (d dashFleet) DeleteGroup(group string) error {
+	_, err := d.ops.deleteGroup(group)
+	return dashSaid(err)
+}
+
+// AddMembers and RemoveMembers take machine ids. fleetOps finds a machine by
+// the name it carries or by its id, and no name has the shape of an id
+// (fleet.json's own rule), so an id finds only its own machine.
+func (d dashFleet) AddMembers(group string, machines []string) error {
+	for _, id := range machines {
+		if !machineIDShape.MatchString(id) {
+			return dashboard.PlainError("Nothing changed: a machine is named by its id.")
+		}
+	}
+	_, err := d.ops.addToGroup(group, machines)
+	return dashSaid(err)
+}
+
+func (d dashFleet) RemoveMembers(group string, machines []string) error {
+	for _, id := range machines {
+		if !machineIDShape.MatchString(id) {
+			return dashboard.PlainError("Nothing changed: a machine is named by its id.")
+		}
+	}
+	_, err := d.ops.removeFromGroup(group, machines)
+	return dashSaid(err)
+}
+
+func (d dashFleet) SetGroupRule(group, pattern, mode string) error {
+	return dashSaid(d.ops.setGroupRule(group, pattern, mode))
+}
+
+func (d dashFleet) RemoveGroupRule(group, pattern string) (bool, error) {
+	removed, err := d.ops.removeGroupRule(group, pattern)
+	return removed, dashSaid(err)
+}
+
+// Bulk makes one change to each machine, through the single-machine path of
+// fleetOps (fleetOps.bulk): each machine changed has its own record, the batch
+// none, and one that fails or does not qualify is a result with its reason.
+// The results are in the order the ids came.
+func (d dashFleet) Bulk(op dashboard.FleetBulkOp, ids []string) []dashboard.FleetBulkResult {
+	var edit []string // permEdit's words, for a change to a scheme's own entries
+	switch op.Action {
+	case dashboard.FleetBulkPermission:
+		edit = []string{"set", op.Category, op.Mode}
+	case dashboard.FleetBulkRule:
+		edit = []string{"add", op.Pattern, op.Mode}
+	case dashboard.FleetBulkUnrule:
+		edit = []string{"rm", op.Pattern}
+	}
+	ms := make([]fleet.Machine, len(ids))
+	for i, id := range ids {
+		m, err := d.ops.store.Machine(id) // by id, never by name
+		if err != nil {
+			m = fleet.Machine{ID: id, Name: id} // no state: bulk says no machine has this id
+		}
+		ms[i] = m
+	}
+	rs, err := d.ops.bulk(ms, func(f *approval.Fleet, m fleet.Machine) (string, error) {
+		switch op.Action {
+		case dashboard.FleetBulkApply:
+			return d.ops.recopy(f, m, "defaults")
+		case dashboard.FleetBulkCopy:
+			return d.ops.recopy(f, m, "master")
+		case dashboard.FleetBulkPermission, dashboard.FleetBulkRule, dashboard.FleetBulkUnrule:
+			return d.ops.editMachine(f, m, edit)
+		}
+		return "", errors.New("that is not a change this page makes")
+	})
+	out := make([]dashboard.FleetBulkResult, len(ids))
+	for i, m := range ms {
+		out[i] = dashboard.FleetBulkResult{ID: m.ID, Name: fleetName(m.Name)}
+		switch {
+		case err != nil: // the fleet's schemes can't be read: nothing was tried
+			out[i].Said = "the fleet's approval settings can't be read right now"
+		case i < len(rs):
+			out[i].Done, out[i].Said = rs[i].OK, strings.TrimPrefix(rs[i].Said, "fleet: ")
+		}
 	}
 	return out
 }

@@ -1969,7 +1969,7 @@ Writes the `fleet` log.
 
 **What it means.** A group of machines, or the defaults new machines start with, changed: what names which. No machine moved: a group's rules reach its members when it is applied, and the defaults when a machine is confirmed or copied again. The same change is in the Security log (security/4325) with who made it.
 
-**Why it happens.** tenant fleet group, tenant fleet permissions --defaults set|unset, /fleet group in the terminal app, or the dashboard's Fleet page.
+**Why it happens.** tenant fleet group, tenant fleet permissions --defaults set|unset|add|rm, /fleet group in the terminal app, or the dashboard's Fleet page.
 
 **What to do.** None when intended. To lay a group's rules over its members: tenant fleet group apply <group>.
 
@@ -6003,7 +6003,7 @@ Writes the `security` log.
 
 **What it means.** The operator changed what the fleet lays over its machines' schemes on purpose: what is a group (group <name>) or the defaults for new machines. change is created, deleted, machines added, machines removed, rule set, rule removed, default set or default unset; detail says which. No machine's scheme moves with it: a machine changes when it is confirmed, copied again or applied, and each of those has its own record (security/4323). surface is where the operator was: cli, tui or dashboard.
 
-**Why it happens.** tenant fleet group, tenant fleet permissions --defaults set|unset, /fleet group and /permissions fleet --defaults in the terminal, or the dashboard's Fleet page.
+**Why it happens.** tenant fleet group, tenant fleet permissions --defaults set|unset|add|rm, /fleet group and /permissions fleet --defaults in the terminal, or the dashboard's Fleet page.
 
 **What to do.** None when intended. A loosened default or an allow rule in a group reaches a machine only when it is applied: check the group's rules before tenant fleet group apply.
 

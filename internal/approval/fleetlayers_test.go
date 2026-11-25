@@ -433,3 +433,39 @@ func TestFleet_LayersRefuseWhileUnreadable(t *testing.T) {
 		t.Error("applied with fleet rules that can't be read")
 	}
 }
+
+// Applied says what Reapply would make of a machine's scheme and changes
+// nothing; MasterCopy is the first step of Inherit, before any fleet default.
+func TestFleet_AppliedAndMasterCopy(t *testing.T) {
+	const id = "m00000000000000ab"
+	f := layered(t, `{"x_post":"deny"}`, `{"exec":"allow"}`, `{"ops":{"machines":["`+id+`"],"tool_rules":{"web_interact":"deny"}}}`)
+	local := Scheme{Permissions: map[string]string{CatExec: "allow", CatWeb: "allow", CatSend: "deny"}}
+	if got := MasterCopy(local); got[CatExec] != "ask" || got[CatWeb] != "allow" || got[CatSend] != "deny" || got[CatMCP] != "ask" || len(got) != len(Categories) {
+		t.Errorf("the master's copy: %v; want exec clamped to ask whatever the fleet's default says, and every category", got)
+	}
+	if s := mustInherit(t, f, local); s.Permissions[CatExec] != "allow" {
+		t.Errorf("Inherit lost the fleet's default over the master's copy: %v", s.Permissions)
+	}
+	if _, err := f.Applied(id); err == nil {
+		t.Error("Applied worked for a machine with no scheme")
+	}
+	if err := f.Put(id, Scheme{Permissions: map[string]string{CatWeb: "deny"}, ToolRules: map[string]string{"x_post": "allow"}}); err != nil {
+		t.Fatal(err)
+	}
+	saves := 0
+	f.SetPersist(func(func() (map[string]json.RawMessage, json.RawMessage)) { saves++ })
+	before, _ := f.Scheme(id)
+	want, err := f.Applied(id)
+	if err != nil || want.ToolRules["x_post"] != "deny" || want.ToolRules["web_interact"] != "deny" || want.Permissions[CatWeb] != "deny" {
+		t.Fatalf("Applied: %v %v", want, err)
+	}
+	if now, _ := f.Scheme(id); schemeJSON(now) != schemeJSON(before) || saves != 0 {
+		t.Fatalf("Applied changed the machine or saved: %s -> %s, %d saves", schemeJSON(before), schemeJSON(now), saves)
+	}
+	if _, err := f.Reapply(id); err != nil {
+		t.Fatal(err)
+	}
+	if now, _ := f.Scheme(id); schemeJSON(now) != schemeJSON(want) || saves != 1 {
+		t.Errorf("Reapply made %s, Applied said %s (%d saves)", schemeJSON(now), schemeJSON(want), saves)
+	}
+}

@@ -71,6 +71,26 @@ func (o fleetOps) unsetDefault(category string) (bool, error) {
 	return had, err
 }
 
+// setDefaultRule sets one of the fleet's rules for new machines (fleet_rules),
+// and removeDefaultRule removes one (false when there was none). Neither moves
+// a machine. Each is recorded, on every surface: a rule that lets a tool run
+// on every machine confirmed from now on is not a quiet change.
+func (o fleetOps) setDefaultRule(pattern, mode string) error {
+	f, err := o.schemes()
+	if err != nil {
+		return err
+	}
+	return fleetRuleSet{f.Rules(), &o}.SetRule(pattern, mode)
+}
+
+func (o fleetOps) removeDefaultRule(pattern string) (bool, error) {
+	f, err := o.schemes()
+	if err != nil {
+		return false, err
+	}
+	return fleetRuleSet{f.Rules(), &o}.RemoveRule(pattern)
+}
+
 // defaultEdit is `set <category> <mode>` or `unset <category>` for the
 // defaults for new machines, in words.
 func defaultEdit(o fleetOps, args []string) (string, error) {

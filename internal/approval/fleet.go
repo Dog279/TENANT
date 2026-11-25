@@ -689,13 +689,8 @@ func (f *Fleet) Inherit(local Scheme) (Scheme, error) {
 		return Scheme{}, err
 	}
 	s := Scheme{Permissions: make(map[string]string, len(Categories)), ToolRules: map[string]string{}}
-	modes := SavedModes(local.Permissions) // as the master reads them: an entry it skips is not copied
-	for _, c := range Categories {
-		m := modes[c]
-		if m == ModeAllow && clamped[c] {
-			m = ModeAsk
-		}
-		s.Permissions[c] = cmp.Or(defaults[c], m.String())
+	for c, mode := range MasterCopy(local) {
+		s.Permissions[c] = cmp.Or(defaults[c], mode)
 	}
 	rules, _ := NormalizeRules(local.ToolRules)
 	for p, mode := range rules {

@@ -338,6 +338,36 @@ The terminal app has the same verbs: `/fleet group …`, and `/permissions fleet
 set|unset|add|rm`. The command line and the terminal app take a loosening (allow) without a
 second step, as for one machine.
 
+### On the dashboard's Fleet page
+
+The Fleet page does all of this with the same operations and the same records, with
+`dashboard` as their surface:
+
+- **The fleet's defaults:** each safety category as Ask, Allow, Deny or **From this Tenant**
+  (unset; the page says what this Tenant's own setting gives now, clamped), and the fleet's
+  rules with the editor a machine's page has.
+- **Groups:** make one, open it to add or take out machines and rules, **Apply** it to its
+  members, delete it. The list can be narrowed to one group.
+- **Many machines at once:** tick machines in the list (or choose everyone shown, which the
+  master works out from the group you narrowed to, never from what the browser sent), then set
+  a category, add or remove a rule, apply the fleet's rules, copy again, or update. The answer
+  says "Done on 5 of 7." and names each machine that was not changed, with the reason.
+- **A machine's page** uses the same controls and words as this Tenant's own Approvals & safety
+  and Tools pages, and lists the groups the machine is in.
+
+What asks first: anything that lets your agent do more on machines that exist (Allow, an allow
+rule, removing a rule that asked or blocked), anything that replaces settings (Apply, Copy
+again), an update, a default of Allow or From this Tenant, an allow rule in the fleet's
+defaults, and deleting a group. For many machines the step is a page that says what will
+happen, to **how many machines**, lists them by name, and lists those left out and why; only
+then does a second button do it. A rule added to a group asks nothing: it moves no machine
+until the group is applied, and Apply asks. Tightening (Ask, Deny, a block rule) and Stop go
+through at once.
+
+These changes take a signed-in browser. The API key gets no more than it had: it can still
+update one machine (`tenant fleet update` uses it), and it makes none of the changes in this
+section.
+
 ## 4. On the machine
 
 ```
@@ -474,6 +504,28 @@ first hello; if it does not reach the master by the deadline in `child-update.js
 the old binary back itself. A trial that exits or does not reach the master within a minute is
 deleted, and the machine reconnects on the old version. `tenant child status` shows the last
 update, and an update in the middle.
+
+### A rollout: many machines, a few at a time (TEN-546)
+
+On the dashboard's Fleet page, tick machines (or narrow the list to a group and choose everyone
+shown), pick **Update**, a version (empty is the latest release) and how many update at once (1
+to 8). The page first says how many machines it will update and names them, with those it
+leaves out and why (pending, revoked, offline: nothing is queued). After the second button the
+running Tenant that holds the fleet starts that many machines, in the list's order, and starts
+the next each time one ends:
+
+- a machine that ends **done** is updated;
+- a machine that is **refused** (offline, not confirmed, the same or a newer version without
+  "allow older") is skipped with its reason, and the rollout goes on;
+- the first machine that **rolls back or fails stops the rollout**: no further machine is
+  started, those already updating finish, and the rest show as not started.
+
+The Fleet page shows the rollout while it runs and afterwards (reload it): each machine as
+waiting, its live stage, done, skipped and why, rolled back, failed or not started. **Stop**
+starts no more machines; those updating finish. One rollout runs at a time. It is kept in the
+running Tenant's memory: a restart of the master forgets it, though each machine still finishes
+or rolls back by itself. `tenant fleet update --all` and `--group <group>` stay as they were:
+one machine after the other, going on past a failure.
 
 ## 5b. Losing the master (TEN-533)
 

@@ -122,7 +122,7 @@ func FuzzFleetPermEdit(f *testing.F) {
 			}
 			done, err = permEdit(b, b, surfaceCLI, args)
 		} else {
-			done, err = permEdit(nil, fleetRuleSet{fl.Rules()}, surfaceCLI, args)
+			done, err = permEdit(nil, fleetRuleSet{r: fl.Rules()}, surfaceCLI, args)
 		}
 		after, _ := json.Marshal(func() any { s, r := saved(); return []any{s, r} }())
 		if err != nil && string(before) != string(after) {

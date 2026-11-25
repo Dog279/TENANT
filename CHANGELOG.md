@@ -18,6 +18,20 @@ Releases page.
   changed; `tenant fleet update --group <g>` updates a group's members in turn. Both keys are
   strict and bounded: unreadable, no machine can be confirmed or copied again until fixed. New
   events `security/4325` and `fleet/5003`. See docs/fleet-runbook.md, section 3a.
+  - **On the dashboard's Fleet page:** the fleet's defaults are edited there (each category as
+    Ask, Allow, Deny or From this Tenant; the fleet's rules), groups are made, filled, applied
+    and deleted, the list can be narrowed to a group, and ticked machines (or everyone shown)
+    take one change at once: a category, a rule, Apply fleet rules, Copy again, or an update.
+    A change that lets the agent do more, replaces settings or updates first shows a step that
+    says how many machines and which; the answer says "Done on 5 of 7." and why for each
+    machine not changed. A machine's page uses the same controls and words as this Tenant's own
+    Approvals & safety and Tools pages. These changes take a signed-in browser; the API key
+    gets no more than it had.
+  - **A rollout** updates many machines a few at a time (1 to 8 at once) from the Fleet page:
+    a refused machine is skipped, and the first that rolls back or fails stops it. One at a
+    time, kept in the running Tenant's memory. `tenant fleet update --all` is unchanged.
+  - A change to the fleet's rules for new machines now leaves a Security record on every
+    surface (`security/4325`), as a change to a default category or a group does.
 - **A fleet machine can be confirmed from another computer, if you turn that on.** A pending
   machine was confirmed only at the master: its terminal, or a browser signed in at the
   dashboard's 127.0.0.1 address. On a master with no screen that meant a console for every

@@ -260,7 +260,7 @@ func (f fleetTUIControl) Perms(name string) (tui.PermissionControl, error) {
 }
 
 func (f fleetTUIControl) Defaults() tui.FleetDefaults {
-	return fleetDefaultsEditor{fleetRuleSet{defaultFleet.Rules()}, f.ops}
+	return fleetDefaultsEditor{fleetRuleSet{defaultFleet.Rules(), &f.ops}, f.ops}
 }
 
 // Group is /fleet group: `tenant fleet group`'s words, with this app's
