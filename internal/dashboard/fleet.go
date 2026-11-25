@@ -96,6 +96,93 @@ type FleetControl interface {
 	// for the Security record, which never holds the code. The dashboard calls
 	// it from one place, for a signed-in browser (handleFleetAdd).
 	Enroll(name string, boot bool, by string) (FleetEnrollment, error)
+
+	// The fleet's defaults, its groups, changes to many machines and the
+	// rollout (TEN-546). The dashboard calls each from a signed-in browser
+	// only, after its confirm step where one is due (fleet_bulk.go). None of
+	// the defaults' or the groups' methods moves a machine: a machine's own
+	// settings change only through Bulk (and the single-machine methods
+	// above), each change audited once per machine.
+
+	// SetDefault sets what a newly confirmed machine starts with for one
+	// safety category (settings key fleet_permissions): mode is ask, allow or
+	// deny, or "" to unset it, so that a new machine takes this Tenant's own
+	// mode for it again (clamped as today). It refuses a category that is not
+	// one, and refuses while fleet_permissions cannot be read (the text stays
+	// as written). It moves no machine.
+	SetDefault(category, mode string) error
+	// SetDefaultRule adds or replaces one of the fleet's rules (fleet_rules),
+	// pattern -> ask, allow or deny, as `tenant fleet permissions --defaults
+	// add` does; RemoveDefaultRule removes one and reports whether there was
+	// one. Neither moves a machine.
+	SetDefaultRule(pattern, mode string) error
+	RemoveDefaultRule(pattern string) (removed bool, err error)
+	// CreateGroup makes an empty group. A name is 1 to 63 of [A-Za-z0-9._-],
+	// starts with a letter or a digit, is not a machine id, is not "all", and
+	// is unique case-insensitively; anything else is a PlainError that says
+	// so. DeleteGroup removes a group with its rules and memberships; its
+	// members' settings stay as they are. group is matched case-insensitively.
+	CreateGroup(name string) error
+	DeleteGroup(group string) error
+	// AddMembers and RemoveMembers put machines (by id, each one the fleet
+	// has, in any state) in a group or take them out. Adding one that is in
+	// it already, or removing one that is not, is no error. They move no
+	// machine.
+	AddMembers(group string, machines []string) error
+	RemoveMembers(group string, machines []string) error
+	// SetGroupRule adds or replaces a rule of a group (the same patterns and
+	// modes as the fleet's rules); RemoveGroupRule removes one and reports
+	// whether there was one. They move no machine: Apply (Bulk with
+	// FleetBulkApply over the members) is the step that does.
+	SetGroupRule(group, pattern, mode string) error
+	RemoveGroupRule(group, pattern string) (removed bool, err error)
+	// Bulk runs one operation on each machine in machines (ids the dashboard
+	// has checked against View), through the same single-machine code the
+	// methods above use, so each machine gets its own audit record. It never
+	// stops at the first failure: it returns one result per machine, in the
+	// order given, saying whether it was done and, when not, why in a plain
+	// sentence (pending, revoked, no approval settings that can be read, no
+	// such category, the store's refusal...). A machine that does not
+	// qualify is a result, not an error.
+	Bulk(op FleetBulkOp, machines []string) []FleetBulkResult
+	// StartRollout updates machines (ids, in that order) to version ("" is
+	// the latest release), how many at once limit says (1 to 8), as
+	// `tenant fleet update` does for each: arch names the processor of a
+	// machine too old to say, allowOlder lets an older version go. It
+	// refuses at once, as a PlainError, a version or arch that is not one, a
+	// limit outside 1 to 8, a rollout that is running already, and a process
+	// that does not hold the fleet (with Update's words). The rest shows in
+	// FleetView.Rollout: the first machine that rolls back or fails stops it.
+	StartRollout(machines []string, version, arch string, allowOlder bool, limit int) error
+	// StopRollout asks the running rollout to start no more machines; those
+	// in flight finish. It reports whether one was running.
+	StopRollout() bool
+}
+
+// The operations Bulk runs on each machine (FleetBulkOp.Action).
+const (
+	FleetBulkPermission = "permission" // set Category to Mode (ask, allow, deny)
+	FleetBulkRule       = "rule"       // add or replace the rule Pattern -> Mode
+	FleetBulkUnrule     = "unrule"     // remove the rule Pattern
+	FleetBulkApply      = "apply"      // lay the fleet's rules, then its groups' rules in name order, over its settings
+	FleetBulkCopy       = "copy"       // replace its settings with a fresh copy from this Tenant
+)
+
+// FleetBulkOp is the one operation a Bulk call runs on every machine. Only
+// the fields its Action reads are set.
+type FleetBulkOp struct {
+	Action            string
+	Category, Pattern string
+	Mode              string // ask | allow | deny
+}
+
+// FleetBulkResult is what Bulk did to one machine: Done, or Said, the plain
+// sentence that says why not. Name is the machine's name as the page shows
+// names (already escaped by the control).
+type FleetBulkResult struct {
+	ID, Name string
+	Done     bool
+	Said     string
 }
 
 // FleetEnrollment is a code just made, render-ready. Code is a secret while
@@ -150,6 +237,99 @@ type FleetView struct {
 	RemoteConfirm bool
 	Machines      []FleetMachine
 	Rules         []ToolRuleRow // the fleet's rules: what every newly confirmed machine starts with
+
+	// Defaults are the fleet's default safety categories, one per category in
+	// the order the page lists them: what a newly confirmed machine starts
+	// with. nil when they can't be shown (not wired, or DefaultsErr).
+	Defaults []FleetDefault
+	// DefaultsErr: fleet_permissions can't be read. The page says so plainly
+	// and offers no change to the categories; the reason goes to the log.
+	DefaultsErr error
+	// Groups are the fleet's groups in name order. GroupsErr: fleet_groups
+	// can't be read, so no group can be shown, changed or applied until it is
+	// fixed (the page says so; the reason goes to the log).
+	Groups    []FleetGroup
+	GroupsErr error
+	// Rollout is the current or last rollout of this process; nil with none,
+	// and in a process that does not hold the fleet.
+	Rollout *FleetRollout
+}
+
+// FleetDefault is one safety category of the fleet's defaults. Mode is ask,
+// allow or deny where the operator set it for new machines, "" where it is
+// unset: then a new machine takes this Tenant's own mode, clamped, which
+// Inherited says (ask, allow or deny, as of this read). Can is worded for a
+// machine ("on this machine").
+type FleetDefault struct {
+	PermissionRow
+	Inherited string
+}
+
+// FleetGroup is one group, render-ready. Name is the operator's own word, as
+// written. Members are machine ids, in the order the control keeps them.
+// Differ is how many of its confirmed members have settings that differ from
+// what Apply would lay over them now; -1 when that can't be worked out.
+type FleetGroup struct {
+	Name    string
+	Members []string
+	Rules   []ToolRuleRow
+	Differ  int
+}
+
+// Href is the group's own page. The name is escaped though the control checks
+// it: a link must not be able to aim at another route (F1).
+func (g FleetGroup) Href() string { return "/fleet/group/" + url.PathEscape(g.Name) }
+
+// FleetRollout is a rollout as far as it has got. Times are as the page shows
+// them ("" for none). Stopped is "" while it runs on its own and when it
+// ended on its own, else why it stopped ("stopped by the operator", "stopped
+// at <name>"). It lives in the memory of the process that holds the fleet: a
+// restart forgets it.
+type FleetRollout struct {
+	Version           string // as asked for; "" is the latest release
+	Limit             int    // how many at once
+	Started, Finished string
+	Running           bool
+	Stopped           string
+	Machines          []FleetRolloutMachine // in the order they were given
+}
+
+// FleetRolloutMachine is one machine of a rollout. Status is waiting,
+// running, done, skipped, rolled_back, failed or not_started; Stage is its
+// update's stage while it runs; Reason says why it ended as it did (it may
+// hold what the machine said, quoted by the control).
+type FleetRolloutMachine struct {
+	ID, Name, Status, Stage, Reason string
+}
+
+// Href is the machine's own page.
+func (m FleetRolloutMachine) Href() string { return "/fleet/" + url.PathEscape(m.ID) }
+
+// Words is the machine's status as the rollout card says it.
+func (m FleetRolloutMachine) Words() string {
+	switch m.Status {
+	case "running":
+		if m.Stage != "" {
+			return "running: " + strings.ReplaceAll(m.Stage, "_", " ")
+		}
+		return "running"
+	case "not_started":
+		return "not started"
+	}
+	return strings.ReplaceAll(m.Status, "_", " ")
+}
+
+// Pill is the class of the machine's status pill.
+func (m FleetRolloutMachine) Pill() string {
+	switch m.Status {
+	case "done":
+		return "on-tag"
+	case "rolled_back", "failed":
+		return "act-errtag"
+	case "running", "waiting":
+		return "risk"
+	}
+	return "tag"
 }
 
 // FleetMachine is one machine, render-ready. OS, User, Version, Sandbox and
@@ -184,6 +364,8 @@ type FleetMachine struct {
 	Start *FleetStart
 	// Update is the machine's last update from this process; nil with none.
 	Update *FleetUpdate
+	// Groups are the names of the groups it is in, in name order.
+	Groups []string
 }
 
 // FleetUpdate is how far a machine's update has got. Lines are what the
@@ -359,6 +541,8 @@ func (s *Server) mountFleetSSR(mux *http.ServeMux) {
 	// The recovery identity reads every copy the fleet's machines hold: it
 	// asks first, and it is the request's body, never a form field or a URL.
 	mux.HandleFunc("POST /fleet/recover", needConfirm(nil, s.handleFleetRecover))
+	// The fleet's defaults, groups, many machines at once, the rollout (TEN-546).
+	s.mountFleetBulk(mux)
 }
 
 // The page's fixed words.
@@ -398,6 +582,19 @@ type fleetPageData struct {
 	Msg, Err string
 	// Added is the code this request made, shown in this answer only.
 	Added *FleetEnrollment
+
+	// TEN-546 (fleet_bulk.go).
+	Filter  string         // the list's group filter as asked (?group=); "" is every machine
+	Shown   []FleetMachine // the machines the list shows: all, or the filter's group's members
+	NoGroup bool           // the filter names no group the fleet has
+	Group   *FleetGroup    // a group's own page; nil otherwise
+	Members []FleetMachine // that group's members the fleet has, and Others the rest
+	Others  []FleetMachine
+	Strays  []string // member ids the fleet has no machine for
+	// The plain lines when the defaults or the groups can't be read.
+	DefaultsProblem, GroupsProblem string
+	Step                           *fleetBulkStep  // the confirm step of a change to many machines, in place of the page
+	Result                         *fleetBulkReply // what a change to many machines did, per machine
 }
 
 // fleetData reads the page's state; id picks one machine's page.
@@ -414,6 +611,14 @@ func (s *Server) fleetData(r *http.Request, id string) fleetPageData {
 	if i := slices.IndexFunc(d.View.Machines, func(m FleetMachine) bool { return m.ID == id }); id != "" && i >= 0 {
 		d.One = &d.View.Machines[i]
 	}
+	if d.View.DefaultsErr != nil {
+		d.DefaultsProblem = s.flashFor(r.Context(), "fleet defaults", d.View.DefaultsErr, fleetDefaultsBroken)
+	}
+	if d.View.GroupsErr != nil {
+		d.GroupsProblem = s.flashFor(r.Context(), "fleet groups", d.View.GroupsErr, fleetGroupsUnreadable)
+	}
+	d.Filter = strings.TrimSpace(r.FormValue("group"))
+	d.Shown, d.NoGroup = fleetShown(d.View, d.Filter)
 	return d
 }
 

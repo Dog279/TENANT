@@ -105,6 +105,13 @@ func (d dashFleet) View() dashboard.FleetView {
 		v.NoRecovery = true
 	}
 	v.Holder, v.Here = fleetHolding()
+	// The rollout is this process's own, in memory. The defaults and the
+	// groups stay empty until the TEN-546 core is wired (see below).
+	if ro := fleetRollouter(); ro != nil {
+		if st, ok := ro.State(); ok {
+			v.Rollout = dashRollout(st, ro.updates)
+		}
+	}
 	machines, err := d.ops.store.Machines()
 	if err != nil {
 		v.Err = err
@@ -381,6 +388,116 @@ func (d dashFleet) Update(id, version, arch string, allowOlder bool) error {
 		return dashboard.PlainError("Nothing was sent: " + err.Error() + ".")
 	}
 	return nil
+}
+
+// StartRollout updates many machines a few at a time, through this
+// process's rollout (fleetrollout.go): the process that holds the fleet, as
+// Update needs. The rollout does not check the version or the processor
+// itself, so they are checked here before anything starts; machines are
+// named by id, and one the fleet no longer has goes in by its id, where its
+// update refuses it and the rollout skips it.
+func (d dashFleet) StartRollout(ids []string, version, arch string, allowOlder bool, limit int) error {
+	switch {
+	case version != "" && !versionArg.MatchString(version):
+		return dashboard.PlainError("Nothing was sent: " + fleetQuote(version) + " is not a version (vX.Y.Z).")
+	case arch != "" && arch != "amd64" && arch != "arm64":
+		return dashboard.PlainError("Nothing was sent: the processor is amd64 or arm64, not " + fleetQuote(arch) + ".")
+	case limit < 1 || limit > fleetRolloutLimit:
+		return dashboard.PlainError("Nothing was sent: a rollout updates 1 to 8 machines at once.")
+	}
+	mgr, ro := fleetManager(), fleetRollouter()
+	if mgr == nil || ro == nil {
+		if elsewhere := fleetHeldElsewhere(); elsewhere != "" {
+			return dashboard.PlainError("Nothing was sent: " + strings.TrimPrefix(elsewhere, "fleet: ") + ", and a machine is updated from the process that holds the fleet.")
+		}
+		return dashboard.PlainError("Nothing was sent: no process holds the fleet right now, so no machine is online.")
+	}
+	machines := make([]fleetRolloutMachine, 0, len(ids))
+	for _, id := range ids {
+		m, err := d.ops.store.Machine(id)
+		switch {
+		case errors.Is(err, fleet.ErrUnknown):
+			m.Name = id
+		case err != nil:
+			return err
+		}
+		machines = append(machines, fleetRolloutMachine{ID: id, Name: m.Name})
+	}
+	if err := ro.Start(mgr, machines, fleetUpdateOpts{version: version, arch: arch, allowOlder: allowOlder}, limit); err != nil {
+		return dashboard.PlainError("Nothing was sent: " + err.Error() + ".")
+	}
+	return nil
+}
+
+// StopRollout asks this process's rollout to start no more machines.
+func (d dashFleet) StopRollout() bool {
+	ro := fleetRollouter()
+	return ro != nil && ro.Stop()
+}
+
+// dashRollout is the rollout as the page shows it: a running machine with
+// its update's stage (read from the updates the rollout runs), each name
+// through fleetName. A reason is the update's own line, which already quotes
+// what the machine said.
+func dashRollout(st fleetRolloutState, upd interface {
+	State(machine string) (fleetUpdateState, bool)
+}) *dashboard.FleetRollout {
+	out := &dashboard.FleetRollout{Version: st.Version, Limit: st.Limit, Started: dashTime(st.Started), Finished: dashTime(st.Finished),
+		Running: !st.Over(), Stopped: st.Stopped}
+	for _, m := range st.Machines {
+		row := dashboard.FleetRolloutMachine{ID: m.ID, Name: fleetName(m.Name), Status: m.Status, Reason: m.Reason}
+		if m.Status == fleetRollRunning && upd != nil {
+			if u, ok := upd.State(m.ID); ok {
+				row.Stage = u.Stage
+			}
+		}
+		out.Machines = append(out.Machines, row)
+	}
+	return out
+}
+
+// TEN-546 integration: the methods below are wired to fleetOps when the core branch is merged.
+//
+// Each answers "not wired" and changes nothing until then. What each must do
+// is its doc comment on dashboard.FleetControl; in short:
+//   - SetDefault: fleetOps' `permissions --defaults set|unset` on the
+//     settings key fleet_permissions (mode "" unsets), refusing while it
+//     can't be read; it moves no machine.
+//   - SetDefaultRule / RemoveDefaultRule: `permissions --defaults add|rm` on
+//     fleet_rules (removed reports whether there was one).
+//   - CreateGroup, DeleteGroup, AddMembers, RemoveMembers, SetGroupRule,
+//     RemoveGroupRule: fleetOps' group operations on fleet_groups, names
+//     case-insensitive, each change one Security record, none moving a
+//     machine; refusals as PlainError ("exists already", "not a group name").
+//   - Bulk: fleetOps.bulk over the ids with the single-machine operation of
+//     op.Action (permission, rule, unrule, apply = recopy "defaults" with the
+//     machine's groups, copy = recopy "master"), never stopping at a failure,
+//     one FleetBulkResult per id in the order given, Name through fleetName,
+//     Said a plain sentence.
+//   - View must then also fill Defaults (fleet_permissions over the
+//     categories, Inherited = the master's clamped mode), DefaultsErr,
+//     Groups (with Differ), GroupsErr and each machine's Groups.
+
+// dashNotWired is what the page says of a TEN-546 change in this build.
+const dashNotWired = dashboard.PlainError("Nothing changed: this is not wired in this build yet.")
+
+func (d dashFleet) SetDefault(category, mode string) error              { return dashNotWired }
+func (d dashFleet) SetDefaultRule(pattern, mode string) error           { return dashNotWired }
+func (d dashFleet) RemoveDefaultRule(pattern string) (bool, error)      { return false, dashNotWired }
+func (d dashFleet) CreateGroup(name string) error                       { return dashNotWired }
+func (d dashFleet) DeleteGroup(group string) error                      { return dashNotWired }
+func (d dashFleet) AddMembers(group string, machines []string) error    { return dashNotWired }
+func (d dashFleet) RemoveMembers(group string, machines []string) error { return dashNotWired }
+func (d dashFleet) SetGroupRule(group, pattern, mode string) error      { return dashNotWired }
+func (d dashFleet) RemoveGroupRule(group, pattern string) (bool, error) { return false, dashNotWired }
+
+// Bulk answers every machine with "not wired": nothing is done to any.
+func (d dashFleet) Bulk(op dashboard.FleetBulkOp, machines []string) []dashboard.FleetBulkResult {
+	out := make([]dashboard.FleetBulkResult, len(machines))
+	for i, id := range machines {
+		out[i] = dashboard.FleetBulkResult{ID: id, Said: string(dashNotWired)}
+	}
+	return out
 }
 
 // machineIDShape is what a machine id looks like (fleet.json's own rule).

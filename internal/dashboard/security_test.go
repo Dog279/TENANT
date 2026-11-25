@@ -194,6 +194,11 @@ var (
 	// noStep: it tightens, can be undone on the page, or typing it is the
 	// friction (D3). /api/* is a JSON client acting deliberately (D2).
 	noStep = confirmGate{passes: []url.Values{{}, everyField}}
+	// ownStep: the route draws its own second step, a page the server
+	// renders that names how many machines and which (TEN-546, 2.6.1), so it
+	// never answers 428. TestFleetBulkLooseningAsksFirst holds each such route
+	// to its step.
+	ownStep = confirmGate{passes: []url.Values{{}, everyField}}
 )
 
 // unless is confirmUnless(key, safe...): every spelling of "more" meets the
@@ -304,6 +309,24 @@ var reviewedMutations = map[string]confirmGate{
 	"POST /fleet/scheme":       always,
 	"POST /fleet/update":       always, // restarts the machine's Tenant and ends its background commands (TEN-533)
 	"POST /fleet/recover":      always, // reads a machine's memory with the fleet's recovery identity (TEN-533)
+	// Fleet defaults, groups, many machines, the rollout (TEN-546): a
+	// signed-in browser only, in the handler (fleetChange). The defaults
+	// move no machine, but Allow, From this Tenant and an allow rule there
+	// ask first, as on one machine. A group's changes move no machine;
+	// deleting one loses it. Apply and a change to many machines draw their
+	// own step, a page naming the machines (fleet_bulk_test.go).
+	"POST /fleet/defaults/permission":   unless("mode", "ask", "deny"),
+	"POST /fleet/defaults/rules/add":    unless("mode", "ask", "deny"),
+	"POST /fleet/defaults/rules/remove": always, // unless the rule itself is allow (fleetDefaultRuleMode); the harness has none
+	"POST /fleet/groups/create":         noStep,
+	"POST /fleet/groups/delete":         always,
+	"POST /fleet/groups/members/add":    noStep,
+	"POST /fleet/groups/members/remove": noStep,
+	"POST /fleet/groups/rules/add":      noStep,
+	"POST /fleet/groups/rules/remove":   noStep,
+	"POST /fleet/groups/apply":          ownStep,
+	"POST /fleet/bulk":                  ownStep,
+	"POST /fleet/rollout/stop":          noStep, // friction on go, never on stop
 	// Sign-in.
 	"POST /auth/login":  noStep,
 	"POST /auth/logout": noStep,
