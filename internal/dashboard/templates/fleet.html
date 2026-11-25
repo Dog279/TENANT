@@ -25,6 +25,10 @@
   <div class="dim mt">This makes the fleet's certificate and key and opens the fleet port on this computer. No machine joins by that alone: each needs a one-time code from this page, and its six digits typed on the computer running Tenant (or, once remote confirmation is switched on there, in a signed-in browser elsewhere with the sign-in key again). List an address every machine can reach.</div>
   <div class="dim mt">The recovery key is not made here. Its identity is shown once and typed back in a terminal on the computer running Tenant: run <code>tenant fleet init</code> there, or the terminal app's own fleet init command. Until then the fleet works and no machine's memory is kept.</div>
 </div>
+{{else if .Step}}
+{{template "fleet-step" .Step}}
+{{else if .Group}}
+{{template "fleet-group" .}}
 {{else if .One}}
 {{template "fleet-machine" .}}
 {{else}}
@@ -34,10 +38,43 @@
 
 {{define "fl-mode"}}{{if eq . "allow"}}Allow{{else if eq . "deny"}}Block{{else}}Ask first{{end}}{{end}}
 
-{{define "fl-rule-tag"}}<span class="{{if eq . "deny"}}act-errtag{{else if eq . "ask"}}risk{{else}}tag{{end}}">{{if eq . "deny"}}blocked{{else if eq . "ask"}}asks you first{{else}}runs without asking{{end}}</span>{{end}}
+{{/* fleet-step is the confirm step of a change to many machines (TEN-546):
+     drawn by the server, since only it knows which boxes were checked. It
+     names the action, how many machines and which (twenty, then how many
+     more), those already known to be skipped, and carries the selection by
+     id in hidden fields. The second post looks each one up again. */}}
+{{define "fleet-step"}}
+<div class="card" role="group" aria-label="Confirm">
+  <div class="card-head">Before this goes ahead</div>
+  <p>{{.What}}</p>
+  <ul class="fl-names">{{range .Names}}<li>{{.}}</li>{{end}}</ul>
+  {{if .More}}<p class="dim">and {{.More}} more.</p>{{end}}
+  {{if .Skips}}
+  <p class="mt">Left out, and why:</p>
+  <ul class="fl-names">{{range .Skips}}<li>{{.Name}}: <span class="dim">{{.Said}}</span></li>{{end}}</ul>
+  {{end}}
+  <form method="POST" action="{{.Route}}" class="cronactions mt" data-on:submit__prevent__throttle.1s="@post('{{.Route}}', {contentType:'form', retryMaxCount:0})">
+    {{range .Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}
+    <input type="hidden" name="confirm" value="yes">
+    <button type="submit" class="btn sm{{if .Danger}} danger{{else}} on{{end}}">{{.Yes}}</button>
+    <a class="btn sm" href="{{.Back}}">Cancel</a>
+  </form>
+</div>
+{{end}}
+
+{{/* fleet-result is what a change to many machines did: how many of how
+     many, then each machine that was not changed and why. Never one flash
+     that hides a partial failure. */}}
+{{define "fleet-result"}}
+<div class="card" role="status">
+  <div class="card-head">{{.Head}}</div>
+  {{range .Lines}}<div>{{.Name}}: <span class="dim">{{.Said}}</span></div>{{end}}
+</div>
+{{end}}
 
 {{define "fleet-list"}}
 {{with .Added}}{{template "fleet-added" .}}{{end}}
+{{with .Result}}{{template "fleet-result" .}}{{end}}
 {{if .View.NoRecovery}}<div class="banner warn" role="status"><span>This fleet has no recovery key yet, so no machine's memory is kept. Make it in a terminal on the computer running Tenant, where its identity is shown once: run <code>tenant fleet init</code> there, or the terminal app's own fleet init command.</span></div>{{end}}
 <div class="card">
   <div class="card-head">Who holds the fleet</div>
@@ -49,12 +86,22 @@
 {{else}}
 <div class="card">
   <div class="card-head">Machines</div>
-  {{if .View.Machines}}
+  {{if .View.Groups}}<div class="fl-groups"><span class="dim">Show:</span> {{if .Filter}}<a class="linkbtn" href="/fleet">All</a>{{else}}<strong>All</strong>{{end}}{{range .View.Groups}} · <a class="linkbtn" href="/fleet?group={{.Name}}">{{visibleText .Name}}</a> <span class="dim">({{len .Members}})</span>{{end}}</div>{{end}}
+  {{if .NoGroup}}
+  {{template "ui-empty" "There is no group by that name, so no machine is shown. Choose All, or one of the groups above."}}
+  {{else if .Shown}}
+  {{/* One form around the table: the row's box names the machine by its id,
+       and the bar under the table says what to do with the boxes checked, or
+       with every machine shown (all=shown: the server works that out from the
+       same filter). Select all is a Datastar expression on its own box. */}}
+  <form id="fleet-bulk" method="POST" action="/fleet/bulk" data-on:submit__prevent__throttle.1s="@post('/fleet/bulk', {contentType:'form', retryMaxCount:0})">
+  {{if .Filter}}<input type="hidden" name="group" value="{{.Filter}}">{{end}}
+  <label class="dim"><input type="checkbox" data-on:change="el.form.querySelectorAll('input[name=machine]').forEach(c => { c.checked = el.checked })"> Select every machine shown</label>
   <div class="table-wrap"><table class="ovtable fl-table">
     <tr><th>Machine</th><th>State</th><th>Last call</th><th>System*</th><th>Runs as*</th><th>Version*</th><th>Memory</th><th>Approval settings</th></tr>
-    {{range .View.Machines}}
+    {{range .Shown}}
     <tr>
-      <td><a class="linkbtn" href="{{.Href}}">{{.Name}}</a><div class="dim nm">{{.ID}}</div></td>
+      <td class="fl-pick"><input type="checkbox" name="machine" value="{{.ID}}" aria-label="Choose this machine"> <a class="linkbtn" href="{{.Href}}">{{.Name}}</a><div class="dim nm">{{.ID}}</div></td>
       <td><span class="{{.Pill}}">{{.StateWords}}</span></td>
       <td>{{if .Link}}{{.Link}}{{else}}<span class="dim">known to the process that holds the fleet</span>{{end}}</td>
       <td class="fl-said">{{.OS}}</td>
@@ -66,6 +113,10 @@
     {{end}}
   </table></div>
   <div class="dim mt">* Reported by the machine: its own words, in quotes. This Tenant has not checked them.</div>
+  {{template "fl-bulk-bar" .}}
+  </form>
+  {{else if .Filter}}
+  {{template "ui-empty" "This group has no machines yet. Add some on the group's own page."}}
   {{else}}
   {{template "ui-empty" "No machines yet. Add one below: give it a name, then paste the line this page shows on the new machine."}}
   {{end}}
@@ -80,16 +131,113 @@
   </form>
   <div class="dim mt">This makes a one-time code and the line to paste on the new machine. The code joins nothing by itself: the machine shows six digits and waits here until they are typed on the computer running Tenant{{if .View.RemoteConfirm}}, or in a signed-in browser elsewhere with the sign-in key again (remote confirmation is on){{end}}.</div>
 </div>
-<div class="card">
-  <div class="card-head">The fleet's rules <span class="dim">· every newly confirmed machine starts with these, laid over the settings it copies from this Tenant</span></div>
-  {{range .View.Rules}}
-  <div class="ghead"><span class="nm">{{visibleText .Pattern}}</span> {{template "fl-rule-tag" .Mode}}</div>
-  {{else}}
-  {{template "ui-empty" "No fleet rules. A new machine starts with a copy of this Tenant's own settings."}}
-  {{end}}
-  <div class="dim mt">They are changed in the terminal on the computer running Tenant. Changing them moves no machine that is confirmed already; a machine's own page can apply them again.</div>
+{{template "fl-defaults" .}}
+{{template "fl-groups" .}}
+{{with .View.Rollout}}{{template "fl-rollout" .}}{{end}}
+{{end}}
+{{end}}
+
+{{/* fl-bulk-bar acts on the boxes checked above, or on every machine shown.
+     Apply fleet rules comes first: it is the button Enter presses in a box,
+     and it only opens its confirm step. A change that lets your agent do
+     more, replaces settings or updates answers with that step, naming every
+     machine; Ask, Deny, Block and removing a Don't ask rule go at once. */}}
+{{define "fl-bulk-bar"}}
+<div class="fl-bulk mt">
+  <div class="card-head">Change many machines at once</div>
+  <div class="cronactions">
+    <label class="dim"><input type="radio" name="all" value="" checked> the machines checked above</label>
+    <label class="dim"><input type="radio" name="all" value="shown"> every machine shown ({{len .Shown}})</label>
+  </div>
+  <div class="cronactions mt">
+    <button type="submit" name="action" value="apply" class="btn sm">Apply fleet rules</button>
+    <button type="submit" name="action" value="copy" class="btn sm danger">Copy again</button>
+  </div>
+  <div class="cronactions mt">
+    <select name="category" aria-label="A safety setting">{{range .Categories}}<option value="{{.Category}}">{{.Title}}</option>{{end}}</select>
+    <select name="cat_mode" aria-label="Ask, Allow or Deny"><option value="ask">Ask</option><option value="allow">Allow</option><option value="deny">Deny</option></select>
+    <button type="submit" name="action" value="permission" class="btn sm">Set it</button>
+  </div>
+  <div class="cronactions mt">
+    <input type="text" name="pattern" class="cinput" placeholder="a tool name, or a command rule" aria-label="A rule">
+    <select name="rule_mode" aria-label="Ask first, Don't ask or Block"><option value="ask">Ask first</option><option value="allow">Don't ask</option><option value="deny">Block</option></select>
+    <button type="submit" name="action" value="rule" class="btn sm">Add this rule</button>
+    <button type="submit" name="action" value="unrule" class="btn sm">Remove this rule</button>
+  </div>
+  <div class="cronactions mt">
+    <input type="text" name="version" class="cinput short" maxlength="48" placeholder="latest" aria-label="The version to install, or empty for the latest release">
+    <label class="dim"><input type="checkbox" name="allow_older" value="yes"> allow an older version</label>
+    <label class="dim">at once <input type="number" name="at_once" class="cinput short" min="1" max="8" value="1" aria-label="How many machines update at once"></label>
+    <button type="submit" name="action" value="update" class="btn sm">Update</button>
+  </div>
+  <div class="dim mt">Ask, Deny, a Block or Ask first rule, and removing a Don't ask rule happen at once. Allow, a Don't ask rule, removing any other rule, Apply, Copy again and Update ask first, on a page that names every machine. Each machine's change is recorded on its own.</div>
 </div>
 {{end}}
+
+{{/* fl-defaults is the fleet's defaults: what a newly confirmed machine
+     starts with. The categories use /safety's control with a fourth state,
+     From this Tenant (unset); the rules use a machine's rule editor. */}}
+{{define "fl-defaults"}}
+<div class="card">
+  <div class="card-head">The fleet's defaults <span class="dim">· what every newly confirmed machine starts with: a copy of this Tenant's settings, these categories over it, then these rules</span></div>
+  {{if .DefaultsProblem}}
+  <div class="banner err" role="alert">{{.DefaultsProblem}}</div>
+  {{else if .View.Defaults}}
+  {{range $i, $p := .View.Defaults}}
+  <div class="perm">
+    <div class="perm-text"><b>{{$p.Title}}</b>
+      <div class="dim">{{$p.Said}}</div></div>
+    {{template "perm-seg" (index $.DefaultSegs $i)}}
+  </div>
+  {{end}}
+  {{else}}
+  <div class="dim">The fleet's default safety settings can't be shown on this Tenant. A new machine starts with a copy of this Tenant's own.</div>
+  {{end}}
+  <div class="mt"><b>Fleet rules</b> <span class="dim">· laid over that copy, and they win</span></div>
+  {{template "rule-editor" .DefaultRules}}
+  <div class="dim mt">Changing these moves no machine that is confirmed already. Apply fleet rules, on a machine's page or for the machines checked above, lays the rules over a machine again.</div>
+</div>
+{{end}}
+
+{{/* fl-groups lists the groups. A group's name is the operator's own word:
+     visibleText, in element content; in a link it is escaped as a URL. */}}
+{{define "fl-groups"}}
+<div class="card">
+  <div class="card-head">Groups <span class="dim">· named sets of machines. A group's rules are laid over its members when you apply them, after the fleet's rules</span></div>
+  {{if .GroupsProblem}}
+  <div class="banner err" role="alert">{{.GroupsProblem}}</div>
+  {{else}}
+  {{range .View.Groups}}
+  <div class="ghead"><a class="linkbtn nm" href="{{.Href}}">{{visibleText .Name}}</a> <span class="dim">{{.Counts}}</span></div>
+  {{else}}
+  {{template "ui-empty" "No groups yet. Make one below, then add machines and rules to it on its page."}}
+  {{end}}
+  <form method="POST" action="/fleet/groups/create" class="cronactions mt" data-on:submit__prevent__throttle.1s="@post('/fleet/groups/create', {contentType:'form', retryMaxCount:0})">
+    <input type="text" name="name" class="cinput" maxlength="63" placeholder="a name, e.g. web-servers" aria-label="A name for the new group" required>
+    <button type="submit" class="btn sm">Make a group</button>
+  </form>
+  {{end}}
+</div>
+{{end}}
+
+{{/* fl-rollout is the current or last rollout. A reason is the update's own
+     line, which quotes what the machine said: element content only. */}}
+{{define "fl-rollout"}}
+<div class="card">
+  <div class="card-head">Rollout <span class="dim">· to {{or .Version "the latest release"}}, {{.Limit}} at a time</span></div>
+  <div>{{if .Running}}<span class="risk">running</span>{{else}}<span class="tag">ended</span>{{end}} <span class="dim">· started {{.Started}}{{with .Finished}}, ended {{.}}{{end}}</span></div>
+  {{with .Stopped}}<div class="banner warn mt">The rollout was {{.}}.</div>{{end}}
+  {{range .Machines}}
+  <div class="ghead"><a class="linkbtn" href="{{.Href}}">{{.Name}}</a> <span class="{{.Pill}}">{{.Words}}</span>{{with .Reason}} <span class="dim">{{.}}</span>{{end}}</div>
+  {{end}}
+  {{if .Running}}
+  <div class="cronactions mt">
+    <form method="POST" action="/fleet/rollout/stop" class="inline" data-on:submit__prevent__throttle.1s="@post('/fleet/rollout/stop', {contentType:'form', retryMaxCount:0})"><button type="submit" class="btn sm">Stop the rollout</button></form>
+    <span class="dim"><a class="linkbtn" href="/fleet">Reload</a> to see how far it has got. Stop starts no more machines; those updating now finish.</span>
+  </div>
+  {{end}}
+  <div class="dim mt">A rollout is kept only until Tenant restarts on this computer.</div>
+</div>
 {{end}}
 
 {{/* fleet-added is the code Add machine made, in the answer to that
@@ -129,7 +277,7 @@
 </div>
 {{end}}
 {{range .Rules}}
-<div class="perm"><div class="perm-text">Rule <span class="nm">{{visibleText .Pattern}}</span> {{template "fl-rule-tag" .Mode}}{{with .Note}} <span class="dim">{{.}}</span>{{end}}</div></div>
+<div class="perm"><div class="perm-text">Rule <span class="nm">{{visibleText .Pattern}}</span> {{template "rule-tag" .Mode}}{{with .Note}} <span class="dim">{{.}}</span>{{end}}</div></div>
 {{end}}
 {{end}}{{end}}
 
@@ -191,16 +339,13 @@
   {{if not $m.HasScheme}}
   <div class="banner err" role="alert">This machine has no approval settings that can be read, so every request to it is refused. Copy again, below, gives it a fresh copy of this Tenant's.</div>
   {{else}}
-  <div class="dim">With Run commands on Ask first, every command on this machine asks, until a rule below lets it run.</div>
-  {{range $m.Perms}}
+  <div class="dim">With Run commands on Ask, every command on this machine asks, until a rule below lets it run. The controls are the ones the Approvals &amp; safety page has for this computer.</div>
+  {{$segs := .MachineSegs}}
+  {{range $i, $p := $m.Perms}}
   <div class="perm">
-    <div class="perm-text"><strong>{{or .Title .Category}}</strong>
-      <div class="dim">{{if eq .Mode "allow"}}Can {{.Can}} without asking you.{{else if eq .Mode "deny"}}Can't {{.Can}}. It won't ask.{{else}}Asks you before it can {{.Can}}.{{end}}</div></div>
-    <div class="cronactions">
-      {{if ne .Mode "ask"}}<form method="POST" action="/fleet/permission" class="inline" data-on:submit__prevent__throttle.1s="@post('/fleet/permission', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="machine" value="{{$m.ID}}"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="mode" value="ask"><button type="submit" class="btn sm">Ask first</button></form>{{end}}
-      {{if ne .Mode "allow"}}{{template "ui-confirm" (inline (confirmGo "/fleet/permission" "Allow" (printf "Your agent can %s without asking you. This is for this machine only." .Can) "machine" $m.ID "category" .Category "mode" "allow"))}}{{end}}
-      {{if ne .Mode "deny"}}<form method="POST" action="/fleet/permission" class="inline" data-on:submit__prevent__throttle.1s="@post('/fleet/permission', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="machine" value="{{$m.ID}}"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="mode" value="deny"><button type="submit" class="btn sm">Block</button></form>{{end}}
-    </div>
+    <div class="perm-text"><strong>{{or $p.Title $p.Category}}</strong>
+      <div class="dim">{{if eq $p.Mode "allow"}}Can {{$p.Can}} without asking you.{{else if eq $p.Mode "deny"}}Can't {{$p.Can}}. It won't ask.{{else}}Asks you before it can {{$p.Can}}.{{end}}</div></div>
+    {{template "perm-seg" (index $segs $i)}}
   </div>
   {{end}}
   {{end}}
@@ -209,34 +354,21 @@
 {{if $m.HasScheme}}
 <div class="card">
   <div class="card-head">Rules for this machine <span class="dim">· for one tool or one command, whatever the settings above say. Answering a request for this machine with always adds one here.</span></div>
-  {{range $m.Rules}}
-  <div class="ghead">
-    <span class="nm">{{visibleText .Pattern}}</span>
-    {{template "fl-rule-tag" .Mode}}
-    <span class="sp"></span>
-    {{if eq .Mode "allow"}}
-    <form method="POST" action="/fleet/rules/remove" class="inline" data-on:submit__prevent__throttle.1s="@post('/fleet/rules/remove', {contentType:'form', retryMaxCount:0})">
-      <input type="hidden" name="machine" value="{{$m.ID}}">
-      <input type="hidden" name="pattern" value="{{.Pattern}}">
-      <button type="submit" class="btn sm">Remove</button>
-    </form>
-    {{else}}
-    {{template "ui-confirm" (inline (confirmGo "/fleet/rules/remove" "Remove" "What this rule matched then follows this machine's safety settings, which may let your agent do it without asking you." "machine" $m.ID "pattern" .Pattern))}}
-    {{end}}
-  </div>
-  {{else}}
-  {{template "ui-empty" "No rules for this machine yet."}}
-  {{end}}
-  <form method="POST" action="/fleet/rules/add" class="cronactions mt" data-on:submit__prevent__throttle.1s="@post('/fleet/rules/add', {contentType:'form', retryMaxCount:0})">
-    <input type="hidden" name="machine" value="{{$m.ID}}">
-    <input type="text" name="pattern" class="cinput wide" placeholder="a tool name, or a command rule as a request for this machine shows it" required>
-    <input type="hidden" name="confirm" value="yes">
-    <button type="submit" name="mode" value="ask" class="btn sm">Ask first</button>
-    <button type="submit" name="mode" value="deny" class="btn sm">Block</button>
-    <details class="confirm-step go"><summary class="btn sm"><span class="c-open">Don't ask</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Don't ask"><p>On this machine your agent can do what this rule matches without asking you, whatever the safety settings above say.</p><button type="submit" name="mode" value="allow" class="btn sm">Yes, don't ask</button></div></details>
-  </form>
+  {{template "rule-editor" .MachineRules}}
 </div>
 {{end}}
+
+<div class="card">
+  <div class="card-head">Groups <span class="dim">· Apply fleet rules lays the fleet's rules over this machine's settings, then the rules of each group it is in, in name order: a later group wins over an earlier one, and any group over a fleet rule</span></div>
+  {{if .GroupsProblem}}
+  <div class="banner err" role="alert">{{.GroupsProblem}}</div>
+  {{else}}
+  {{range $m.Groups}}<div class="ghead"><a class="linkbtn nm" href="{{$.GroupHref .}}">{{visibleText .}}</a></div>
+  {{else}}
+  {{template "ui-empty" "This machine is in no group. A group's own page adds machines to it."}}
+  {{end}}
+  {{end}}
+</div>
 
 <div class="card">
   <div class="card-head">Compared with a fresh copy <span class="dim">· what this machine would start with if you confirmed it now</span></div>
@@ -251,7 +383,7 @@
   {{if or $m.Drift (not $m.HasScheme)}}
   <div class="cronactions mt">
     {{template "ui-confirm" (inline (confirm "/fleet/scheme" "Copy again" "This machine's approval settings are replaced by a fresh copy of this Tenant's, with the fleet's rules. Every difference listed here goes, and so does anything you set or allowed for this machine alone." "machine" $m.ID "from" "master"))}}
-    {{if $m.HasScheme}}{{template "ui-confirm" (inline (confirmGo "/fleet/scheme" "Apply fleet rules" "The fleet's rules are laid over this machine's approval settings again. A rule of its own that a fleet rule covers is replaced; its safety settings stay as they are." "machine" $m.ID "from" "defaults"))}}{{end}}
+    {{if $m.HasScheme}}{{template "ui-confirm" (inline (confirmGo "/fleet/scheme" "Apply fleet rules" "The fleet's rules, then the rules of the groups it is in, are laid over this machine's approval settings again. A rule of its own that one of them covers is replaced; its safety settings stay as they are." "machine" $m.ID "from" "defaults"))}}{{end}}
   </div>
   {{end}}
   {{end}}
@@ -300,5 +432,57 @@
     {{template "ui-confirm" (confirm "/fleet/revoke" "Delete its record" "Its record and approval settings are deleted, and no machine enrolled later can take over its id." "machine" $m.ID "settings" "delete")}}
   </div>
   {{end}}
+</div>
+{{end}}
+
+{{/* fleet-group is a group's own page (TEN-546): its members, its rules and
+     Apply. Changing a group moves no machine; Apply is the step that does,
+     and it names how many. Delete is a plain post: the page it is on is the
+     group it deletes, so the answer is the list. */}}
+{{define "fleet-group"}}{{$g := .Group}}
+<p><a class="linkbtn" href="/fleet">All machines</a></p>
+{{with .Result}}{{template "fleet-result" .}}{{end}}
+<div class="card">
+  <div class="row"><div><strong class="nm">{{visibleText $g.Name}}</strong> <span class="dim">· group of {{$g.Counts}}</span></div></div>
+  <p class="dim">Changing this group, its machines or its rules, moves no machine. Apply lays the fleet's rules, then the rules of each member's groups in name order, over each member's own settings; until then each keeps what it has.</p>
+  <div class="cronactions">
+    {{if .Members}}
+    <form method="POST" action="/fleet/groups/apply" class="inline" data-on:submit__prevent__throttle.1s="@post('/fleet/groups/apply', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="group" value="{{$g.Name}}"><button type="submit" class="btn sm on">Apply to its {{len .Members}} members</button></form>
+    {{end}}
+    {{template "ui-confirm" (confirm "/fleet/groups/delete" "Delete this group" "The group, its rules and its list of machines are deleted. Its machines keep the settings they have now." "group" $g.Name)}}
+  </div>
+  {{if ge $g.Differ 0}}<div class="dim mt">{{if eq $g.Differ 0}}Every member's settings are what Apply would give them now.{{else if eq $g.Differ 1}}1 member's settings differ from what Apply would give it now.{{else}}{{$g.Differ}} members' settings differ from what Apply would give them now.{{end}}</div>{{end}}
+</div>
+
+<div class="card">
+  <div class="card-head">Its machines</div>
+  {{range .Members}}
+  <div class="ghead">
+    <a class="linkbtn" href="{{.Href}}">{{.Name}}</a> <span class="{{.Pill}}">{{.StateWords}}</span>
+    <span class="sp"></span>
+    <form method="POST" action="/fleet/groups/members/remove" class="inline" data-on:submit__prevent__throttle.1s="@post('/fleet/groups/members/remove', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="group" value="{{$g.Name}}"><input type="hidden" name="machine" value="{{.ID}}"><button type="submit" class="btn sm">Take out</button></form>
+  </div>
+  {{else}}
+  {{template "ui-empty" "No machines in this group yet. Add some below."}}
+  {{end}}
+  {{range .Strays}}
+  <div class="ghead">
+    <span class="nm">{{.}}</span> <span class="dim">no longer one of the fleet's machines</span>
+    <span class="sp"></span>
+    <form method="POST" action="/fleet/groups/members/remove" class="inline" data-on:submit__prevent__throttle.1s="@post('/fleet/groups/members/remove', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="group" value="{{$g.Name}}"><input type="hidden" name="machine" value="{{.}}"><button type="submit" class="btn sm">Take out</button></form>
+  </div>
+  {{end}}
+  {{if .Others}}
+  <form method="POST" action="/fleet/groups/members/add" class="cronactions mt" data-on:submit__prevent__throttle.1s="@post('/fleet/groups/members/add', {contentType:'form', retryMaxCount:0})">
+    <input type="hidden" name="group" value="{{$g.Name}}">
+    <select name="machine" multiple size="4" aria-label="Machines to add to this group" required>{{range .Others}}<option value="{{.ID}}">{{.Name}} ({{.StateWords}})</option>{{end}}</select>
+    <button type="submit" class="btn sm">Add to this group</button>
+  </form>
+  {{end}}
+</div>
+
+<div class="card">
+  <div class="card-head">Its rules <span class="dim">· laid over each member when you apply them, after the fleet's rules. A group later in name order wins over this one</span></div>
+  {{template "rule-editor" .GroupRules}}
 </div>
 {{end}}

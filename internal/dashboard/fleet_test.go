@@ -284,18 +284,41 @@ func fleetFake(n int) *fakeFleet {
 		f.view.Machines = append(f.view.Machines, m)
 	}
 	f.view.Rules = []ToolRuleRow{{Pattern: "os_run(systemctl status *)", Mode: "allow"}, {Pattern: longURL(3), Mode: "deny"}}
+	// TEN-546: the fleet's defaults and two groups, web (machines 1 and 2,
+	// one rule) and db (machine 3, and an id the fleet no longer has).
+	f.view.Defaults = fleetDefaults()
+	f.view.Groups = []FleetGroup{
+		{Name: "db", Members: []string{"m0000000000000003", "m00000000000000ff"}, Differ: -1},
+		{Name: "web", Members: []string{fleetConfirmed, "m0000000000000002"}, Rules: []ToolRuleRow{{Pattern: "os_run(nginx -t)", Mode: "ask"}}, Differ: 1},
+	}
+	for i := range f.view.Machines {
+		switch i {
+		case 1, 2:
+			f.view.Machines[i].Groups = []string{"web"}
+		case 3:
+			f.view.Machines[i].Groups = []string{"db"}
+		}
+	}
 	return f
 }
 
 func init() {
 	harnessFakes = append(harnessFakes, func(s *Server, mode fakeMode) {
 		f := fleetFake(13)
-		if mode == failing { // fleet.json can't be read
+		// A rollout under way, so its card is swept with the page.
+		f.view.Rollout = &FleetRollout{Version: "v2.0.0", Limit: 2, Started: "2026-11-24 10:00", Running: true, Machines: []FleetRolloutMachine{
+			{ID: fleetConfirmed, Name: longName(1), Status: "running", Stage: "sending"},
+			{ID: "m0000000000000002", Name: longName(2), Status: "skipped", Reason: "is offline (offline since 2026-11-24 09:00). Nothing is queued: run the update again once it is back"},
+			{ID: "m0000000000000006", Name: longName(6), Status: "waiting"},
+		}}
+		if mode == failing { // fleet.json can't be read, nor the defaults or the groups
 			f.view.Machines, f.view.Err = nil, errors.New(rawStoreClosed)
+			f.view.Defaults, f.view.DefaultsErr = nil, errors.New(rawStoreClosed)
+			f.view.Groups, f.view.GroupsErr = nil, errors.New(rawStoreClosed)
 		}
 		s.SetFleet(f)
 	})
-	harnessPages = append(harnessPages, "/fleet", "/fleet/"+fleetPending, "/fleet/"+fleetConfirmed)
+	harnessPages = append(harnessPages, "/fleet", "/fleet/"+fleetPending, "/fleet/"+fleetConfirmed, "/fleet/group/web")
 }
 
 // fleetServer is a dashboard at 127.0.0.1:9770 with f as its fleet and a
@@ -1017,8 +1040,12 @@ func TestFleetStates(t *testing.T) {
 	if strings.Count(list, `<td>unknown</td>`) != 13 {
 		t.Errorf("the memory column: %d of 13 machines say it is unknown", strings.Count(list, `<td>unknown</td>`))
 	}
-	if strings.Count(list, `action="/fleet/`) != strings.Count(list, `action="/fleet/add"`) {
-		t.Errorf("the list carries a form other than Add machine: every change to a machine is on its own page")
+	// One machine is changed on its own page; the list changes the machines
+	// checked in it, together (TEN-546), and the fleet's defaults and groups.
+	for _, action := range []string{"/fleet/permission", "/fleet/rules/add", "/fleet/scheme", "/fleet/update", "/fleet/revoke", "/fleet/rename", "/fleet/confirm"} {
+		if strings.Contains(list, `action="`+action+`"`) {
+			t.Errorf("the list carries %s: a change to one machine is on its own page", action)
+		}
 	}
 
 	// A pending machine, seen from another computer: everything it would start
@@ -1067,7 +1094,7 @@ func TestFleetStates(t *testing.T) {
 		`online since 2026-11-18 10:02, from <span class="fl-said">&#34;192.168.1.20:50112&#34;</span>, link version 1, requests in progress: 2`,
 		`<tr><th>Its own limit</th><td class="fl-said">&#34;full&#34;</td></tr>`,
 		"Can create and change files on this machine without asking you.",
-		`<input type="hidden" name="machine" value="` + fleetConfirmed + `"><input type="hidden" name="category" value="write"><input type="hidden" name="mode" value="deny">`,
+		`<input type="hidden" name="machine" value="` + fleetConfirmed + `"><input type="hidden" name="category" value="write"><button type="submit" name="mode" value="deny" class="btn sm">Deny</button>`,
 		`<strong>Act on websites</strong>: this machine is set to Allow; a fresh copy would be Ask first.`,
 		`: only this machine has this rule (Don&#39;t ask); a fresh copy would not.`,
 		`<strong>Rule <span class="nm">os_run(systemctl status *)</span></strong>: this machine doesn&#39;t have this rule; a fresh copy would (Don&#39;t ask). It is one of the fleet&#39;s rules.`,

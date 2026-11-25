@@ -19,4 +19,54 @@
 {{- range .Notices}}<div class="banner info notice"><span class="nt" title="{{.Text}}">{{.Text}}</span>{{if .Href}} <a href="{{.Href}}">{{.Link}}</a>{{end}}</div>{{end -}}
 </div>{{end}}
 
+{{/* perm-seg is one safety category's Ask / Allow / Deny control (a
+     PermSeg): the current mode is a pressed, disabled button; Ask and Deny
+     are one tap (tightening); Allow, and the fleet defaults' From this
+     Tenant, are a confirm step (DESIGN.md §5 (c)). */}}
+{{define "perm-seg"}}<div class="seg" role="group" aria-label="{{.Title}}">
+      {{- if eq .Mode "ask"}}<button type="button" class="btn sm on" disabled aria-pressed="true">Ask</button>
+      {{- else}}<form method="POST" action="{{.Action}}" data-on:submit__prevent__throttle.1s="@post('{{.Action}}', {contentType:'form', retryMaxCount:0})">{{range .Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}<input type="hidden" name="category" value="{{.Category}}"><button type="submit" name="mode" value="ask" class="btn sm">Ask</button></form>{{end}}
+      {{- if eq .Mode "allow"}}<button type="button" class="btn sm on" disabled aria-pressed="true">Allow</button>
+      {{- else}}{{template "ui-confirm" .AllowStep}}{{end}}
+      {{- if eq .Mode "deny"}}<button type="button" class="btn sm on" disabled aria-pressed="true">Deny</button>
+      {{- else}}<form method="POST" action="{{.Action}}" data-on:submit__prevent__throttle.1s="@post('{{.Action}}', {contentType:'form', retryMaxCount:0})">{{range .Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}<input type="hidden" name="category" value="{{.Category}}"><button type="submit" name="mode" value="deny" class="btn sm">Deny</button></form>{{end}}
+      {{- if .Unset}}{{if eq .Mode ""}}<button type="button" class="btn sm on" disabled aria-pressed="true">From this Tenant</button>{{else}}{{template "ui-confirm" .UnsetStep}}{{end}}{{end -}}
+    </div>{{end}}
+
+{{define "rule-tag"}}<span class="{{if eq . "deny"}}act-errtag{{else if eq . "ask"}}risk{{else}}tag{{end}}">{{if eq . "deny"}}blocked{{else if eq . "ask"}}asks you first{{else}}runs without asking{{end}}</span>{{end}}
+
+{{/* rule-editor is a rule list and its add form (a RuleEditor). A rule's
+     row has no id, so the morph reuses its form for the rule that moves up
+     and the throttle stops a double tap removing that one too. Removing an
+     allow rule tightens: one tap. A rule is the operator's text: it goes
+     through visibleText. */}}
+{{define "rule-editor"}}{{$e := .}}
+  {{range .Rules}}
+  <div class="ghead">
+    <span class="nm">{{visibleText .Plain}}</span> {{template "rule-tag" .Mode}}
+    <span class="sp"></span>
+    {{if or (eq .Mode "allow") (not $e.RemoveSaid)}}
+    <form method="POST" action="{{$e.Remove}}" class="inline" data-on:submit__prevent__throttle.1s="@post('{{$e.Remove}}', {contentType:'form', retryMaxCount:0})">
+      {{range $e.Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}
+      <input type="hidden" name="pattern" value="{{.Pattern}}">
+      <button type="submit" class="btn sm">Remove</button>
+    </form>
+    {{else}}
+    {{template "ui-confirm" ($e.RemoveStep .)}}
+    {{end}}
+  </div>
+  {{else}}
+  {{template "ui-empty" .Empty}}
+  {{end}}
+  <form method="POST" action="{{.Add}}" class="cronactions mt" data-on:submit__prevent__throttle.1s="@post('{{.Add}}', {contentType:'form', retryMaxCount:0})">
+    {{range .Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}
+    <input type="text" name="pattern" class="cinput wide" placeholder="{{.Placeholder}}" required>
+    <input type="hidden" name="confirm" value="yes">
+    <button type="submit" name="mode" value="ask" class="btn sm">Ask first</button>
+    <button type="submit" name="mode" value="deny" class="btn sm">Block</button>
+    {{if .AllowSaid}}<details class="confirm-step go"><summary class="btn sm"><span class="c-open">Don't ask</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Don't ask"><p>{{.AllowSaid}}</p><button type="submit" name="mode" value="allow" class="btn sm">Yes, don't ask</button></div></details>
+    {{- else}}<button type="submit" name="mode" value="allow" class="btn sm">Don't ask</button>{{end}}
+  </form>
+{{end}}
+
 {{define "ui-confirm"}}<details class="confirm-step{{if not .Danger}} go{{end}}"><summary class="btn sm{{if .Danger}} danger{{end}}"><span class="c-open">{{.Label}}</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="{{.Label}}"><p>{{.Consequence}}</p><form method="POST" action="{{.Action}}"{{if .Inline}} data-on:submit__prevent__throttle.1s="@post('{{.Action}}', {contentType:'form', retryMaxCount:0})"{{end}}>{{range .Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}<input type="hidden" name="confirm" value="yes"><button type="submit" class="btn sm{{if .Danger}} danger{{end}}">{{.Yes}}</button></form></div></details>{{end}}
