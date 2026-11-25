@@ -280,7 +280,7 @@ lists past runs with Show, Run again and Delete. The adapter is
   and the gated shared tools) and web policy. So research's start and end
   never cancel the helpers of chat, the Discord relay or scheduled jobs, and a
   helper's risky action still waits on Approvals & safety. Helper profiles are
-  copied from the shared runtime at each start, so the Helpers page applies.
+  copied from the shared runtime at each start, so the Sub-agents page applies.
 - **Web browsing on a Windows service (D19).** When serve runs as a built-in
   service account (by SID; unknown counts as one) and Chrome's sandbox is off
   (`browser_no_sandbox`), research runs without web browsing and the page says
