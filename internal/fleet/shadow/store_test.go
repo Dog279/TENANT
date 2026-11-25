@@ -306,10 +306,14 @@ func TestStore_AnIdleShadowIsDropped(t *testing.T) {
 	defer held.Release()
 	addFact(t, held.Semantic, "db1 is the postgres primary")
 
-	f.with(hostA, func(p *Pair) { addFact(t, p.Semantic, "web1 runs nginx") })
-	if got := f.Loaded(); !slices.Equal(got, []string{hostA, hostB}) {
-		t.Fatalf("Loaded: %v", got)
-	}
+	// Both are loaded while both are held. Looked at after hostA's release,
+	// the idle pass (40ms) could drop it first: a macOS runner saw only hostB.
+	f.with(hostA, func(p *Pair) {
+		addFact(t, p.Semantic, "web1 runs nginx")
+		if got := f.Loaded(); !slices.Equal(got, []string{hostA, hostB}) {
+			t.Fatalf("Loaded: %v", got)
+		}
+	})
 	waitFor(t, "the idle shadow to be dropped", func() bool { return slices.Equal(f.Loaded(), []string{hostB}) })
 	// Nothing is left that was only in RAM: the snapshot is there, and so is
 	// a generation for the child.
