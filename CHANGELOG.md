@@ -5,6 +5,10 @@ Releases page.
 
 ## Unreleased
 
+- **Fixed (Windows): a save could fail while another program had the file open.** Tenant
+  replaces a file by renaming a finished copy over it, and Windows refuses that rename while
+  any other handle is open on the file (a virus scanner, the search indexer, a reader of
+  Tenant's own). The rename is now tried again for up to about 300 ms before it is reported.
 - **A new fleet machine starts with this Tenant's approval settings as they are.** Until now
   a machine's copy held Run commands, Change files, Irreversible actions, Send messages and
   Leave the sandbox at Ask first even where this Tenant allows them, so a master set to allow

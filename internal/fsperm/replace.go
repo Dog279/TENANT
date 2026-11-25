@@ -1,10 +1,12 @@
 package fsperm
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"tenant/internal/procprotect"
@@ -63,7 +65,16 @@ func replace(path string, data []byte, mode os.FileMode, private bool) error {
 	} else if err := os.Chmod(tmp, mode); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	err = os.Rename(tmp, path)
+	// On Windows a rename over a file that another handle has open fails:
+	// a reader of ours, a virus scanner, the search indexer. They hold it for
+	// milliseconds, so the rename is tried again for a short while (errors
+	// 5 and 32: access denied, sharing violation).
+	for i := 0; i < 20 && runtime.GOOS == "windows" && (errors.Is(err, syscall.Errno(5)) || errors.Is(err, syscall.Errno(32))); i++ {
+		time.Sleep(15 * time.Millisecond)
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
 		return err
 	}
 	FlushDir(dir)
