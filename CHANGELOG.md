@@ -5,6 +5,8 @@ Releases page.
 
 ## Unreleased
 
+## 0.2.0 (2026-11-24)
+
 - **Fleet groups, default categories and bulk changes (TEN-546).** Machines can be put in named
   groups (`tenant fleet group`, `/fleet group`), each with rules laid over its members when the
   group is applied (`tenant fleet group apply`), never live: a call is still decided by the
