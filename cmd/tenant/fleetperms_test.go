@@ -91,11 +91,11 @@ func schemeOf(t *testing.T, raw json.RawMessage) approval.Scheme {
 // confirm from the master's saved scheme, changed by "always" on its card
 // under its own id and nowhere else, and read again by the next process.
 func TestFleetSettings_RoundTrip(t *testing.T) {
-	f := newFleetSettings(t, `{"tools":{"os_exec":true},"permissions":{"exec":"allow","web":"allow"},"tool_rules":{"os_exec(rm *)":"deny"}}`)
+	f := newFleetSettings(t, `{"tools":{"os_exec":true},"permissions":{"exec":"ask","write":"allow","web":"allow"},"tool_rules":{"os_exec(rm *)":"deny"}}`)
 	if len(f.told) != 0 {
 		t.Fatalf("a file without the fleet's keys: told %q", f.told)
 	}
-	// Confirm: the master's saved scheme, exec no looser than ask.
+	// Confirm: the master's saved scheme as it is, an allow included.
 	local := approval.Scheme{Permissions: f.stg.Permissions, ToolRules: f.stg.ToolRules}
 	for _, id := range []string{"m1", "m2"} {
 		s, err := defaultFleet.Inherit(local)
@@ -107,7 +107,7 @@ func TestFleetSettings_RoundTrip(t *testing.T) {
 		}
 	}
 	m1 := schemeOf(t, f.file().FleetSchemes["m1"])
-	if m1.Permissions["exec"] != "ask" || m1.Permissions["web"] != "allow" || m1.ToolRules["os_exec(rm *)"] != "deny" {
+	if m1.Permissions["exec"] != "ask" || m1.Permissions["write"] != "allow" || m1.Permissions["web"] != "allow" || m1.ToolRules["os_exec(rm *)"] != "deny" {
 		t.Fatalf("m1 as saved at confirm: %+v", m1)
 	}
 
@@ -122,7 +122,7 @@ func TestFleetSettings_RoundTrip(t *testing.T) {
 	if got := schemeOf(t, file.FleetSchemes["m2"]).ToolRules; len(got) != 1 {
 		t.Fatalf("m2 gained a rule: %v", got)
 	}
-	if len(file.ToolRules) != 1 || file.Permissions["exec"] != "allow" || !file.Tools["os_exec"] {
+	if len(file.ToolRules) != 1 || file.Permissions["exec"] != "ask" || !file.Tools["os_exec"] {
 		t.Fatalf("the master's own keys moved: rules %v, permissions %v, tools %v", file.ToolRules, file.Permissions, file.Tools)
 	}
 	// The process's own save is not an edit.

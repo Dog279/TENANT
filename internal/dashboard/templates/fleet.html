@@ -332,7 +332,7 @@
   {{if not $m.Start}}
   <div class="dim">The settings this machine would start with can't be worked out right now: the fleet's rules can't be read. Until they can, it can't be confirmed.</div>
   {{else}}
-  <p>{{if $m.Start.Kept}}It starts with the approval settings kept under its id from the machine that had this id before. Nothing is copied from this Tenant.{{else}}It starts with a copy of this Tenant's own approval settings. Run commands, Change files, Irreversible actions, Send messages and Leave the sandbox start no looser than Ask first, whatever this Tenant allows. The fleet's rules are laid over the copy, and they win.{{end}} After this the two are independent: a later change here does not move this machine.</p>
+  <p>{{if $m.Start.Kept}}It starts with the approval settings kept under its id from the machine that had this id before. Nothing is copied from this Tenant.{{else}}It starts with a copy of this Tenant's own approval settings: what this Tenant allows without asking, this machine will too. The fleet's defaults and rules are laid over the copy, and they win.{{end}} After this the two are independent: a later change here does not move this machine.</p>
   {{if or .Local .Remote}}
   <form method="POST" action="/fleet/confirm" data-on:submit__prevent__throttle.1s="@post('/fleet/confirm', {contentType:'form', retryMaxCount:0})">
     <input type="hidden" name="machine" value="{{$m.ID}}">

@@ -5,6 +5,21 @@ Releases page.
 
 ## Unreleased
 
+- **A new fleet machine starts with this Tenant's approval settings as they are.** Until now
+  a machine's copy held Run commands, Change files, Irreversible actions, Send messages and
+  Leave the sandbox at Ask first even where this Tenant allows them, so a master set to allow
+  commands still asked for every `fleet_exec`. The copy is now exact: what this Tenant allows
+  without asking, the machine does too. To start every machine tighter than the master, set a
+  fleet default (`tenant fleet permissions --defaults set exec ask`, or Fleet > Defaults).
+  Machines already confirmed keep the settings they have; to give them the new copy run
+  `tenant fleet permissions --all --from master` (or **Copy again** on a machine's page). A
+  turn that has read from one machine still asks before it acts on another.
+- **Fixed: `$variables` lost in a PowerShell command wrapped in `powershell -Command "..."`.**
+  `os_exec` (and so `fleet_exec` on a Windows machine) already runs in PowerShell; when the
+  agent wrapped its script in a second one, the outer shell expanded every `$name` inside the
+  double quotes to nothing and the script failed. A plain wrapper is now taken off and the
+  script runs as written (the approval shows the script that runs); a wrapper that cannot be
+  taken off safely runs as given and the result says why it probably failed.
 - **Fixed: a scheduled exec job could not write its own notes** when Tenant runs from a folder
   that also holds the wiki (an install at `C:\Tenant` with the wiki in `C:\Tenant\twiki`): the
   guard that keeps an unattended job out of Tenant's own files took the whole install folder,

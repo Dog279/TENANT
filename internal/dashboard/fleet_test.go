@@ -1053,7 +1053,7 @@ func TestFleetStates(t *testing.T) {
 	away := page(s, "/fleet/"+fleetPending)
 	for _, want := range []string{
 		"Reported by the machine", "its own words, in quotes. This Tenant has not checked them.",
-		"Run commands, Change files, Irreversible actions, Send messages and Leave the sandbox start no looser than Ask first",
+		"what this Tenant allows without asking, this machine will too",
 		`<strong>Run commands</strong>: Ask first <span class="dim">(this master: allow)</span>`,
 		`Rule <span class="nm">os_run(systemctl status *)</span> <span class="tag">runs without asking</span> <span class="dim">fleet rule</span>`,
 		"A machine is confirmed on the computer running Tenant",

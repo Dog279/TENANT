@@ -1114,3 +1114,28 @@ func TestReadImage_AttachesBytes(t *testing.T) {
 		t.Fatalf("webp = %q, %v", out, err)
 	}
 }
+
+// A script wrapped in one more powershell -Command "..." loses its
+// $variables to the outer shell: the plain wrapper is taken off, and
+// anything it cannot safely unwrap runs as given with a note.
+func TestUnnestPowerShell(t *testing.T) {
+	for _, c := range []struct {
+		in, run string
+		note    bool
+	}{
+		{`$os = 'x'; "$os=1"`, `$os = 'x'; "$os=1"`, false},
+		{`powershell -Command "$os='win'; $os"`, `$os='win'; $os`, true},
+		{`powershell.exe -NoProfile -ExecutionPolicy Bypass -c "Get-Date | % { $_.Year }"`, `Get-Date | % { $_.Year }`, true},
+		{`powershell -Command "Get-Date"`, `powershell -Command "Get-Date"`, false},                                // no $: harmless
+		{`powershell -Command '$os=1; $os'`, `powershell -Command '$os=1; $os'`, false},                            // single quotes: correct as written
+		{`pwsh -Command "$os=1; $os"`, `pwsh -Command "$os=1; $os"`, true},                                         // another PowerShell: note only
+		{"powershell -Command \"`$os=1; `$os\"", "powershell -Command \"`$os=1; `$os\"", false},                    // escaped on purpose
+		{`powershell -Command "$a=1; Write-Host \"$a\""`, `powershell -Command "$a=1; Write-Host \"$a\""`, true},   // own quotes: note only
+		{`cd C:\x; powershell -Command "$a=1; $a"; del y`, `cd C:\x; powershell -Command "$a=1; $a"; del y`, true}, // not only a wrapper
+	} {
+		run, note := unnestPowerShell(c.in)
+		if run != c.run || (note != "") != c.note {
+			t.Errorf("unnestPowerShell(%q) = %q, note %t; want %q, note %t", c.in, run, note != "", c.run, c.note)
+		}
+	}
+}

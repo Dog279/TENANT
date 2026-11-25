@@ -436,9 +436,8 @@ func TestFleet_NotOpenedRefusesEverything(t *testing.T) {
 	}
 }
 
-// A new machine's scheme: a copy of the master's saved local scheme, with
-// exec, write, destructive, send and sandbox no looser than ask, and the
-// fleet's rules over it.
+// A new machine's scheme: a copy of the master's saved local scheme as it
+// is, allows included, and the fleet's rules over it.
 func TestFleet_Inherit(t *testing.T) {
 	r := newFleetRig(t)
 	local := Scheme{
@@ -461,21 +460,21 @@ func TestFleet_Inherit(t *testing.T) {
 	}
 	got := mustInherit(t, r.fleet, local)
 	wantModes := map[string]string{
-		CatExec: "ask", CatWrite: "ask", CatDestructive: "ask", CatSend: "ask", CatSandbox: "ask",
+		CatExec: "allow", CatWrite: "allow", CatDestructive: "allow", CatSend: "allow", CatSandbox: "allow",
 		CatWeb: "allow", CatEgress: "deny", CatMCP: "ask",
 	}
 	if !maps.Equal(got.Permissions, wantModes) {
 		t.Errorf("modes = %v\nwant    %v", got.Permissions, wantModes)
 	}
 	wantRules := map[string]string{
-		"os_exec(brew install *)": "ask", "os_exec(rm *)": "deny", "os_exec(git push)": "ask",
-		"os_write": "ask", "x_post": "ask", "web_interact": "allow", "mcp:h:1:write_note": "ask",
-		"delete_*": "ask", "gsuite_send": "deny",
+		"os_exec(brew install *)": "allow", "os_exec(rm *)": "deny", "os_exec(git push)": "ask",
+		"os_write": "allow", "x_post": "allow", "web_interact": "allow", "mcp:h:1:write_note": "allow",
+		"delete_*": "allow", "gsuite_send": "deny",
 	}
 	if !maps.Equal(got.ToolRules, wantRules) {
 		t.Errorf("rules = %v\nwant    %v", got.ToolRules, wantRules)
 	}
-	// A deny stays a deny: the clamp never loosens.
+	// A deny stays a deny.
 	if s := mustInherit(t, r.fleet, Scheme{Permissions: map[string]string{CatExec: "deny", CatSend: "deny"}}); s.Permissions[CatExec] != "deny" || s.Permissions[CatSend] != "deny" {
 		t.Errorf("a category the master denies: %v", s.Permissions)
 	}
@@ -589,10 +588,10 @@ func TestFleet_FleetRulesAndCopyAgain(t *testing.T) {
 	}
 	wantDrift := []string{
 		`false web "ask"->"allow"`,
-		`true gsuite_send "deny"->"ask"`, // the master's allow, clamped
+		`true gsuite_send "deny"->"allow"`,
 		`true os_exec(df *) ""->"allow"`,
 		`true os_exec(rm *) "deny"->"allow"`,
-		`true x_post "deny"->"ask"`,
+		`true x_post "deny"->"allow"`,
 	}
 	if !slices.Equal(lines, wantDrift) {
 		t.Fatalf("drift =\n%s\nwant\n%s", strings.Join(lines, "\n"), strings.Join(wantDrift, "\n"))

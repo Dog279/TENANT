@@ -11,9 +11,9 @@ package approval
 // decision is Broker.Confirm's own ladder rather than a second copy of it.
 // What a fleet call changes is small and lives in the broker it decides
 // through (Decider.view): the card and the records name the machine; the
-// read-only command judgement is never asked, so every shell command asks
-// until "always" saves a command rule; and "always" saves into that
-// machine's scheme and nowhere else.
+// read-only command judgement is never asked, so where exec asks, every
+// shell command asks until "always" saves a command rule; and "always"
+// saves into that machine's scheme and nowhere else.
 //
 // The schemes persist in settings.<agent>.json under "fleet_schemes", keyed
 // by the machine's immutable id, beside the fleet's own rules for new
@@ -278,11 +278,6 @@ func rawKey(raw json.RawMessage) string {
 	}
 	return "!" + b.String()
 }
-
-// clamped are the categories that start no looser than ask on a machine,
-// whatever the master's own scheme says (Q1): the operator loosens one for
-// that machine if they want it.
-var clamped = map[string]bool{CatExec: true, CatWrite: true, CatDestructive: true, CatSend: true, CatSandbox: true}
 
 // answers reports whether rule pattern p decides everything rule own
 // decides, so that beside p, own could only ever contradict it: the same
@@ -667,13 +662,13 @@ func (f *Fleet) setLocked(id string, s Scheme) {
 
 // Inherit is the scheme a machine confirmed now would start with. It is a
 // copy of local, the master's local scheme as its settings file holds it
-// (so no launch-flag grant and no session grant is in it), with exec, write,
-// destructive, send and sandbox no looser than ask: their category modes,
-// and every allow rule that could reach them (a command rule, a glob, a tool
-// of one of those categories, a tool no table knows). Each of the fleet's
-// default categories then replaces the copy's mode, and the fleet's rules are
-// laid over it and win (Scheme.Overlay). It changes nothing: Put makes the
-// scheme the machine's. A machine's groups are Fresh's.
+// (so no launch-flag grant and no session grant is in it): what the master
+// allows unasked here, it allows unasked there. A fleet that wants its
+// machines tighter than the master says so in its default categories
+// ("fleet_permissions": exec ask) and its rules: each default category
+// replaces the copy's mode, and the fleet's rules are laid over it and win
+// (Scheme.Overlay). It changes nothing: Put makes the scheme the machine's.
+// A machine's groups are Fresh's.
 func (f *Fleet) Inherit(local Scheme) (Scheme, error) {
 	f.mu.Lock()
 	var err error
@@ -692,13 +687,7 @@ func (f *Fleet) Inherit(local Scheme) (Scheme, error) {
 	for c, mode := range MasterCopy(local) {
 		s.Permissions[c] = cmp.Or(defaults[c], mode)
 	}
-	rules, _ := NormalizeRules(local.ToolRules)
-	for p, mode := range rules {
-		if mode == ModeAllow.String() && (isCommandRule(p) || strings.ContainsAny(p, "*?") || clamped[f.categorize(p)]) {
-			mode = ModeAsk.String()
-		}
-		s.ToolRules[p] = mode
-	}
+	s.ToolRules, _ = NormalizeRules(local.ToolRules)
 	return s.Overlay(f.rules.Snapshot()), nil
 }
 

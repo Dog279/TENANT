@@ -173,7 +173,7 @@ func (d fleetPageData) DefaultSegs() []PermSeg {
 func (p FleetDefault) Said() string {
 	switch p.Mode {
 	case "":
-		return "From this Tenant: " + fleetModeLabel[p.Inherited] + " now, as this Tenant's own setting is (no looser than Ask first for the five that are kept at Ask)."
+		return "From this Tenant: " + fleetModeLabel[p.Inherited] + " now, as this Tenant's own setting is."
 	case "allow":
 		return "A new machine can " + p.Can + " without asking you."
 	case "deny":

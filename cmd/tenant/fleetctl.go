@@ -222,9 +222,8 @@ func parseSet(pairs []string) (map[string]string, error) {
 
 // preview works out the scheme machine m starts with: the one kept under its
 // id if it adopted one, else its fresh copy (approval.Fleet.Fresh): a copy of
-// the master's local scheme with exec, write, destructive, send and sandbox
-// no looser than ask, the fleet's default categories, the fleet's rules and
-// its groups' rules laid over it; then what the operator set here.
+// the master's local scheme, the fleet's default categories, the fleet's
+// rules and its groups' rules laid over it; then what the operator set here.
 func (o fleetOps) preview(m fleet.Machine, set map[string]string) (*approval.Fleet, fleetPreview, error) {
 	p := fleetPreview{Set: set}
 	f, err := o.schemes()
@@ -417,9 +416,9 @@ func confirmScreen(m fleet.Machine, p fleetPreview) string {
 	if p.Kept {
 		lines = append(lines, "  Approval scheme it starts with (kept under this id from the machine that had it before; nothing is copied from this master):")
 	} else {
-		lines = append(lines, "  Approval scheme it starts with (a copy of this master's local scheme; exec, write, destructive, send and sandbox",
-			"  no looser than ask, whatever the master allows; then the fleet's defaults for new machines, then the rules of its",
-			"  groups, each laid over the one before and winning):")
+		lines = append(lines, "  Approval scheme it starts with (a copy of this master's local scheme: what the master allows unasked, this machine",
+			"  does too; then the fleet's defaults for new machines, then the rules of its groups, each laid over the one before",
+			"  and winning):")
 	}
 	lines = append(lines, schemeLines(p.Scheme, "    ", p.catNote, p.ruleNote)...)
 	lines = append(lines, "  After this the two schemes are independent: a later change on the master does not move this machine.")
@@ -427,9 +426,8 @@ func confirmScreen(m fleet.Machine, p fleetPreview) string {
 }
 
 // catNote says where a category's mode on the confirm screen came from, when
-// it is not simply the master's own: the operator set it here, it is the
-// fleet's default for new machines, or the master allows what a machine
-// starts no looser than ask.
+// it is not simply the master's own: the operator set it here, or it is the
+// fleet's default for new machines.
 func (p fleetPreview) catNote(cat, mode string) string {
 	switch master, known := p.Master[cat]; {
 	case p.Set[cat] != "":

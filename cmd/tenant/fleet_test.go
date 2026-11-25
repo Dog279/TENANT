@@ -497,7 +497,7 @@ func TestFleetScreensMarkWhatTheMachineReported(t *testing.T) {
 func TestFleetSchemeAtConfirm(t *testing.T) {
 	l := newFleetLab(t)
 	l.settings(settings{
-		Permissions: map[string]string{"exec": "allow", "write": "allow", "destructive": "allow", "send": "allow", "sandbox": "allow", "web": "allow", "mcp": "deny"},
+		Permissions: map[string]string{"exec": "allow", "write": "allow", "destructive": "allow", "send": "ask", "sandbox": "allow", "web": "allow", "mcp": "deny"},
 		ToolRules:   map[string]string{"os_exec(git status *)": "allow", "os_exec(rm *)": "deny", "os_exec(systemctl status *)": "ask"},
 	})
 	l.master()
@@ -511,7 +511,7 @@ func TestFleetSchemeAtConfirm(t *testing.T) {
 	l.answer = ""
 	screen, _ := l.run("confirm", "web1", "--set", "send=allow")
 	for _, want := range []string{
-		"exec         ask    (this master: allow)", "write        ask    (this master: allow)",
+		"exec         allow", "write        allow",
 		"send         allow  set by you, for this machine only", "web          allow", "mcp          deny",
 		"os_exec(systemctl status *)", "fleet rule", "os_exec(rm *)",
 	} {
@@ -524,14 +524,14 @@ func TestFleetSchemeAtConfirm(t *testing.T) {
 	l.confirm("db1", db1)
 
 	s := l.schemeOf(web1.id)
-	for cat, want := range map[string]string{"exec": "ask", "write": "ask", "destructive": "ask", "sandbox": "ask", "send": "allow", "web": "allow", "mcp": "deny"} {
+	for cat, want := range map[string]string{"exec": "allow", "write": "allow", "destructive": "allow", "sandbox": "allow", "send": "allow", "web": "allow", "mcp": "deny"} {
 		if s.Permissions[cat] != want {
 			t.Errorf("web1 %s = %q, want %q", cat, s.Permissions[cat], want)
 		}
 	}
-	// A fleet rule wins over the inherited one; an inherited allow that
-	// reaches a command is no looser than ask; a deny is kept.
-	for rule, want := range map[string]string{"os_exec(systemctl status *)": "allow", "os_exec(git status *)": "ask", "os_exec(rm *)": "deny"} {
+	// A fleet rule wins over the inherited one; an inherited allow and an
+	// inherited deny are kept.
+	for rule, want := range map[string]string{"os_exec(systemctl status *)": "allow", "os_exec(git status *)": "allow", "os_exec(rm *)": "deny"} {
 		if s.ToolRules[rule] != want {
 			t.Errorf("web1 rule %s = %q, want %q", rule, s.ToolRules[rule], want)
 		}
@@ -540,7 +540,7 @@ func TestFleetSchemeAtConfirm(t *testing.T) {
 	if got := l.schemeOf(db1.id).Permissions["send"]; got != "ask" {
 		t.Errorf("db1 send = %q: web1's loosening carried over", got)
 	}
-	if got := l.saved().Permissions; got["send"] != "allow" || got["exec"] != "allow" {
+	if got := l.saved().Permissions; got["send"] != "ask" || got["exec"] != "allow" {
 		t.Errorf("the master's own scheme changed: %v", got)
 	}
 
@@ -548,7 +548,7 @@ func TestFleetSchemeAtConfirm(t *testing.T) {
 	stg := l.saved()
 	stg.Permissions["web"], stg.ToolRules["os_exec(git status *)"] = "deny", "deny"
 	l.settings(*stg)
-	if s := l.schemeOf(web1.id); s.Permissions["web"] != "allow" || s.ToolRules["os_exec(git status *)"] != "ask" {
+	if s := l.schemeOf(web1.id); s.Permissions["web"] != "allow" || s.ToolRules["os_exec(git status *)"] != "allow" {
 		t.Errorf("web1 followed the master: %v %v", s.Permissions, s.ToolRules)
 	}
 	// Nor does a change of the fleet's rules, until it is applied again.
@@ -565,20 +565,20 @@ func TestFleetSchemeAtConfirm(t *testing.T) {
 		t.Errorf("db1 got a fleet rule it was not given: %v", s.ToolRules)
 	}
 	// One machine's edits are its own.
-	l.must("permissions", "web1", "set", "exec", "allow")
+	l.must("permissions", "web1", "set", "exec", "deny")
 	l.must("permissions", "web1", "add", "os_exec(uptime *)", "allow")
-	if s := l.schemeOf(web1.id); s.Permissions["exec"] != "allow" || s.ToolRules["os_exec(uptime *)"] != "allow" {
+	if s := l.schemeOf(web1.id); s.Permissions["exec"] != "deny" || s.ToolRules["os_exec(uptime *)"] != "allow" {
 		t.Errorf("web1 after its own edits: %v %v", s.Permissions, s.ToolRules)
 	}
-	if s := l.schemeOf(db1.id); s.Permissions["exec"] != "ask" || s.ToolRules["os_exec(uptime *)"] != "" {
+	if s := l.schemeOf(db1.id); s.Permissions["exec"] != "allow" || s.ToolRules["os_exec(uptime *)"] != "" {
 		t.Errorf("db1 changed with web1: %v %v", s.Permissions, s.ToolRules)
 	}
-	if out := l.must("permissions", "web1"); !strings.Contains(out, "exec         allow") || !strings.Contains(out, "os_exec(uptime *)") {
+	if out := l.must("permissions", "web1"); !strings.Contains(out, "exec         deny") || !strings.Contains(out, "os_exec(uptime *)") {
 		t.Errorf("permissions web1 shows:\n%s", out)
 	}
-	// A fresh copy takes the master as it is now, clamped again.
+	// A fresh copy takes the master as it is now.
 	l.must("permissions", "web1", "--from", "master")
-	if s := l.schemeOf(web1.id); s.Permissions["exec"] != "ask" || s.Permissions["web"] != "deny" || s.Permissions["send"] != "ask" || s.ToolRules["os_exec(uptime *)"] != "" {
+	if s := l.schemeOf(web1.id); s.Permissions["exec"] != "allow" || s.Permissions["web"] != "deny" || s.Permissions["send"] != "ask" || s.ToolRules["os_exec(uptime *)"] != "" {
 		t.Errorf("web1 after --from master: %v %v", s.Permissions, s.ToolRules)
 	}
 	for _, bad := range [][]string{
@@ -717,7 +717,7 @@ func TestFleetCallsOriginsAndRevoke(t *testing.T) {
 		return mgr.Call(ctx, ch.id, fleet.Call{Tool: "os_exec", Confirm: d.Confirm})
 	}
 
-	// Local: the machine's scheme asks (exec is no looser than ask), at the host.
+	// Local: the machine's scheme asks, at the host.
 	res, err := call(context.Background())
 	if err != nil || res.IsError || res.Text != "Linux" {
 		t.Fatalf("a local call: %+v %v", res, err)

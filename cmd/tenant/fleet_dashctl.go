@@ -128,8 +128,8 @@ func (d dashFleet) View() dashboard.FleetView {
 	v.Rules = dashRuleRows(fleetRules)
 	local, localErr := d.ops.local()
 	// The fleet's default categories (fleet_permissions): what the operator
-	// set for new machines, over what this Tenant's own scheme would give,
-	// clamped (approval.MasterCopy).
+	// set for new machines, over what this Tenant's own scheme would give
+	// (approval.MasterCopy).
 	if set, err := f.Defaults(); err != nil {
 		v.DefaultsErr = err
 	} else if localErr == nil {

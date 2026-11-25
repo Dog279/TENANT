@@ -104,7 +104,7 @@ func fleetToolSpecs() []model.ToolSpec {
 	return []model.ToolSpec{
 		{Name: "fleet_list", Description: "List the fleet's machines: name, OS, the account Tenant runs as there, online or offline and since when. A machine's name is the host argument of every other fleet_* tool.",
 			Parameters: json.RawMessage(`{"type":"object","properties":{}}`)},
-		{Name: "fleet_exec", Description: "Run a shell command on a fleet machine (PowerShell on Windows, sh on Linux/macOS) and return its combined stdout+stderr; long output keeps its start and end. GATED: a command asks the operator unless a rule saved for that machine allows it. " +
+		{Name: "fleet_exec", Description: "Run a shell command on a fleet machine (PowerShell on Windows, sh on Linux/macOS) and return its combined stdout+stderr; long output keeps its start and end. The command is the script itself: don't wrap it in powershell -Command or sh -c. GATED: a command asks the operator unless that machine's approval settings allow it. " +
 			"There is no terminal: pass non-interactive flags. A command still running at its timeout moves to the background on that machine (see fleet_process); background: true starts it there at once.",
 			Parameters: obj(host+`,"command":{"type":"string"},"workdir":{"type":"string","description":"absolute directory to run in (default: the home folder of the account Tenant runs as there)"},"timeout":{"type":"integer","description":"seconds, default 120, max 600"},"background":{"type":"boolean","description":"return at once with a process id instead of waiting"}`, "host", "command"),
 			Gated:      true, Outbound: true},

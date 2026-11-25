@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -88,6 +90,34 @@ func (p Policy) gateExec(ctx context.Context, command string) error {
 		"Running shell commands is the highest-risk capability; off by default")
 }
 
+// A model that does not trust the shell it was given wraps its script in one
+// more: powershell -Command "$os = ...; $os". The command already runs in
+// PowerShell, which expands $os inside those double quotes (to nothing)
+// before the inner PowerShell starts, so the script arrives as "= ...; " and
+// dies. nestedPS is a command that is nothing but that wrapper; psDollar is
+// the same mistake anywhere in a command.
+var (
+	nestedPS = regexp.MustCompile("(?is)^\\s*powershell(?:\\.exe)?(?:\\s+-(?:NoProfile|NonInteractive|NoLogo|nop|noni|nol|(?:ExecutionPolicy|ep|ex)\\s+\\w+))*\\s+-c(?:ommand)?\\s+\"([^\"`]*\\$[^\"`]*)\"\\s*$")
+	psDollar = regexp.MustCompile("(?is)\\b(?:powershell|pwsh)(?:\\.exe)?\\s[^|;&\"]*-c(?:ommand)?\\s+\"[^\"`]*\\$")
+)
+
+// unnestPowerShell is command as it should run where the shell is already
+// Windows PowerShell, and what to tell the model about it. A wrapper around
+// a script with a $ in it and no quote or backtick of its own (those would
+// need unescaping, and a wrong guess runs another command) is taken off and
+// the script runs as written. Any other nested PowerShell whose double
+// quotes hold a $ runs as given, with the reason it probably failed. pwsh is
+// never unwrapped: it is another PowerShell than the one that runs here.
+func unnestPowerShell(command string) (run, note string) {
+	if m := nestedPS.FindStringSubmatch(command); m != nil {
+		return m[1], "\n[note: this already runs in PowerShell, so the script inside your powershell -Command \"...\" was run directly: wrapped, the outer shell expands its $variables to nothing first. Send the script by itself.]"
+	}
+	if psDollar.MatchString(command) {
+		return command, "\n[note: this already runs in PowerShell. Inside a nested powershell -Command \"...\" the outer shell expands every $variable (to nothing) before the inner one starts. Send the script by itself, or single-quote it.]"
+	}
+	return command, ""
+}
+
 // Dispatcher implements agent.ToolDispatcher for the OS plugin.
 type Dispatcher struct {
 	svc    *Service
@@ -128,7 +158,7 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 			Parameters: obj(`"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean"}`, "path", "old_string", "new_string"), Gated: true},
 		{Name: "os_make_dir", Description: "Create a directory (and any missing parents). GATED: needs write permission or approval.",
 			Parameters: obj(`"path":{"type":"string"}`, "path"), Gated: true},
-		{Name: "os_exec", Description: "Run a shell command on this machine (PowerShell on Windows, sh on Linux/macOS) and return its combined stdout+stderr; long output keeps its start and end. GATED: off unless enabled; destructive commands need explicit approval. " +
+		{Name: "os_exec", Description: "Run a shell command on this machine (PowerShell on Windows, sh on Linux/macOS) and return its combined stdout+stderr; long output keeps its start and end. The command is the script itself: don't wrap it in powershell -Command or sh -c. GATED: off unless enabled; destructive commands need explicit approval. " +
 			"Use for builds, installs, git, package managers, processes and scripts. To read or change files prefer os_read_file / os_edit_file / os_write_file over cat, sed or heredocs. " +
 			"There is no terminal: nothing can answer a prompt, so pass non-interactive flags (-y, --yes, --non-interactive, CI=1). sudo can't ask for a password; if a command needs it, ask the operator to run it. " +
 			"A command still running at its timeout is moved to the background (see os_process) instead of being killed; background: true starts it there at once (servers, watchers).",
@@ -393,6 +423,11 @@ func (d *Dispatcher) exec(ctx context.Context, args json.RawMessage) (string, bo
 		}
 		ctx = WithWorkDir(ctx, filepath.Clean(dir))
 	}
+	// Before the approval, so that what is approved is what runs.
+	note := ""
+	if runtime.GOOS == "windows" {
+		a.Command, note = unnestPowerShell(a.Command)
+	}
 	// The approval gateExec gets fills this slot, so the command's Security
 	// record names the approval that let it run.
 	ctx = event.WithApproval(ctx, "")
@@ -404,9 +439,10 @@ func (d *Dispatcher) exec(ctx context.Context, args json.RawMessage) (string, bo
 		if err != nil {
 			return err.Error(), true, nil
 		}
-		return out, false, nil
+		return out + note, false, nil
 	}
 	out, err := d.svc.Exec(ctx, a.Command, time.Duration(a.Timeout)*time.Second)
+	out += note
 	if err != nil {
 		// Surface the output AND the error — a non-zero exit is signal,
 		// not a tool failure.
