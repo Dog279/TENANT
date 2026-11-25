@@ -99,7 +99,7 @@ ended real work partway through. Set a positive value to turn one on. When a run
 reaches it, the run stops and the feed and the log say which limit it hit.
 
 `/agents limits` in the TUI and the **Run limits** card on the dashboard's
-Helpers page list every key with its value ("off" when unset).
+Sub-agents page list every key with its value ("off" when unset).
 
 Run limits (off unless set):
 

@@ -1,7 +1,11 @@
 {{define "content"}}
 {{template "jobs-flash" .}}
-{{if .Configured}}{{template "jobs-add" .}}{{end}}
-{{template "jobs-body" .}}
+{{if .Configured}}
+<div class="cols">
+<div class="col">{{template "jobs-add" .}}</div>
+<div class="col">{{template "jobs-body" .}}</div>
+</div>
+{{else}}{{template "jobs-body" .}}{{end}}
 {{end}}
 
 {{/* The parts a Scheduled jobs form re-renders in place (cronDone). Every
@@ -12,35 +16,142 @@
      cron-<id>, which a job's card uses. */}}
 {{define "jobs-flash"}}<div id="jobs-flash">{{template "ui-flash" .}}</div>{{end}}
 
+{{/* jobs-add is the add form (TEN-547). When is a list of common schedules
+     and Custom, which opens the card under it (CSS: :has(option:checked), no
+     script): a repeat, a minute, and a week of hours to tick. Dragging
+     across the week paints it: the Datastar expressions on the grid tick or
+     clear the block of boxes between where the drag began and where the
+     pointer is (the box pressed decides which), and put back what the drag
+     has left. A mouse click's own toggle is cancelled, since the press did
+     it; the keyboard's is kept. Without Datastar each box still ticks.
+     handleCronAddForm turns the boxes into the schedule (customSpec). */}}
 {{define "jobs-add"}}<div class="card" id="jobs-add">
+  <div class="card-head">Add a job</div>
   <form method="POST" action="/cron/add" class="cronadd" id="jobs-add-form{{.AddKey}}" data-on:submit__prevent__throttle.1s="@post('/cron/add', {contentType:'form', retryMaxCount:0})">
+    <label>What to ask your agent, or the command to run
+      <input type="text" name="prompt" class="cinput wide" required>
+    </label>
     <div class="crow">
-      <input type="text" name="name" placeholder="name (optional)" class="cinput">
-      <select name="preset" aria-label="when">
-        <option value="">when: pick one…</option>
-        <option value="@every 30m">every 30 minutes</option>
-        <option value="@every 1h">every hour</option>
-        <option value="0 9 * * *">daily at 9:00</option>
-        <option value="0 9 * * 1-5">weekdays at 9:00</option>
-        <option value="0 18 * * 5">Fridays at 18:00</option>
-      </select>
-      <input type="text" name="spec" placeholder="…or type when: 0 9 * * 1-5, or @every 30m" class="cinput">
-      <input type="text" name="tz" placeholder="time zone (optional, for example America/New_York)" class="cinput">
+      <label>When
+        <select name="preset">
+          <option value="">pick one…</option>
+          <option value="@every 30m">every 30 minutes</option>
+          <option value="@every 1h">every hour</option>
+          <option value="0 9 * * *">daily at 9:00</option>
+          <option value="0 9 * * 1-5">weekdays at 9:00</option>
+          <option value="0 18 * * 5">Fridays at 18:00</option>
+          <option value="custom">Custom…</option>
+        </select>
+      </label>
+      <label>Time zone
+        <select name="tz">
+          <option value="">the computer running Tenant</option>
+          <option>UTC</option>
+          <option>America/New_York</option>
+          <option>America/Chicago</option>
+          <option>America/Denver</option>
+          <option>America/Phoenix</option>
+          <option>America/Los_Angeles</option>
+          <option>America/Anchorage</option>
+          <option>Pacific/Honolulu</option>
+          <option>America/Toronto</option>
+          <option>America/Vancouver</option>
+          <option>America/Mexico_City</option>
+          <option>America/Bogota</option>
+          <option>America/Lima</option>
+          <option>America/Sao_Paulo</option>
+          <option>America/Argentina/Buenos_Aires</option>
+          <option>America/Santiago</option>
+          <option>Europe/London</option>
+          <option>Europe/Dublin</option>
+          <option>Europe/Lisbon</option>
+          <option>Europe/Madrid</option>
+          <option>Europe/Paris</option>
+          <option>Europe/Berlin</option>
+          <option>Europe/Amsterdam</option>
+          <option>Europe/Rome</option>
+          <option>Europe/Stockholm</option>
+          <option>Europe/Warsaw</option>
+          <option>Europe/Athens</option>
+          <option>Europe/Helsinki</option>
+          <option>Europe/Kyiv</option>
+          <option>Europe/Istanbul</option>
+          <option>Europe/Moscow</option>
+          <option>Africa/Cairo</option>
+          <option>Africa/Lagos</option>
+          <option>Africa/Nairobi</option>
+          <option>Africa/Johannesburg</option>
+          <option>Asia/Dubai</option>
+          <option>Asia/Tehran</option>
+          <option>Asia/Karachi</option>
+          <option>Asia/Kolkata</option>
+          <option>Asia/Dhaka</option>
+          <option>Asia/Bangkok</option>
+          <option>Asia/Jakarta</option>
+          <option>Asia/Singapore</option>
+          <option>Asia/Hong_Kong</option>
+          <option>Asia/Shanghai</option>
+          <option>Asia/Manila</option>
+          <option>Asia/Seoul</option>
+          <option>Asia/Tokyo</option>
+          <option>Australia/Perth</option>
+          <option>Australia/Adelaide</option>
+          <option>Australia/Brisbane</option>
+          <option>Australia/Sydney</option>
+          <option>Pacific/Auckland</option>
+        </select>
+      </label>
+      <label>Name
+        <input type="text" name="name" placeholder="optional" class="cinput">
+      </label>
     </div>
+    <fieldset class="when-card">
+      <legend>Custom schedule</legend>
+      <div class="crow">
+        <div class="when-repeat" role="radiogroup" aria-label="Repeat">
+          <label><input type="radio" name="repeat" value="daily"> Daily</label>
+          <label><input type="radio" name="repeat" value="weekly" checked> Weekly</label>
+          <label><input type="radio" name="repeat" value="monthly"> Monthly</label>
+          <label><input type="radio" name="repeat" value="yearly"> Yearly</label>
+        </div>
+        <label class="when-min">Minutes past the hour
+          <select name="minute">{{range $m := 12}}<option value="{{mul5 $m}}">:{{printf "%02d" (mul5 $m)}}</option>{{end}}</select>
+        </label>
+        <label class="when-date">On this date
+          <input type="date" name="date" class="cinput">
+        </label>
+      </div>
+      <div class="dim when-help">
+        <span class="h-weekly">Tick the days and hours it runs: click, or hold and drag. Every day you tick runs at the same hours.</span>
+        <span class="h-daily">Tick the hours it runs, under any day: it runs at those hours every day.</span>
+        <span class="h-monthly">Tick the hours it runs, under any day: it runs at those hours on that day of every month. A month without that day is skipped.</span>
+        <span class="h-yearly">Tick the hours it runs, under any day: it runs at those hours on that date every year.</span>
+      </div>
+      <div class="wk" role="group" aria-label="Days and hours"
+        data-on:pointerdown="evt.target.matches('.wk input') && (el.from = evt.target.value.split('-').map(Number), el.paint = !evt.target.checked, el.was = [...el.querySelectorAll('input')].map(c => c.checked), evt.target.checked = el.paint)"
+        data-on:pointerover="el.from && evt.buttons === 1 && evt.target.matches('.wk input') && (([d, h]) => el.querySelectorAll('input').forEach((c, i) => { const [x, y] = c.value.split('-').map(Number); c.checked = (x - el.from[0]) * (x - d) <= 0 && (y - el.from[1]) * (y - h) <= 0 ? el.paint : el.was[i] }))(evt.target.value.split('-').map(Number))"
+        data-on:pointerup__window="el.from = null"
+        data-on:click="evt.detail > 0 && evt.target.matches('.wk input') && evt.preventDefault()">
+        <span></span>{{range $d := .Days}}<span class="wk-d">{{$d}}</span>{{end}}
+        {{range $h := 24}}<span class="wk-h">{{printf "%02d" $h}}:00</span>{{range $i, $d := $.Days}}<input type="checkbox" name="slot" value="{{$i}}-{{$h}}" aria-label="{{$d}} {{printf "%02d" $h}}:00">{{end}}
+        {{end}}
+      </div>
+    </fieldset>
+    <details class="advanced"><summary>Type a schedule instead</summary>
+      <input type="text" name="spec" placeholder="0 9 * * 1-5, or @every 30m" class="cinput wide" aria-label="A typed schedule">
+      <div class="dim">What you type here is used instead of the choice above.</div>
+    </details>
     <div class="crow">
-      <input type="text" name="prompt" placeholder="what to ask your agent, or the command to run" class="cinput wide" required>
-      <button type="submit" class="btn">Schedule</button>
-    </div>
-    <div class="crow">
-      <label class="dim">What it does
+      <label>What it does
         <select name="kind">
           <option value="prompt">Ask your agent (safe)</option>
           <option value="shell">Run a command on the computer running Tenant (risky)</option>
         </select>
       </label>
-      <label class="dim"><input type="checkbox" name="exec" value="true"> Let this job make changes (risky)</label>
+      <label class="check"><input type="checkbox" name="exec" value="true"> Let this job make changes (risky)</label>
     </div>
-    <div class="dim">By default a job runs without you and can only look things up, research and report. A job that runs a command, or that you let make changes, can change things without asking you, and only while scheduled jobs may make changes (below).</div>
+    <div class="actions"><button type="submit" class="btn on">Schedule</button></div>
+    <div class="dim">By default a job runs without you and can only look things up, research and report. A job that runs a command, or that you let make changes, can change things without asking you, and only while scheduled jobs may make changes.</div>
   </form>
 </div>{{end}}
 
@@ -94,7 +205,7 @@
   </div>
 </div>
 {{else}}
-{{template "ui-empty" "No scheduled jobs yet. Add one above: it runs on its schedule without you."}}
+{{template "ui-empty" "No scheduled jobs yet. Add one: it runs on its schedule without you."}}
 {{end}}
 
 {{end}}

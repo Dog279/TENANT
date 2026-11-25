@@ -420,7 +420,7 @@ func (s *Server) handleResearchStop(w http.ResponseWriter, r *http.Request) {
 	case s.research == nil:
 		s.researchDone(w, r, "", "")
 	case s.research.Stop():
-		s.researchDone(w, r, "Stopping the research. What the helpers found so far stays in the list.", "")
+		s.researchDone(w, r, "Stopping the research. What the sub-agents found so far stays in the list.", "")
 	default:
 		s.researchDone(w, r, "", "Nothing is running, so there's nothing to stop.")
 	}

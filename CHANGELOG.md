@@ -11,6 +11,30 @@ Releases page.
   so every `wiki_save`, and every write into the wiki or `<install>/work`, was refused. The wiki
   (wherever it is configured) and the install folder's `work` directory are the job's to write;
   config, data and the rest of the install folder stay protected.
+- **The dashboard has a new look, in light and dark (TEN-547).** It is drawn with Web Awesome's
+  free stylesheets (3.15.0, MIT), kept in the binary: nothing loads from another site. A sun or
+  moon button at the top right switches between light and dark; until you choose, the page
+  follows the computer's setting. Pages use the window's whole width, and secondary text is
+  brighter in both schemes.
+  - **The alerts bell.** The line across the top of every page is gone. A bell at the top right
+    counts what is waiting for you (approvals and notices, "99+" past 99) and opens them; it
+    turns amber while your agent is busy.
+  - **Two columns.** On a wide screen Research, Sub-agents, Tools, Scheduled jobs, Fleet, a
+    machine's page, Approvals & safety and Access put the forms and settings on one side and
+    the list on the other, each scrolling on its own. A narrow screen stacks them as before.
+  - **A confirm step no longer moves the page.** It opens as a box over the page: under its
+    button on a wide screen, at the bottom of a phone's.
+  - **Helpers are called Sub-agents on the dashboard:** the page, its words, and the run
+    limits' names ("Sub-agents per run", "Sub-agents at once", in the terminal app's list
+    too). Commands and settings keep their names.
+  - **Scheduled jobs.** The time zone is a list. When has Custom: Daily, Weekly, Monthly or
+    Yearly, the minutes past the hour, and a week of hours to tick or drag across. A weekly job
+    runs at the same hours on each day ticked. A typed schedule is still there, behind "Type a
+    schedule instead".
+  - **Integrations** lists the services you can add first, then the connected ones, each with
+    its settings behind Settings.
+  - The page tells browsers and Dark Reader not to darken it a second time (`color-scheme:
+    only light`, `darkreader-lock`): darkened again, the light scheme came out dark grey.
 
 ## 0.2.0 (2026-11-24)
 

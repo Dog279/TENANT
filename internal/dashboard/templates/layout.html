@@ -1,9 +1,16 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="wa-theme-default">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>tenant{{if .Title}} · {{.Title}}{{end}}</title>
+  <meta name="color-scheme" content="light dark">
+  {{/* The page brings its own light and dark, so a browser or an extension
+       must not darken it again: styles.css says "only" for Chromium's forced
+       dark mode, and this line is Dark Reader's switch (TEN-547). */}}
+  <meta name="darkreader-lock">
+  <script src="{{themeURL}}"></script>
+  <link rel="stylesheet" href="{{waURL}}">
   <link rel="stylesheet" href="{{stylesURL}}">
 </head>
 <body>
@@ -37,7 +44,7 @@
 
         <div class="nav-group">Capabilities</div>
         <a href="/tools" class="{{if eq .Page "tools"}}on{{end}}">Tools</a>
-        <a href="/agents" class="{{if eq .Page "agents"}}on{{end}}">Helpers</a>
+        <a href="/agents" class="{{if eq .Page "agents"}}on{{end}}">Sub-agents</a>
         <a href="/mcp" class="{{if eq .Page "mcp"}}on{{end}}">Remote services</a>
         <a href="/cron" class="{{if eq .Page "cron"}}on{{end}}">Scheduled jobs</a>
         <a href="/fleet" class="{{if eq .Page "fleet"}}on{{end}}">Fleet</a>
@@ -55,8 +62,24 @@
       </nav>
     </aside>
     <main class="main">
-      <header class="hdr"><h1>{{.Title}}</h1></header>
-      <div class="status-wrap" data-init="@get('/ui/status')" data-on-interval__duration.20s="@get('/ui/status')" data-on:datastar-fetch="evt.detail.type === 'error' && evt.detail.argsRaw.status === '401' && location.assign('/settings?next=' + encodeURIComponent(location.pathname + location.search))"><div id="ui-status" class="status-strip"></div></div>
+      {{/* The alerts bell (TEN-547). What the strip used to show across the top
+           of every page now sits in a popover behind the bell: the agent's
+           busy line, the approvals waiting, an update's notices. #alert-n is
+           the red count on the bell; ui-status patches it with #ui-status. */}}
+      <header class="hdr"><div class="hdr-in"><h1>{{.Title}}</h1>
+        <div class="alerts">
+          <button type="button" class="bell" popovertarget="alerts" aria-label="Alerts"></button>
+          <span id="alert-n" class="bell-n"></span>
+          <div id="alerts" class="alerts-pop" popover>
+            <div class="card-head">Alerts</div>
+            <div class="status-wrap" data-init="@get('/ui/status')" data-on-interval__duration.20s="@get('/ui/status')" data-on:datastar-fetch="evt.detail.type === 'error' && evt.detail.argsRaw.status === '401' && location.assign('/settings?next=' + encodeURIComponent(location.pathname + location.search))"><div id="ui-status" class="status-strip"></div></div>
+            <div class="alerts-none dim">Nothing needs you right now.</div>
+          </div>
+        </div>
+        {{/* Light or dark: a sun while the page is light, a moon while it is
+             dark (CSS draws it); theme.js switches on a click. */}}
+        <button type="button" id="theme-toggle" class="theme-toggle" aria-label="Switch between light and dark" title="Switch between light and dark"></button>
+      </div></header>
       <section class="page">{{block "content" .}}{{end}}</section>
     </main>
   </div>

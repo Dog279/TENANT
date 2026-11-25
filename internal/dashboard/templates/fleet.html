@@ -76,14 +76,19 @@
 {{with .Added}}{{template "fleet-added" .}}{{end}}
 {{with .Result}}{{template "fleet-result" .}}{{end}}
 {{if .View.NoRecovery}}<div class="banner warn" role="status"><span>This fleet has no recovery key yet, so no machine's memory is kept. Make it in a terminal on the computer running Tenant, where its identity is shown once: run <code>tenant fleet init</code> there, or the terminal app's own fleet init command.</span></div>{{end}}
+{{if .Problem}}
 <div class="card">
   <div class="card-head">Who holds the fleet</div>
   <div>{{.View.Holder}}</div>
   {{if not .View.Here}}<div class="dim">Only the process that holds the fleet knows which machines are online. A change made on this page still reaches it within a few seconds.</div>{{end}}
 </div>
-{{if .Problem}}
 <div class="banner err" role="alert">{{.Problem}}</div>
 {{else}}
+{{/* Two columns on a wide screen (TEN-547): the machines are first here, so
+     a phone shows them first, and .swap puts them on the right with the
+     fleet's settings on the left. */}}
+<div class="cols swap">
+<div class="col">
 <div class="card">
   <div class="card-head">Machines</div>
   {{if .View.Groups}}<div class="fl-groups"><span class="dim">Show:</span> {{if .Filter}}<a class="linkbtn" href="/fleet">All</a>{{else}}<strong>All</strong>{{end}}{{range .View.Groups}} · <a class="linkbtn" href="/fleet?group={{.Name}}">{{visibleText .Name}}</a> <span class="dim">({{len .Members}})</span>{{end}}</div>{{end}}
@@ -118,8 +123,15 @@
   {{else if .Filter}}
   {{template "ui-empty" "This group has no machines yet. Add some on the group's own page."}}
   {{else}}
-  {{template "ui-empty" "No machines yet. Add one below: give it a name, then paste the line this page shows on the new machine."}}
+  {{template "ui-empty" "No machines yet. Add one: give it a name, then paste the line this page shows on the new machine."}}
   {{end}}
+</div>
+</div>
+<div class="col">
+<div class="card">
+  <div class="card-head">Who holds the fleet</div>
+  <div>{{.View.Holder}}</div>
+  {{if not .View.Here}}<div class="dim">Only the process that holds the fleet knows which machines are online. A change made on this page still reaches it within a few seconds.</div>{{end}}
 </div>
 <div class="card">
   <div class="card-head">Add machine</div>
@@ -133,7 +145,10 @@
 </div>
 {{template "fl-defaults" .}}
 {{template "fl-groups" .}}
-{{with .View.Rollout}}{{template "fl-rollout" .}}{{end}}
+{{with .View.Rollout}}{{template "fl-rollout" .}}
+</div>
+</div>
+{{end}}
 {{end}}
 {{end}}
 
@@ -283,6 +298,8 @@
 
 {{define "fleet-machine"}}{{$m := .One}}
 <p><a class="linkbtn" href="/fleet">All machines</a></p>
+<div class="cols swap">
+<div class="col">
 <div class="card">
   <div class="row"><div><strong>{{$m.Name}}</strong> <span class="{{$m.Pill}}">{{$m.StateWords}}</span></div></div>
   <table class="ovtable fl-facts">
@@ -307,7 +324,8 @@
     <tr><th>Its own limit</th><td class="fl-said">{{$m.Ceiling}}</td></tr>
   </table>
 </div>
-
+</div>
+<div class="col">
 {{if eq $m.State "pending"}}
 <div class="card">
   <div class="card-head">Confirm this machine</div>
@@ -433,6 +451,8 @@
     {{template "ui-confirm" (confirm "/fleet/revoke" "Delete its record" "Its record and approval settings are deleted, and no machine enrolled later can take over its id." "machine" $m.ID "settings" "delete")}}
   </div>
   {{end}}
+</div>
+</div>
 </div>
 {{end}}
 

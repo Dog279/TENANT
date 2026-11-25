@@ -64,7 +64,7 @@ func TestAccessInlineFormsInChrome(t *testing.T) {
 				shot("block"),
 				stayed(t, "Block", row("sandbox"), &at),
 				chromedp.Text(row("sandbox"), &sandbox, chromedp.ByQuery),
-				chromedp.Text(`#ui-status`, &strip, chromedp.ByQuery),
+				chromedp.Evaluate(`document.getElementById('ui-status').textContent`, &strip), // behind the bell: read it closed
 				chromedp.Evaluate(`(r => [r.left, innerWidth - r.right, r.top, innerHeight - r.bottom, document.querySelector('.menu-btn').getBoundingClientRect().left - r.right])(document.getElementById('toast').getBoundingClientRect())`, &place),
 				chromedp.Poll(`getComputedStyle(document.getElementById('toast')).visibility === 'hidden'`, nil, wait), // it fades
 			)
@@ -75,7 +75,7 @@ func TestAccessInlineFormsInChrome(t *testing.T) {
 				t.Errorf("the row doesn't show its new setting: %q", sandbox)
 			}
 			if !strings.Contains(strip, "2 new safety checks") {
-				t.Errorf("the status strip wasn't updated: %q", strip)
+				t.Errorf("the alerts behind the bell weren't updated: %q", strip)
 			}
 			if len(place) != 5 || slices.Min(place[:4]) < 0 {
 				t.Fatalf("the toast isn't all on the screen: left, right, top, bottom gaps %v", place)
@@ -83,8 +83,8 @@ func TestAccessInlineFormsInChrome(t *testing.T) {
 			if phone && (place[0] > 20 || place[2] > 40 || place[4] < 0) {
 				t.Errorf("on a phone the toast is across the top, left of Menu; gaps left, right, top, bottom, to Menu are %v", place)
 			}
-			if !phone && (place[1] > 40 || place[2] > 40) {
-				t.Errorf("on a desktop the toast is top right; gaps left, right, top, bottom are %v", place)
+			if !phone && (place[1] > 40 || place[2] > 80) {
+				t.Errorf("on a desktop the toast is top right, under the header; gaps left, right, top, bottom are %v", place)
 			}
 
 			// A confirm step: Allow opens it, Yes closes it and says so.

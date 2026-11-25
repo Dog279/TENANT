@@ -1,7 +1,7 @@
 {{/* ui.html: the shared partials (TEN-211), parsed into every page set.
      DESIGN.md says when to use each. Keep ui-status free of stray
-     whitespace: its idle output must be exactly the empty div, which CSS
-     hides with :empty. */}}
+     whitespace: its idle output must be exactly the empty div and the empty
+     #alert-n (the bell's count), which CSS tells apart with :empty. */}}
 
 {{define "ui-flash"}}{{if .Msg}}<div class="banner ok" role="status">{{.Msg}}</div>{{end}}{{if .Err}}<div class="banner err" role="alert">{{.Err}}</div>{{end}}{{end}}
 
@@ -17,7 +17,7 @@
 {{- with .Busy}}{{template "ui-busy" .}}{{end -}}
 {{- if and .Approvals (not (and .Busy .Busy.Answer))}}<div class="banner warn">{{if eq .Approvals 1}}1 action is{{else}}{{.Approvals}} actions are{{end}} waiting for your OK. <a href="/safety">Answer it</a></div>{{end -}}
 {{- range .Notices}}<div class="banner info notice"><span class="nt" title="{{.Text}}">{{.Text}}</span>{{if .Href}} <a href="{{.Href}}">{{.Link}}</a>{{end}}</div>{{end -}}
-</div>{{end}}
+</div><span id="alert-n" class="bell-n">{{.AlertCount}}</span>{{end}}
 
 {{/* perm-seg is one safety category's Ask / Allow / Deny control (a
      PermSeg): the current mode is a pressed, disabled button; Ask and Deny
