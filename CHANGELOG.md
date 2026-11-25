@@ -5,6 +5,20 @@ Releases page.
 
 ## Unreleased
 
+- **Fleet groups, default categories and bulk changes (TEN-546).** Machines can be put in named
+  groups (`tenant fleet group`, `/fleet group`), each with rules laid over its members when the
+  group is applied (`tenant fleet group apply`), never live: a call is still decided by the
+  machine's own scheme alone, and changing a group moves no machine. The defaults for new
+  machines now take categories as well as rules (`tenant fleet permissions --defaults set|unset
+  <category>`, settings key `fleet_permissions`; groups are `fleet_groups`). A new machine's
+  copy is the master's scheme clamped, then the default categories, then the fleet's rules, then
+  its groups' rules in name order, each winning over the one before; the confirm screen says
+  `fleet default` and `group <name>` where they did. `tenant fleet permissions --group <g> |
+  --all` makes one edit to many machines, one Security record per machine, exit 1 if any was not
+  changed; `tenant fleet update --group <g>` updates a group's members in turn. Both keys are
+  strict and bounded: unreadable, no machine can be confirmed or copied again until fixed. New
+  events `security/4325` and `fleet/5003`. See docs/fleet-runbook.md, section 3a.
+
 - **An install script installs its own release.** The scripts asked GitHub for the latest
   release, which skips prereleases, so `install.ps1` or `install.sh` taken from a prerelease
   installed 0.1.0, and the fleet's paste line then failed with `unknown command: child`. The

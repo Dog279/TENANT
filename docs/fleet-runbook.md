@@ -175,8 +175,13 @@ ceiling: its own words, not checked) and the approval scheme it will start with:
 
 - a copy of the master's local scheme, with exec, write, destructive, send and sandbox no
   looser than **ask** whatever the master allows;
-- the fleet's rules for new machines laid over it (`tenant fleet permissions --defaults`);
+- the fleet's default categories and rules for new machines laid over it (`tenant fleet
+  permissions --defaults`), and the rules of each group it is already in (section 3a);
 - anything you set here: `tenant fleet confirm web1 --set exec=allow`.
+
+Each line of the screen says where its value came from when it is not the master's own:
+`set by you`, `fleet default`, `fleet rule`, `group <name>`, or `(this master: allow)` for a
+category the copy clamped.
 
 The enroll endpoint takes five attempts a minute from one address. A code that is presented
 twice is refused and raises an alert: compare the digits on the machine's own screen.
@@ -202,8 +207,10 @@ headline says "on your fleet machine <name>".
 ```
 tenant fleet permissions web1                               # the machine's scheme
 tenant fleet permissions web1 add "os_exec(systemctl status *)" allow
-tenant fleet permissions web1 --from defaults|master        # lay the fleet's rules over it again; copy the master's again
+tenant fleet permissions web1 --from defaults|master        # lay the fleet's and its groups' rules over it again; copy the master's again
 tenant fleet permissions --defaults add "os_exec(uptime)" allow   # what every newly confirmed machine starts with
+tenant fleet permissions --defaults set web deny            # a category every newly confirmed machine starts with
+tenant fleet permissions --group web set exec ask           # the same change to each member of a group (--all: every confirmed machine)
 ```
 
 A relay (Discord, iMessage) or a cron job reaches no machine, reads included, until you open
@@ -216,6 +223,75 @@ plain read on another asks, whatever that machine's scheme says.
 
 A picture a tool makes on a machine (a screenshot, an image file read) stays there: the link
 carries text. The result says so.
+
+## 3a. Groups and default categories (TEN-546)
+
+A machine's scheme is its own. Nothing the fleet holds is read when a call is decided: a call
+on web1 is decided by web1's stored scheme and nothing else. Two things are **laid over** a
+scheme on purpose, at a step you take, and each laying has one Security record per machine:
+
+- the **defaults for new machines**: categories you set (`fleet_permissions`; a category you
+  did not set comes from the master's copy) and rules (`fleet_rules`);
+- **groups**: a name, its machines (by id; a machine may be in any number of groups, in any
+  state) and rules. A group has no categories.
+
+**The layering order.** A machine's *fresh copy* (what it gets when it is confirmed, or copied
+again with `--from master`) is built in this order, each layer winning over the one before it
+where they disagree:
+
+1. a copy of the master's local scheme, clamped (exec, write, destructive, send, sandbox no
+   looser than ask);
+2. the fleet's default categories: each one you set replaces the copy's mode;
+3. the fleet's rules;
+4. the rules of each group the machine is in, groups in ascending name order (compared without
+   case): a later group wins over an earlier one, and any group wins over a fleet rule.
+
+A rule laid over a scheme replaces every rule of the machine that it answers for (the same
+pattern, a narrower command under its prefix, a tool its glob covers) and leaves the machine's
+categories alone.
+
+**Which layer wins after that.** Once laid, the scheme is the machine's: an edit made to it
+(a category, a rule, an "always" on its card) stands, over every layer, until a layer is laid
+over it again. Changing a group (its rules or its machines) or a default **moves no machine**;
+the answer says so and names the step that does.
+
+```
+tenant fleet group create web                       # names: letters, digits, . _ -; not "all", not a machine id
+tenant fleet group add web web1 web2                # machines by name or id
+tenant fleet group rules web add "os_exec(systemctl restart nginx)" allow
+tenant fleet group                                  # the groups; show <group> for one
+tenant fleet group apply web                        # lay the fleet's rules, then each member's groups' rules, over each member
+tenant fleet group remove web web2
+tenant fleet group delete web                       # its members keep what it laid
+tenant fleet permissions --defaults set exec ask    # unset <category>: back to the master's copy
+```
+
+**Apply** (`tenant fleet group apply`, and `--from defaults` for one machine or with
+`--group`/`--all`) lays the fleet's rules and then the rules of all of that machine's groups,
+in name order, over the scheme it has; its categories stay. A member that is pending, revoked
+or whose scheme cannot be read is skipped and named in the answer, and the command exits 1.
+
+**Bulk.** `tenant fleet permissions --group <group> | --all` takes the same edits as one
+machine (`set`, `add`, `rm`, `--from defaults|master`) and makes them to each machine in turn,
+by name, through the one-machine path: one line and one Security record per machine changed,
+none for the batch, never stopping at a failure, exit 1 if any machine was not changed. `--all`
+is every confirmed machine. `tenant fleet update --group <group>` updates the members one after
+the other, as `--all` does.
+
+**Revoking.** `--delete-scheme` takes the machine out of every group; `--keep-scheme` keeps its
+memberships, for a machine that adopts the id.
+
+**When a key can't be read.** `fleet_permissions` and `fleet_groups` are read strictly, like
+`fleet_rules`: an unknown category, a mode that is not ask/allow/deny, a key twice (group names
+differing only in case are the same name), null, trailing text, a member that is not a machine
+id, or over 256 groups, 4096 machines or 512 rules in a group makes the whole key unreadable.
+Then no machine can be confirmed or copied again (and, for `fleet_groups`, no group applied
+or changed), the operator is told once, and the text is kept as written for you to fix. Machines that have a
+scheme keep deciding by it.
+
+The terminal app has the same verbs: `/fleet group …`, and `/permissions fleet --defaults
+set|unset|add|rm`. The command line and the terminal app take a loosening (allow) without a
+second step, as for one machine.
 
 ## 4. On the machine
 

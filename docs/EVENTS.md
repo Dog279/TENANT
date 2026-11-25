@@ -1257,6 +1257,7 @@ Writes the `fleet` log.
 | [3101](#fleet-3101) | error | Setup | `A spent enrollment code for {name} was presented again from {remote}` |
 | [5001](#fleet-5001) | info | Setup | `The addresses machines dial are now {addresses}` |
 | [5002](#fleet-5002) | info | Setup | `Turns from the {relay} relay may {state} the fleet` |
+| [5003](#fleet-5003) | info | Setup | `Fleet {what}: {change}` |
 
 ### fleet 1
 
@@ -1957,6 +1958,20 @@ Writes the `fleet` log.
 **Why it happens.** tenant fleet relay or /fleet relay.
 
 **What to do.** None when intended. It is off by default.
+
+### fleet 5003
+
+`Fleet {what}: {change}`
+
+- **Level:** info · **Channel:** operational · **Task:** Setup · **Log:** fleet
+- **Fields:** `what`, `change`, `detail`
+- **Find it:** `provider:fleet id:5003`
+
+**What it means.** A group of machines, or the defaults new machines start with, changed: what names which. No machine moved: a group's rules reach its members when it is applied, and the defaults when a machine is confirmed or copied again. The same change is in the Security log (security/4325) with who made it.
+
+**Why it happens.** tenant fleet group, tenant fleet permissions --defaults set|unset, /fleet group in the terminal app, or the dashboard's Fleet page.
+
+**What to do.** None when intended. To lay a group's rules over its members: tenant fleet group apply <group>.
 
 ## imessage
 
@@ -5657,6 +5672,7 @@ Writes the `security` log.
 | [4322](#security-4322) | error | Fleet | `A spent fleet enrollment code for {name} was presented again from {remote}` |
 | [4323](#security-4323) | info | Fleet | `Fleet machine {name}: {change}` |
 | [4324](#security-4324) | warning | Fleet | `Fleet machine {name} was not confirmed: {reason}` |
+| [4325](#security-4325) | info | Fleet | `Fleet {what}: {change}` |
 | [4501](#security-4501) | info | Configuration | `{file} changed: {changes} settings` |
 | [4601](#security-4601) | info | Secret | `Secret {secret} stored from {surface}` |
 | [4602](#security-4602) | info | Secret | `Secret {secret} changed from {surface}` |
@@ -5955,7 +5971,7 @@ Writes the `security` log.
 - **Keywords:** `audit.success`
 - **Find it:** `provider:security id:4323`
 
-**What it means.** The operator changed the fleet: change is initialised (this Tenant became a master), code issued, confirmed, renamed, revoked, removed (revoked, and its record and approval scheme deleted) or scheme changed (the machine's approval scheme was replaced by a fresh copy of the master's, or the fleet's rules were laid over it again; detail says which). For a confirmed machine, detail is what the machine reported about itself (its own words) and the categories the operator loosened. surface is where the operator was: cli, tui or dashboard.
+**What it means.** The operator changed the fleet: change is initialised (this Tenant became a master), code issued, confirmed, renamed, revoked, removed (revoked, and its record and approval scheme deleted), scheme changed (the machine's approval scheme was replaced by a fresh copy of the master's, or the fleet's rules and its groups' rules were laid over it again; detail says which and names the groups) or rule changed (one of its own rules set or removed). A change made to several machines at once has one record per machine. For a confirmed machine, detail is what the machine reported about itself (its own words) and the categories the operator loosened. surface is where the operator was: cli, tui or dashboard.
 
 **Why it happens.** tenant fleet init, enroll, confirm, rename, revoke or permissions --from; /fleet confirm or revoke in the terminal; or the dashboard's Fleet page.
 
@@ -5975,6 +5991,21 @@ Writes the `security` log.
 **Why it happens.** The six digits typed are not the ones that machine shows (a typo, or the pending machine is not the one in front of you), or the machine is not waiting for confirmation. On the dashboard also: the request did not come from a browser signed in on the computer running Tenant (it came with the API key, by a tailnet or proxy name, through a proxy or from another address), or too many attempts for that machine failed and the next ones have to wait.
 
 **What to do.** Read the six digits from the machine's own screen and try again. If they never match, the pending machine is not yours: tenant fleet revoke it. A machine is confirmed in the terminal, or in a browser on the computer running Tenant at the dashboard's 127.0.0.1 address; a refusal from an address you don't know means someone who can reach the dashboard tried.
+
+### security 4325
+
+`Fleet {what}: {change}`
+
+- **Level:** info · **Channel:** operational · **Task:** Fleet · **Log:** security
+- **Fields:** `what`, `change`, `detail`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4325`
+
+**What it means.** The operator changed what the fleet lays over its machines' schemes on purpose: what is a group (group <name>) or the defaults for new machines. change is created, deleted, machines added, machines removed, rule set, rule removed, default set or default unset; detail says which. No machine's scheme moves with it: a machine changes when it is confirmed, copied again or applied, and each of those has its own record (security/4323). surface is where the operator was: cli, tui or dashboard.
+
+**Why it happens.** tenant fleet group, tenant fleet permissions --defaults set|unset, /fleet group and /permissions fleet --defaults in the terminal, or the dashboard's Fleet page.
+
+**What to do.** None when intended. A loosened default or an allow rule in a group reaches a machine only when it is applied: check the group's rules before tenant fleet group apply.
 
 ### security 4501
 
