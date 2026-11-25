@@ -611,6 +611,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		cfgDir:       c.cfgDir,
 		dataDir:      c.dataDir,
 		allowExec:    cronExecGate,
+		writeRoots:   cronWriteRoots(wikiIx),
 		authProblems: mcpAuthProblemsFn(c.cfgDir, mainTools), // banner on every summary while a connector's sign-in is dead
 		violations:   sandboxViolationsSince(hub),            // and how many sandbox refusals since the job last ran
 		ask:          broker.Ask,                             // an alert's investigation asks first (TEN-400)

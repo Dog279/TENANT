@@ -5,6 +5,12 @@ Releases page.
 
 ## Unreleased
 
+- **Fixed: a scheduled exec job could not write its own notes** when Tenant runs from a folder
+  that also holds the wiki (an install at `C:\Tenant` with the wiki in `C:\Tenant\twiki`): the
+  guard that keeps an unattended job out of Tenant's own files took the whole install folder,
+  so every `wiki_save`, and every write into the wiki or `<install>/work`, was refused. The wiki
+  (wherever it is configured) and the install folder's `work` directory are the job's to write;
+  config, data and the rest of the install folder stay protected.
 - **The dashboard has a new look, in light and dark (TEN-547).** It is drawn with Web Awesome's
   free stylesheets (3.15.0, MIT), kept in the binary: nothing loads from another site. A sun or
   moon button at the top right switches between light and dark; until you choose, the page
