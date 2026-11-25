@@ -38,6 +38,7 @@ func TestFleetDashConfirmFromElsewhere(t *testing.T) {
 		r.Host = "dash.tailnet.example"
 		r.Header.Set("Origin", "http://dash.tailnet.example")
 		r.Header.Set("X-Forwarded-For", "100.64.0.7")
+		r.Header.Set("Tailscale-User-Login", "op@example.com")
 	}
 	apiKey := func(r *http.Request) {
 		r.Host = "dash.tailnet.example"
@@ -85,11 +86,32 @@ func TestFleetDashConfirmFromElsewhere(t *testing.T) {
 	}
 	pending("turned off, the control asked directly")
 
+	// Turning it on takes a person at a terminal. A command with no terminal
+	// behind it (a script, the agent) is refused and writes nothing; so is an
+	// answer that is not "on".
+	asked := fleetAsk // the lab's: it answers with l.answer
+	fleetAsk = func(string) (string, error) {
+		return "", errors.New("this needs a person at a terminal: standard input is not one")
+	}
+	if out, err := d.l.run("remote-confirm", "on"); err == nil || !strings.Contains(err.Error(), "needs a person at a terminal") {
+		t.Errorf("turning it on with no terminal: %q, %v", out, err)
+	}
+	fleetAsk = asked
+	for _, answer := range []string{"", "yes", "off"} {
+		d.l.answer = answer
+		if out, err := d.l.run("remote-confirm", "on"); err == nil || err.Error() != "not turned on" {
+			t.Errorf("turning it on, answered %q: %q, %v", answer, out, err)
+		}
+	}
+	if fleetRemoteConfirmOn(d.l.cfg) || hasRecord(d.records(catalog.FleetMachineChanged), "remote confirmation turned on") {
+		t.Fatal("a refused switch turned remote confirmation on, or recorded that it did")
+	}
 	// The operator turns it on at the master's terminal: config.json holds it,
 	// the Security log and the fleet log say so, and the running dashboard
 	// reads it without a restart.
-	if said := d.l.must("remote-confirm", "on"); !strings.Contains(said, "remote confirmation is on") {
-		t.Errorf("turning it on: %q", said)
+	d.l.answer, d.l.asked = "on", nil
+	if said := d.l.must("remote-confirm", "on"); !strings.Contains(said, "remote confirmation is on") || len(d.l.asked) != 1 || !strings.Contains(d.l.asked[0], "Type on to turn it on") {
+		t.Errorf("turning it on: %q, asked %q", said, d.l.asked)
 	}
 	if lc, err := loadLaunchConfig(d.l.cfg); err != nil || !lc.Fleet.RemoteConfirm {
 		t.Fatalf("config.json after turning it on: %+v (%v)", lc.Fleet, err)
@@ -104,7 +126,10 @@ func TestFleetDashConfirmFromElsewhere(t *testing.T) {
 		t.Errorf("the page on this computer asks for the key")
 	}
 
-	// On: still never the API key, and never a session without the key.
+	// On: still not a request that carries only the API key, and never a
+	// session without the key. (What that does not hold against, the key's
+	// holder signing in from a script, is internal/dashboard's
+	// TestFleetConfirmFromElsewhereTheKeysHolder.)
 	if a := d.send(http.MethodPost, "/fleet/confirm", form(ch.code, fleetDashKey), apiKey); a.code != http.StatusForbidden || !strings.Contains(a.body, notHere) {
 		t.Errorf("turned on, the API key: %d %q", a.code, a.body)
 	}
@@ -149,15 +174,19 @@ func TestFleetDashConfirmFromElsewhere(t *testing.T) {
 		t.Errorf("the scheme it started with: %v; want exec no looser than ask whatever the master allows", scheme.Permissions)
 	}
 	eventually(t, "the confirmed machine links", func() bool { return client.Status().State == fleet.LinkConnected && online(d.mgr, ch.id) })
-	if got := d.records(catalog.FleetMachineChanged); !hasRecord(got, "operator@"+surfaceDashboardRemote, "name=web1", "machine="+ch.id, "change=confirmed", `"asked_by":"dashboard session `) ||
-		hasRecord(got, "operator@dashboard ", "change=confirmed") {
-		t.Errorf("the Security record of the confirmation does not say it was asked from elsewhere:\n%s", strings.Join(got, "\n"))
+	// Every request the proxy passes on comes from this computer, so the record
+	// also quotes what the proxy said of who it was, as not checked.
+	if got := d.records(catalog.FleetMachineChanged); !hasRecord(got, "operator@"+surfaceDashboardRemote, "name=web1", "machine="+ch.id, "change=confirmed", `"asked_by":"dashboard session `,
+		`from 127.0.0.1:`, `its proxy says \"op@example.com\" (not checked)`) || hasRecord(got, "operator@dashboard ", "change=confirmed") {
+		t.Errorf("the Security record of the confirmation does not say it was asked from elsewhere, and by whom:\n%s", strings.Join(got, "\n"))
 	}
 
 	// Turned off again: shut for the next machine, whatever its page showed.
+	// Turning it off asks nobody.
 	other := d.l.enroll("web2", fleet.Reported{})
-	if said := d.l.must("remote-confirm", "off"); !strings.Contains(said, "remote confirmation is off") {
-		t.Errorf("turning it off: %q", said)
+	d.l.asked = nil
+	if said := d.l.must("remote-confirm", "off"); !strings.Contains(said, "remote confirmation is off") || len(d.l.asked) != 0 {
+		t.Errorf("turning it off: %q, asked %q", said, d.l.asked)
 	}
 	if a := d.send(http.MethodPost, "/fleet/confirm", url.Values{"machine": {other.id}, "code": {other.code}, "key": {fleetDashKey}}, elsewhere); a.code != http.StatusForbidden || !strings.Contains(a.body, notHere) {
 		t.Errorf("turned off again, with the key and the digits: %d %q", a.code, a.body)
@@ -180,6 +209,7 @@ func TestFleetDashConfirmFromElsewhere(t *testing.T) {
 // A config.json that cannot be read leaves remote confirmation off.
 func TestFleetRemoteConfirmUnreadableConfigIsOff(t *testing.T) {
 	l := newFleetLab(t)
+	l.answer = "on"
 	l.must("remote-confirm", "on")
 	if !fleetRemoteConfirmOn(l.cfg) {
 		t.Fatal("turned on, and read as off")

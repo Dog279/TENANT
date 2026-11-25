@@ -256,7 +256,7 @@ func (o fleetOps) audit(m fleet.Machine, change, detail string) {
 // from a browser signed in on this computer or, once the operator turned
 // remote confirmation on, from a signed-in browser elsewhere that gave the
 // sign-in key again (dashFleet.Confirm; o.by then says which): nothing a
-// relay, a tool or the API key can reach.
+// relay or a tool can reach.
 //
 // The machine's scheme is saved first and the machine confirmed second, so a
 // machine is never callable without a scheme; if the confirmation fails, a
@@ -1491,6 +1491,20 @@ func fleetRemoteConfirmCmd(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Turning it on widens who may confirm a machine, so it takes a person at
+	// a terminal, as confirming one does: a command a script or the agent runs
+	// has none, and there is no flag that answers for them (terminalAsk).
+	// Turning it off needs nobody: it only closes.
+	if on, err := parseOnOff(strings.Join(cli.pos, " ")); len(cli.pos) == 1 && err == nil && on {
+		answer, err := fleetAsk("This lets a signed-in dashboard browser on another computer confirm a pending machine, once it gives the sign-in key again.\n" +
+			"Whoever holds that key can then confirm a machine from anywhere the dashboard is reached.\nType on to turn it on (Enter alone cancels): ")
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(answer, "on") {
+			return errors.New("not turned on")
+		}
+	}
 	out, err := fleetRemoteConfirmSwitch(cli.ops, cli.c.lc, cli.pos)
 	if err != nil {
 		return err
@@ -1502,13 +1516,16 @@ func fleetRemoteConfirmCmd(args []string) error {
 // fleetRemoteConfirmSwitch shows or sets fleet.remote_confirm (TEN-545):
 // whether a signed-in dashboard browser that is not on this computer may
 // confirm a pending machine, once it gives the sign-in key again. It is set
-// here and in the terminal app, at this computer, and never from the
-// dashboard: a session elsewhere must not be able to open the door it then
-// walks through. The running Tenant reads config.json at each confirmation.
+// at this computer, by a person: the command line asks at a terminal before
+// it turns it on (fleetRemoteConfirmCmd), the terminal app takes it from a
+// typed line only, and the dashboard has no switch, so a session elsewhere
+// cannot open the door it then walks through. The file is no better guarded
+// than config.json is: whatever can write that file as this account can set
+// it. The running Tenant reads config.json at each confirmation.
 func fleetRemoteConfirmSwitch(o fleetOps, lc *launchConfig, args []string) (string, error) {
 	state := func(on bool) string {
 		if on {
-			return "remote confirmation is on: a signed-in dashboard browser on another computer can confirm a pending machine, after giving the sign-in key again. The API key confirms nothing"
+			return "remote confirmation is on: a signed-in dashboard browser on another computer can confirm a pending machine, after giving the sign-in key again. So can anyone else who holds that key, from wherever the dashboard is reached"
 		}
 		return "remote confirmation is off: a machine is confirmed at this computer only (a browser signed in at the dashboard's 127.0.0.1 address, or the terminal)"
 	}
@@ -1527,6 +1544,11 @@ func fleetRemoteConfirmSwitch(o fleetOps, lc *launchConfig, args []string) (stri
 		}
 		o.audit(fleet.Machine{Name: "(this master)"}, "remote confirmation turned "+map[bool]string{true: "on", false: "off"}[on],
 			"whether a signed-in dashboard browser on another computer may confirm a machine (fleet.remote_confirm)")
+		// What the file says now, not what was asked: config.json has no lock
+		// between processes, and another save may have landed on top of this one.
+		if now := fleetRemoteConfirmOn(o.cfgDir); now != on {
+			return "", fmt.Errorf("config.json was written, and now says remote confirmation is %s: another process saved it at the same moment. Run this again", map[bool]string{true: "on", false: "off"}[now])
+		}
 		return state(on), nil
 	}
 	return "", errors.New("usage: fleet remote-confirm [on|off]")

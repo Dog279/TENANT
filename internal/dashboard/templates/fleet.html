@@ -22,7 +22,7 @@
     <div class="mt"><label class="dim">Machines dial, in this order <input type="text" name="addresses" class="cinput wide" maxlength="2048" value="{{.View.Dial}}" placeholder="host:port, host:port" aria-label="The addresses a new machine dials to reach this Tenant, separated by commas"></label></div>
     <div class="mt"><button type="submit" class="btn sm">Make this Tenant a fleet master</button></div>
   </form>
-  <div class="dim mt">This makes the fleet's certificate and key and opens the fleet port on this computer. No machine joins by that alone: each needs a one-time code from this page, and its six digits typed on the computer running Tenant. List an address every machine can reach.</div>
+  <div class="dim mt">This makes the fleet's certificate and key and opens the fleet port on this computer. No machine joins by that alone: each needs a one-time code from this page, and its six digits typed on the computer running Tenant (or, once remote confirmation is switched on there, in a signed-in browser elsewhere with the sign-in key again). List an address every machine can reach.</div>
   <div class="dim mt">The recovery key is not made here. Its identity is shown once and typed back in a terminal on the computer running Tenant: run <code>tenant fleet init</code> there, or the terminal app's own fleet init command. Until then the fleet works and no machine's memory is kept.</div>
 </div>
 {{else if .One}}
@@ -172,10 +172,10 @@
     <input type="hidden" name="machine" value="{{$m.ID}}">
     {{template "fl-start" .}}
     <p class="mt">Until you confirm it, this Tenant sends the machine nothing. Confirm it only if the six digits on the machine's own screen are the ones you type here: they tie this record to that machine, and to no other that got hold of its enrollment code.</p>
-    {{if .Remote}}<div class="banner info mt">This browser is not on the computer running Tenant. Remote confirmation is turned on there, so this browser can confirm the machine once you give the dashboard's sign-in key again. Read the six digits from the machine's own screen yourself, or have someone you trust at it read them to you: digits that arrive any other way prove nothing.</div>{{end}}
+    {{if .Remote}}<div class="banner info mt">This browser is not on the computer running Tenant. Remote confirmation is on there, so this browser can confirm the machine once you give the dashboard's sign-in key again. Read the six digits from the machine's own screen yourself, or have someone you trust at it read them to you: digits that arrive any other way prove nothing.</div>{{end}}
     <div class="cronactions">
       <input type="text" name="code" class="cinput short" inputmode="numeric" autocomplete="off" maxlength="11" pattern="[0-9 ]{6,11}" placeholder="six digits" aria-label="The six digits the machine shows" required>
-      {{if .Remote}}<input type="password" name="key" class="cinput" autocomplete="off" placeholder="the sign-in key, again" aria-label="The dashboard's sign-in key, again" required>{{end}}
+      {{if .Remote}}<input type="password" name="key" class="cinput" autocomplete="new-password" placeholder="the sign-in key, again" aria-label="The dashboard's sign-in key, again" required>{{end}}
       <button type="submit" class="btn on">Confirm this machine</button>
     </div>
   </form>

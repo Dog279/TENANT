@@ -442,8 +442,8 @@ func TestFleetConfirmOnlyAtThisComputer(t *testing.T) {
 
 // With remote confirmation turned on at the master's terminal (TEN-545), a
 // signed-in browser that is not on this computer confirms a machine by giving
-// the sign-in key again. The API key still confirms nothing, a session without
-// the key confirms nothing, the key is never taken from the address, wrong keys
+// the sign-in key again. A request that carries only the API key still confirms
+// nothing, a session without the key confirms nothing, the key is never taken from the address, wrong keys
 // are slowed per address as sign-in's are, and every refusal and the
 // confirmation itself say they were asked from elsewhere. Turned off, the same
 // requests are refused as before, key or no key.
@@ -572,7 +572,9 @@ func TestFleetConfirmFromElsewhere(t *testing.T) {
 	if rec.Code != http.StatusSeeOther || page != "/fleet/"+fleetPending || errMsg != "" || !strings.Contains(msg, "is confirmed") {
 		t.Errorf("from elsewhere with the key: %d to %q, msg %q, err %q", rec.Code, page, msg, errMsg)
 	}
-	want = append(want, "confirm|"+fleetPending+"|"+fleetCode+"|web=deny|"+by("127.0.0.1:50000"))
+	// Every request `tailscale serve` passes on comes from 127.0.0.1: the record
+	// also holds what the proxy said of who it was, in quotes, as not checked.
+	want = append(want, "confirm|"+fleetPending+"|"+fleetCode+"|web=deny|"+by("127.0.0.1:50000")+`; its proxy says "100.64.0.7" (not checked)`)
 	if got := f.called(); !slices.Equal(got, want) || f.machine(fleetPending).State != "confirmed" {
 		t.Errorf("from elsewhere with the key: calls %q, want %q; machine %s", got, want, f.machine(fleetPending).State)
 	}
@@ -597,6 +599,77 @@ func TestFleetConfirmFromElsewhere(t *testing.T) {
 			t.Errorf("turned off, %s with the key: %d\n%s", name, rec.Code, rec.Body.String())
 		}
 		pending("turned off, "+name, 0)
+	}
+}
+
+// What a proxy on this computer says of who it passed on goes into the record
+// of a confirmation from elsewhere as another party's words: the tailnet login
+// before the forwarded address, cut short, in quotes it cannot close, and only
+// from a peer on this computer (a request from another computer has no proxy
+// here to speak for it, and could say anything).
+func TestProxySaid(t *testing.T) {
+	for _, tc := range []struct {
+		name, remote string
+		headers      map[string]string
+		want         string
+	}{
+		{"tailscale serve", "127.0.0.1:50000", map[string]string{"Tailscale-User-Login": "op@example.com", "X-Forwarded-For": "100.64.0.7"}, `; its proxy says "op@example.com" (not checked)`},
+		{"a proxy that only forwards", "[::1]:50000", map[string]string{"X-Forwarded-For": "203.0.113.9, 10.0.0.1"}, `; its proxy says "203.0.113.9, 10.0.0.1" (not checked)`},
+		{"no proxy header", "127.0.0.1:50000", nil, ""},
+		{"another computer saying it is someone", "192.168.1.20:50000", map[string]string{"Tailscale-User-Login": "op@example.com"}, ""},
+		{"words that try to close the quote and start a line", "127.0.0.1:50000", map[string]string{"Tailscale-User-Login": "x\" (checked)\noperator@dashboard " + string(rune(0x202e))},
+			`; its proxy says "x\" (checked)\noperator@dashboard ` + "\\" + `u202e" (not checked)`},
+		{"more than is kept", "127.0.0.1:50000", map[string]string{"X-Forwarded-For": strings.Repeat("9", 500)}, `; its proxy says "` + strings.Repeat("9", 128) + `" (not checked)`},
+	} {
+		r := httptest.NewRequest(http.MethodPost, "/fleet/confirm", nil)
+		r.RemoteAddr = tc.remote
+		for k, v := range tc.headers {
+			r.Header.Set(k, v)
+		}
+		if got := proxySaid(r); got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// Refusing a request that carries only the API key keeps a script from
+// confirming by accident. It is not a boundary against whoever holds the key
+// (DESIGN.md §5): the API key is the sign-in key, so a script that signs in
+// with it and sends the form with the dashboard's Origin is a signed-in
+// browser as far as the dashboard can tell. This test states that limit, so
+// that nobody reads more into "never the API key" than is there.
+func TestFleetConfirmFromElsewhereTheKeysHolder(t *testing.T) {
+	f := fleetFake(3)
+	f.view.RemoteConfirm = true
+	s := New(Config{Addr: "127.0.0.1:9770", Auth: "s3cret", AllowedHosts: []string{"box.tailnet.ts.net"}}, nil, nil, nil, nil, nil)
+	s.SetFleet(f)
+	h := s.served()
+	script := func(r *http.Request) {
+		r.RemoteAddr, r.Host = "192.168.1.20:50000", "box.tailnet.ts.net"
+		r.Header.Set("Origin", "https://box.tailnet.ts.net")
+	}
+	rec := sendForm(h, http.MethodPost, "/auth/login", url.Values{"token": {"s3cret"}}, script)
+	var session *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == dashCookieName {
+			session = c
+		}
+	}
+	if session == nil {
+		t.Fatalf("the script's sign-in set no session: %d", rec.Code)
+	}
+	form := url.Values{"machine": {fleetPending}, "code": {fleetCode}, "key": {"s3cret"}}
+	signed := func(r *http.Request) { script(r); r.AddCookie(session) }
+	rec = sendForm(h, http.MethodPost, "/fleet/confirm", form, signed)
+	if _, msg, _ := fleetFlash(rec); !strings.Contains(msg, "is confirmed") || f.machine(fleetPending).State != "confirmed" {
+		t.Errorf("the key's holder, signed in from a script: %d %q, machine %s", rec.Code, msg, f.machine(fleetPending).State)
+	}
+	// Turned off, the same script is refused: off is what holds against the key.
+	f = fleetFake(3)
+	s.SetFleet(f)
+	rec = sendForm(h, http.MethodPost, "/fleet/confirm", form, signed)
+	if rec.Code != http.StatusForbidden || f.machine(fleetPending).State != "pending" || len(f.called()) != 0 {
+		t.Errorf("turned off, the key's holder: %d, machine %s, calls %q", rec.Code, f.machine(fleetPending).State, f.called())
 	}
 }
 

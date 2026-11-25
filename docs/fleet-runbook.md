@@ -171,9 +171,9 @@ tenant fleet confirm web1           # at a terminal: shows what the machine repo
 Confirming takes a person: at a terminal, with `/fleet confirm web1 <digits>` typed in the
 terminal app, or on the dashboard's Fleet page (the machine's own page, **Confirm this
 machine**) in a browser signed in on the master itself, at its 127.0.0.1 address. There is no
-flag for the digits, no tool and no relay command, and the API key confirms nothing. The screen
-shows what the machine said about itself (OS, account, version, sandbox, ceiling: its own
-words, not checked) and the approval scheme it will start with:
+flag for the digits, no tool and no relay command, and a request that carries only the API key
+is refused. The screen shows what the machine said about itself (OS, account, version, sandbox,
+ceiling: its own words, not checked) and the approval scheme it will start with:
 
 - a copy of the master's local scheme, with exec, write, destructive, send and sandbox no
   looser than **ask** whatever the master allows;
@@ -193,25 +193,38 @@ it on, at the master's terminal:
 
 ```
 tenant fleet remote-confirm          # says whether it is on
-tenant fleet remote-confirm on       # also /fleet remote-confirm on, in the terminal app
+tenant fleet remote-confirm on       # asks you to type "on"; also /fleet remote-confirm on, in the terminal app
 tenant fleet remote-confirm off
 ```
 
-It is `fleet.remote_confirm` in `config.json`; the running Tenant reads it at each
-confirmation, so no restart is needed. There is no switch for it on the dashboard. While it is
-on:
+Turning it on takes a person at a terminal: the command asks, and refuses when its input is
+not a terminal, so a script or the agent cannot turn it on with this command. Turning it off
+needs nobody. It is `fleet.remote_confirm` in `config.json`; the running Tenant reads it at
+each confirmation, so no restart is needed. There is no switch for it on the dashboard. While
+it is on:
 
 - the pending machine's page offers the form to a signed-in browser elsewhere, with one more
   field: **the dashboard's sign-in key, again**. A wrong key changes nothing, counts against
   that address as a wrong sign-in does, and is a Security record;
-- the API key still confirms nothing, and the wait after wrong digits is the same;
+- a request that carries only the API key is still refused, and the wait after wrong digits is
+  the same;
 - the Security and fleet logs record the confirmation, and every refusal, with the surface
-  `dashboard-remote` and the session and address that asked.
+  `dashboard-remote` and the session and address that asked. Behind `tailscale serve` or a
+  proxy that address is always this computer's own, so the record also quotes what the proxy
+  said of who it passed on (the tailnet login), marked as not checked.
 
-What you give up: at the master, the digits show that the person typing them can see both
-screens. From elsewhere they show only the machine. Read them from the machine's own screen
-yourself, or have someone you trust at it read them to you. Leave it off on a master you can
-sit at.
+What you give up:
+
+- At the master, the digits show that the person typing them can see both screens. From
+  elsewhere they show only the machine. Read them from the machine's own screen yourself, or
+  have someone you trust at it read them to you.
+- **Whoever holds the sign-in key can confirm a machine from anywhere the dashboard is
+  reached.** The key again stops a session that leaked or a browser left signed in. It does
+  not stop the key's holder, and the API key that scripts use is the same key: a script that
+  signs in with it looks like a browser. Do not turn this on while a script or a log shipper
+  on another machine holds the key.
+
+Leave it off on a master you can sit at.
 
 ## 3. Work on it
 
