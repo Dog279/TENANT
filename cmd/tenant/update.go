@@ -164,7 +164,8 @@ func runUpdate(ctx context.Context, u *updateEnv, o updateOpts) error {
 	}
 	// 1. Refuse what isn't ours.
 	if devBuild() && !o.force {
-		return exitError{2, "development build; use a release build or --force"}
+		return exitError{2, "this is a development build (" + strings.TrimSpace(version.String()) + "), not a release, so no release is its next version. " +
+			"To replace it with a release: tenant update --force (the latest), or tenant update --force --version vX.Y.Z"}
 	}
 	if u.repo == "" {
 		return exitError{2, "no release source: this build names no repository (TENANT_UPDATE_REPO=owner/name sets one)"}
@@ -277,6 +278,12 @@ func runUpdate(ctx context.Context, u *updateEnv, o updateOpts) error {
 		_, err := attachFetchStatus(ctx, &http.Client{Timeout: 10 * time.Second}, u.hub, u.token)
 		hubUp = err == nil
 	}
+	// With nothing to restart, say afterwards what still runs the old binary
+	// (update_running.go). Read now: the swap renames the file they run.
+	var running, tasks []string
+	if u.restart == nil {
+		running, tasks = runningTenant(u.exe), startersOf(ctx, u.exe)
+	}
 	if err := selfupdate.Swap(u.exe, staged); err != nil {
 		_ = selfupdate.ClearState(marker)
 		if errors.Is(err, selfupdate.ErrPrevInUse) {
@@ -289,7 +296,7 @@ func runUpdate(ctx context.Context, u *updateEnv, o updateOpts) error {
 	// operator restarts, and the new binary is simply what starts.
 	if u.restart == nil {
 		_ = selfupdate.ClearState(marker)
-		fmt.Fprintf(u.out, "updated %s -> %s; restart Tenant to finish the update\n", version.Version, newV)
+		fmt.Fprint(u.out, restartNotice(version.Version, newV, running, tasks))
 		return nil
 	}
 	st.Step = "restart"

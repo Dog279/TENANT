@@ -488,3 +488,31 @@ func TestBootRecordsAreNotBackedUp(t *testing.T) {
 		t.Error("a filed crash dump is left out of the backup")
 	}
 }
+
+// A backup is taken while Tenant runs, and a running Tenant holds its lock
+// files: serve the fleet's, for as long as it runs. Windows refuses to read a
+// file another process has locked, and that failed the backup `tenant update`
+// starts with (TEN-556). An empty lock file is left out; one with something
+// in it, such as a package manager's in a work folder, is a file like any
+// other.
+func TestCreateWhileTenantHoldsItsLockFiles(t *testing.T) {
+	tr := newTree(t, false)
+	held := filepath.Join(tr.cfg, "fleet.holder.lock")
+	lock, err := datalock.ExclusiveFile(held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	write(t, filepath.Join(tr.data, "work", "yarn.lock"), "# yarn lockfile v1\n")
+	res, err := Create(context.Background(), filepath.Join(tr.root, "held.tenant-backup"), tr.opts(Keys{}))
+	if err != nil {
+		t.Fatalf("a backup beside a held lock file: %v", err)
+	}
+	paths := entryPaths(res.Manifest)
+	if slices.Contains(paths, "config/fleet.holder.lock") {
+		t.Error("the backup carries an empty lock file")
+	}
+	if !slices.Contains(paths, "data/work/yarn.lock") {
+		t.Errorf("a lock file with something in it is not in the backup: %v", paths)
+	}
+}

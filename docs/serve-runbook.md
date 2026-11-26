@@ -237,6 +237,33 @@ tenant update [--version vX.Y.Z] [--yes] [--now] [--force]
 tenant update --rollback              # put tenant.prev back; prints the data-restore command
 ```
 
+**It runs while Tenant runs.** The backup is taken beside a running serve: the stores are
+snapshotted, and the empty lock files a running Tenant holds are left out (on Windows they cannot
+be read while held, and until TEN-556 that failed the update at its backup).
+
+**When `tenant service` installed nothing, the update restarts nothing**, and says what still runs
+the old version: each process that runs the old binary (with its command line on Linux and macOS;
+Windows shows only its number), and on Windows the scheduled tasks whose action names the binary,
+with their arguments:
+
+```
+updated 0.2.0 -> 0.3.0; restart Tenant to finish the update. Still running 0.2.0:
+  pid 4312
+  pid 5120
+Scheduled tasks that start this binary (`tenant service` installed none of them, so it restarts none):
+  \TenantServe  serve --config "C:\Tenant\cfg" --data "C:\Tenant\data" --hidden
+  \TenantMCP  mcp-memory
+Restart each one: schtasks /End /TN "<task>", then schtasks /Run /TN "<task>"
+```
+
+Ending a task is a hard stop: let a running turn finish first. Until they are restarted the old
+version keeps running, and it holds `tenant.prev`, so the next update is refused until then. A
+process of another account that this account may not open is not listed.
+
+**A development build** (one built from a checkout, or by `scripts/devbuild`) is no release's
+predecessor, so `tenant update` refuses and says which build is running; `tenant update --force`
+replaces it with the latest release, `--force --version vX.Y.Z` with that one.
+
 **A new version asks again about a protection it cannot apply**, and the service it runs as has
 nobody to ask. So the update asks, before it changes anything: that run of the new binary prints
 what the new binary could not apply on this system, and each control nobody has acknowledged for

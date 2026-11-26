@@ -49,6 +49,19 @@ Releases page.
     so you hear of it in minutes and not at the next restart. System 1110 says when it answers
     again. Asking keeps the embedding model loaded while Tenant runs. To turn the alert off:
     `tenant logs alerts disable embedder-silent`.
+- **Fixed (Windows): `tenant update` failed at its backup while serve was running (TEN-556).**
+  A master holds the fleet's lock file for as long as it runs, Windows does not let another
+  program read a file that is locked, and the backup every update starts with stopped there:
+  `fleet.holder.lock: The process cannot access the file because another process has locked a
+  portion of the file`. `tenant backup create` beside a running master failed the same way. A
+  backup now leaves out empty lock files: they hold nothing, and Tenant makes them again.
+  - **An update that restarts nothing says what still runs the old version.** When Tenant was
+    not started by `tenant service` (a scheduled task or unit of your own, a terminal), the
+    update used to end with "restart Tenant to finish the update". It now lists the processes
+    that run the old binary and, on Windows, the scheduled tasks that start it, with the two
+    commands that restart a task. It still restarts none of them itself.
+  - **`tenant update` on a development build says what is running and what to type.** The
+    refusal now names the build and `tenant update --force [--version vX.Y.Z]`.
 - **A fleet machine joins with its one-time code alone (TEN-553).** Until now a machine that
   enrolled showed six digits and waited for a person to type them on the master (and, from
   another computer, to give the dashboard's sign-in key again). Now a code that is valid,
