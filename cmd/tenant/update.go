@@ -123,8 +123,11 @@ func updateRepo() string {
 }
 
 // devBuild: not a release. A dev build's binary is nobody's release asset,
-// so updating it would only ever replace it with something else.
-func devBuild() bool { return version.Version == "0.0.1" || version.Dirty == "true" }
+// so updating it would only ever replace it with something else. A build
+// that scripts/devbuild stamped says so in its version (X.Y.Z-dev.TIME.COMMIT).
+func devBuild() bool {
+	return version.Version == "0.0.1" || version.Dirty == "true" || strings.Contains(version.Version, "-dev.")
+}
 
 func updateMarker(dataDir string) string { return filepath.Join(dataDir, "update-state.json") }
 

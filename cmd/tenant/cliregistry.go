@@ -267,7 +267,7 @@ func cliCommands() []*cliCommand {
 				{Syntax: "fleet pause <name> | fleet resume <name>", Desc: "switch a confirmed machine off for now (no call goes to it), or on again"},
 				{Syntax: "fleet digits [on|off]", Desc: "whether a machine that enrolled waits for you to type the six digits it shows (off by default: its one-time code confirms it)"},
 				{Syntax: "fleet remote-confirm [on|off]", Desc: "whether a signed-in dashboard browser on another computer may confirm a machine, with the sign-in key again (off by default)"},
-				{Syntax: "fleet update <name> | --all | --group <group> [--version vX.Y.Z] [--allow-older]", Desc: "send machines a newer Tenant over their links, fetched and verified here; each restarts into it, or rolls back if it does not reach the master within a minute"},
+				{Syntax: "fleet update <name> | --all | --group <group> [--version vX.Y.Z | --build ARCHIVE] [--allow-older]", Desc: "send machines a newer Tenant over their links, fetched and verified here, or with --build a build of your own (go run ./scripts/devbuild) to machines set to `updates master`; each restarts into it, or rolls back if it does not reach the master within a minute"},
 				{Syntax: "fleet recover <name> [--was ID]", Desc: "read a machine's memory made under another fleet key (a master rebuilt from nothing) with the recovery identity, given at the terminal or on standard input, never an argument"},
 			}},
 		{Names: []string{"child"}, Section: "connect", Run: cmdChild, Sub: []string{"install", "rehome", "updates", "status", "pause", "resume", "audit", "uninstall", "run"},

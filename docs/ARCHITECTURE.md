@@ -27,11 +27,11 @@ block for drift.
 <!-- docfacts:generated:start; date=2026-11-26; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
-| Go packages | 107 |
-| Go files | 1,626 |
-| Test files | 826 |
-| Production Go LOC | 215,445 |
-| Test Go LOC | 187,940 |
+| Go packages | 108 |
+| Go files | 1,630 |
+| Test files | 829 |
+| Production Go LOC | 216,126 |
+| Test Go LOC | 188,685 |
 | Go modules | 1 |
 | Plugin capability packages | 15 |
 | Version | `0.0.1` |
@@ -129,6 +129,7 @@ generated from `internal/archtest/rules.go`, and
 | every `internal/**` package | `internal/logs/event`, `internal/logs/catalog`, `internal/logs/capture`, `internal/procprotect` | on top of its own row: the event model, the built-in providers (the Security log's records among them) and child capture, so an event is written, and a child filed, where the action happens; and procprotect, through which every command is started |
 | `cmd/**` | anything | the composition root and command adapters |
 | `scripts/releasekey` | `internal/selfupdate`, `internal/fsperm` | signs releases in the exact form the binary verifies (TEN-542); both are stdlib-only leaves |
+| `scripts/devbuild` | `internal/selfupdate` | names a development build's archive exactly as `tenant fleet update --build` reads it back, and orders its version as the binary does (TEN-552); a stdlib-only leaf |
 | `scripts/**` | nothing in the module | build tools stand alone |
 | `reference/**` | `reference/**` | examples for tool builders; never tenant/internal |
 | `internal/archtest` | nothing in the module | these tests |

@@ -1,7 +1,9 @@
 package fleet
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -74,6 +76,154 @@ func TestHelloArchAndUpdate(t *testing.T) {
 	if long == nil || len(long.Reason) > maxUpdateReason {
 		t.Errorf("a long reason is kept at %d bytes", len(long.Reason))
 	}
+}
+
+// A machine that says it is applying an update restarts into the new version,
+// and a call that reached it in between would end with the process that had
+// it. So the master keeps such a call back, unsent, until the machine says
+// how the update went (TEN-552): the hello of the trial run does not end the
+// wait, nor does word of another version; done does, rolled back does, and so
+// does the hold's limit. What is not a tool call is not kept back.
+func TestCallsWaitOutAnUpdate(t *testing.T) {
+	update := Update{Version: "2.0.0", SHA256: fuzzPrint, Size: 4, Data: []byte("abcd")}
+	type answer struct {
+		res Result
+		err error
+	}
+	// applying brings a machine up and has it take the update whole.
+	applying := func(t *testing.T, r *rig) *kid {
+		t.Helper()
+		k := r.up(t, "box")
+		if ack, err := r.mgr.Update(ctxFor(t), k.mach.ID, update); err != nil || !ack.Applying {
+			t.Fatalf("update = %+v, %v", ack, err)
+		}
+		return k
+	}
+	// calling makes a call in the background.
+	calling := func(t *testing.T, r *rig, k *kid) chan answer {
+		t.Helper()
+		got := make(chan answer, 1)
+		go func() {
+			res, err := r.call(t, k.mach.ID, "echo", `"after"`)
+			got <- answer{res, err}
+		}()
+		return got
+	}
+	// kept fails the test unless the call is still waiting, and was not sent.
+	kept := func(t *testing.T, k *kid, got chan answer, when string) {
+		t.Helper()
+		select {
+		case a := <-got:
+			t.Fatalf("%s: the call was not kept back: %+v, %v", when, a.res, a.err)
+		case call := <-k.tools.started:
+			t.Fatalf("%s: the call was sent to the machine: %+v", when, call)
+		case <-time.After(3 * holdPoll):
+		}
+	}
+	// made fails the test unless the call has now been made, and answered.
+	made := func(t *testing.T, got chan answer, when string) {
+		t.Helper()
+		select {
+		case a := <-got:
+			if a.err != nil || a.res.Text != `"after"` {
+				t.Fatalf("%s: the call = %+v, %v", when, a.res, a.err)
+			}
+		case <-time.After(waitLong):
+			t.Fatalf("%s: the call is still kept back", when)
+		}
+	}
+	// restart is the machine's next process: a new link, with a hello that
+	// says report.
+	restart := func(t *testing.T, r *rig, k *kid, report UpdateReport) {
+		t.Helper()
+		old := r.link(t, k.mach.ID)
+		k.stop()
+		k.client().cfg.Hello = func() *UpdateReport { return &report }
+		k.start()
+		r.awaitNewLink(t, k.mach.ID, old)
+	}
+	long := func(m *Manager) { m.holdFor = time.Hour }
+
+	t.Run("until the machine says the update is done", func(t *testing.T) {
+		r := newRig(t, long)
+		k := applying(t, r)
+		got := calling(t, r, k)
+		kept(t, k, got, "while it applies the update")
+		// Ping and the rest of an update are not tool calls.
+		if _, err := r.mgr.Ping(ctxFor(t), k.mach.ID); err != nil {
+			t.Errorf("ping to a machine applying an update: %v", err)
+		}
+		if _, err := r.mgr.Update(ctxFor(t), k.mach.ID, update); err != nil {
+			t.Errorf("a piece of the update again: %v", err)
+		}
+		restart(t, r, k, UpdateReport{From: "1.2.3", To: "2.0.0", State: UpdateTrial})
+		kept(t, k, got, "during the trial run")
+		restart(t, r, k, UpdateReport{From: "1.0.0", To: "1.2.3", State: UpdateDone})
+		kept(t, k, got, "after word of another update")
+		restart(t, r, k, UpdateReport{From: "1.2.3", To: "2.0.0", State: UpdateDone})
+		made(t, got, "once the machine said done")
+		r.echo(t, k.mach.ID) // and nothing is kept back after it
+	})
+	t.Run("until the machine says it rolled back", func(t *testing.T) {
+		r := newRig(t, long)
+		k := applying(t, r)
+		tools := make(chan error, 1)
+		go func() {
+			_, err := r.mgr.Tools(ctxFor(t), k.mach.ID)
+			tools <- err
+		}()
+		got := calling(t, r, k)
+		kept(t, k, got, "while it applies the update")
+		select {
+		case err := <-tools:
+			t.Fatalf("the machine's tools were asked for while it applies an update: %v", err)
+		default:
+		}
+		restart(t, r, k, UpdateReport{From: "1.2.3", To: "2.0.0", State: UpdateRolledBack, Reason: "it did not start"})
+		made(t, got, "once the machine said rolled back")
+		if err := <-tools; err != nil {
+			t.Errorf("tools after the rollback: %v", err)
+		}
+	})
+	t.Run("no longer than the limit", func(t *testing.T) {
+		r := newRig(t, func(m *Manager) { m.holdFor = 5 * holdPoll })
+		k := applying(t, r) // and it never says how the update went
+		start := time.Now()
+		made(t, calling(t, r, k), "after the limit")
+		if took := time.Since(start); took < 4*holdPoll {
+			t.Errorf("the call was made after %s, before the limit", took)
+		}
+	})
+	t.Run("not past the caller's own deadline", func(t *testing.T) {
+		r := newRig(t, long)
+		k := applying(t, r)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*holdPoll)
+		defer cancel()
+		_, err := r.mgr.Call(ctx, k.mach.ID, Call{Tool: "echo", Arguments: json.RawMessage(`1`)})
+		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "was not sent") || !strings.Contains(err.Error(), "2.0.0") {
+			t.Errorf("a call whose time ran out while it was kept back = %v", err)
+		}
+		if len(k.tools.started) != 0 {
+			t.Error("the call was sent all the same")
+		}
+	})
+	t.Run("not for a machine that is paused meanwhile", func(t *testing.T) {
+		r := newRig(t, long)
+		k := applying(t, r)
+		got := calling(t, r, k)
+		kept(t, k, got, "while it applies the update")
+		if err := r.store.Pause(k.mach.ID); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case a := <-got:
+			if !errors.Is(a.err, ErrPaused) {
+				t.Errorf("the call to a machine paused while it was kept back = %+v, %v", a.res, a.err)
+			}
+		case <-time.After(waitLong):
+			t.Fatal("the call is still kept back for a paused machine")
+		}
+	})
 }
 
 // Served is the master's side of speaks, for doctor.

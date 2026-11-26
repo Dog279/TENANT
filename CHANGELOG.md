@@ -5,6 +5,38 @@ Releases page.
 
 ## Unreleased
 
+- **New: send a fleet machine a build of your own (TEN-552, second part).**
+  `go run ./scripts/devbuild [system/processor ...]` builds Tenant from a checkout and packs each
+  target as the archive a release would carry, under a development version of its own
+  (`0.3.0-dev.20261126193000.e56d774`: the last release's numbers, the time of the build, the
+  commit, and `.dirty` for uncommitted changes). `tenant fleet update <name> --build <archive>`
+  sends one in place of a release. Nothing is fetched; a build for another system or processor
+  than the machine's is refused before anything is sent; the machine checks, tries and rolls
+  back as it does with a release. Only a machine set to `updates master` takes one (`tenant
+  child install --updates master`, or `tenant child updates master` on it); any other refuses
+  it on the first piece, and the command says what to set.
+- **Fixed: `tenant fleet update` could not move a machine from one release candidate to the
+  next.** Versions were compared by their numbers alone, so a machine on `0.3.0-rc.1` asked to
+  take `0.3.0-rc.2` was answered "already runs 0.3.0-rc.2" and sent nothing. Versions are now
+  ordered as semantic versioning orders them: a release candidate before the one after it, and
+  both before the release. `tenant doctor`'s check of each machine's version against the
+  master's follows the same order.
+- **Updating a fleet machine no longer costs the calls to it (TEN-552, first part).** Until now
+  a machine that took an update dropped its link a second later: a call that was running ended
+  with an outcome nobody knew, and a call made while it restarted failed as offline. Now the
+  machine lets the calls it is running finish first (up to 2 minutes), and the master keeps new
+  calls to it back, unsent, until the machine is linked again and says how the update went;
+  they are then made on the new version, or on the old one after a rollback. A call waits at
+  most 7 minutes this way, and each one that waited is in the fleet log (fleet/1206).
+  Background commands still end at the restart. Both halves need this version: the first
+  update of a machine to it still behaves the old way on that machine.
+- **Fixed: Tenant could hang at start-up, with no dashboard, while its embedder was stuck
+  (TEN-555).** Start-up re-indexed the wiki before anything else came up, and an embedder that
+  took the request and never answered (an Ollama runner stuck at 100% CPU) held it there for as
+  long as it hung. The first re-index now runs beside start-up, start-up waits at most 10
+  seconds for the embedder to say its dimension, and every wiki embedding request has a limit
+  (3 minutes for a note, 30 seconds for a search), after which the tool says the embedder did
+  not answer.
 - **A fleet machine joins with its one-time code alone (TEN-553).** Until now a machine that
   enrolled showed six digits and waited for a person to type them on the master (and, from
   another computer, to give the dashboard's sign-in key again). Now a code that is valid,

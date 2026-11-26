@@ -47,6 +47,8 @@ func buildPeerToolDeps(ctx context.Context, c *commonFlags, wikiDir string) (pee
 		if wikiDir != "" {
 			if ix, werr := buildWikiIndex(ctx, c, router, wikiDir); werr == nil {
 				deps.wiki = &wikiLive{dir: wikiDir, ix: ix}
+				stores := closeStores
+				closeStores = func() { ix.Close(); stores() } // its first reindex ends with the server
 			}
 		}
 	}

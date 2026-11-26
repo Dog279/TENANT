@@ -655,6 +655,136 @@ func TestFleetUpdateStartRefusals(t *testing.T) {
 	}
 }
 
+// A build of the operator's own goes to a machine in place of a release
+// (--build, TEN-552). Nothing is fetched and nothing is verified here: the
+// archive's name says its version, system and processor. One for another
+// system or processor is refused before anything is sent; a machine set to
+// trust its master's hash comes back on the build; and a machine that
+// verifies releases refuses it, and the operator is told what to set.
+func TestFleetUpdateFromABuild(t *testing.T) {
+	r := newUpdateRig(t)
+	var mu sync.Mutex
+	var behave kidUpdate
+	var openings []fleet.Update // the first piece of each send: the one with no data
+	k, _ := r.kid("dev1", func(p fleet.Update, again func(func() *fleet.UpdateReport, string)) (fleet.UpdateAck, error) {
+		mu.Lock()
+		b := behave
+		if len(p.Data) == 0 {
+			openings = append(openings, p)
+		}
+		mu.Unlock()
+		return b(p, again)
+	})
+	set := func(b kidUpdate) {
+		mu.Lock()
+		behave = b
+		mu.Unlock()
+	}
+	sent := func() []fleet.Update {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(openings)
+	}
+	const v = "0.3.0-dev.20261126193000.e56d774"
+	dir := t.TempDir()
+	write := func(name string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("the archive of "+name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	build := write(selfupdate.AssetName(v, runtime.GOOS, runtime.GOARCH))
+
+	// What is refused at once.
+	for _, tc := range []struct {
+		name string
+		o    fleetUpdateOpts
+		want string
+	}{
+		{"with a version besides", fleetUpdateOpts{build: build, version: "v2.0.0"}, "do not go together"},
+		{"a path that is not whole", fleetUpdateOpts{build: filepath.Base(build)}, "not a full path"},
+		{"a name that says nothing", fleetUpdateOpts{build: write("tenant.exe")}, "not a build's archive by its name"},
+		{"a file that is not there", fleetUpdateOpts{build: filepath.Join(dir, selfupdate.AssetName("9.9.9", runtime.GOOS, runtime.GOARCH))}, "not a file this Tenant can read"},
+	} {
+		if err := r.updates.Start(r.mgr, k.id, tc.o); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: %v, want %q", tc.name, err, tc.want)
+		}
+	}
+
+	// Another system's build, another processor's, and the version the
+	// machine runs: over before anything is sent.
+	otherOS, otherArch := "linux", "arm64"
+	if runtime.GOOS == "linux" {
+		otherOS = "darwin"
+	}
+	if runtime.GOARCH == "arm64" {
+		otherArch = "amd64"
+	}
+	st := fleet.MachineStatus{Arch: runtime.GOARCH, Machine: fleet.Machine{ID: k.id, Reported: fleet.Reported{OS: runtime.GOOS, Version: "1.0.0"}}}
+	for _, tc := range []struct {
+		name, archive, stage, want string
+	}{
+		{"another system's", selfupdate.AssetName(v, otherOS, runtime.GOARCH), fleetUpdRefused, "is a build for " + otherOS + "/" + runtime.GOARCH},
+		{"another processor's", selfupdate.AssetName(v, runtime.GOOS, otherArch), fleetUpdRefused, "is a build for " + runtime.GOOS + "/" + otherArch},
+		{"the version it runs", selfupdate.AssetName("1.0.0", runtime.GOOS, runtime.GOARCH), fleetUpdDone, "already runs 1.0.0"},
+	} {
+		s := &fleetUpdateState{}
+		r.updates.run(r.mgr, st, fleetUpdateOpts{build: filepath.Join(dir, tc.archive)}, s)
+		if s.Stage != tc.stage || !strings.Contains(strings.Join(s.Lines, "\n"), tc.want) {
+			t.Errorf("%s: %s %q", tc.name, s.Stage, s.Lines)
+		}
+	}
+	if n := len(sent()); n != 0 {
+		t.Fatalf("a build that was refused was sent: %d sends", n)
+	}
+
+	// A machine that takes its master's hash comes back on the build.
+	set(func(p fleet.Update, again func(func() *fleet.UpdateReport, string)) (fleet.UpdateAck, error) {
+		ack := honest(p)
+		ack.Rule = string(fleet.UpdatesMaster)
+		if ack.Applying {
+			again(func() *fleet.UpdateReport { return &fleet.UpdateReport{From: "1.0.0", To: v, State: fleet.UpdateDone} }, v)
+		}
+		return ack, nil
+	})
+	got := r.result(k, fleetUpdateOpts{build: build})
+	said := strings.Join(got.Lines, "\n")
+	for _, want := range []string{"sending " + filepath.Base(build), "which no release vouches for", "trust this master's hash", "back on the new version " + v} {
+		if !strings.Contains(said, want) {
+			t.Errorf("the update's lines lack %q:\n%s", want, said)
+		}
+	}
+	if got.Stage != fleetUpdDone || got.To != v {
+		t.Errorf("stage %s, to %q\n%s", got.Stage, got.To, said)
+	}
+	sum := sha256.Sum256([]byte("the archive of " + filepath.Base(build)))
+	if o := sent(); len(o) != 1 || o[0].Version != v || o[0].SHA256 != hex.EncodeToString(sum[:]) || o[0].Size != int64(len("the archive of "+filepath.Base(build))) ||
+		len(o[0].Checksums)+len(o[0].Bundle)+len(o[0].Signature) != 0 {
+		t.Errorf("the send's first piece: %+v", o)
+	}
+	if _, err := os.Stat(filepath.Join(r.updates.dataDir, "fleet-updates")); err == nil {
+		t.Error("a build made the master fetch a release")
+	}
+	// The same build again: it runs it already.
+	if again := r.result(k, fleetUpdateOpts{build: build}); again.Stage != fleetUpdDone || !strings.Contains(strings.Join(again.Lines, "\n"), "already runs "+v) || len(sent()) != 1 {
+		t.Errorf("the same build again: %s %q, %d sends", again.Stage, again.Lines, len(sent()))
+	}
+
+	// A machine that verifies releases refuses a build on its first piece, in
+	// its own words, and the operator is told what makes it take one.
+	set(func(fleet.Update, func(func() *fleet.UpdateReport, string)) (fleet.UpdateAck, error) {
+		return fleet.UpdateAck{}, errors.New("the master sent no release checksums or signature with the update")
+	})
+	next := write(selfupdate.AssetName("0.3.0-dev.20261127080000.0a1b2c3", runtime.GOOS, runtime.GOARCH))
+	refused := r.result(k, fleetUpdateOpts{build: next})
+	if last := refused.Lines[len(refused.Lines)-1]; refused.Stage != fleetUpdFailed || !strings.Contains(last, "the machine refused the update") ||
+		!strings.Contains(last, "no release checksums") || !strings.Contains(last, "`tenant child updates master`, run on that machine") {
+		t.Errorf("a machine that verifies releases: %s %q", refused.Stage, refused.Lines)
+	}
+}
+
 // The command line asks the running Tenant, goes on past a machine that is
 // refused, and says which were not updated; with no Tenant to ask it sends
 // nothing and says why.
