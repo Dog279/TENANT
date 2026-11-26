@@ -15,6 +15,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"tenant/internal/plugins/gsuite"
+	"tenant/internal/plugins/wiki"
 )
 
 // saveTestSecrets stores secrets in dir's credentials.json.
@@ -332,22 +333,32 @@ func TestWikiOpenDoesNotWaitOnAHungEmbedder(t *testing.T) {
 	prev := wikiProbeTimeout
 	wikiProbeTimeout = 200 * time.Millisecond
 	t.Cleanup(func() { wikiProbeTimeout = prev })
+	dir, data := t.TempDir(), t.TempDir()
+	// After the directories, so it runs before they are removed: it also ends
+	// an open that never returned.
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel) // the reindex left behind lets go
-	dir := t.TempDir()
+	t.Cleanup(cancel)
 	if err := os.WriteFile(filepath.Join(dir, "a.md"), []byte("# A\nwords\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
+	type opened struct {
+		ix  *wiki.Index
+		err error
+	}
+	done := make(chan opened, 1)
 	go func() {
-		_, err := openWikiIndex(ctx, t.TempDir(), dir, "stuck", 8, hungEmbedder{})
-		done <- err
+		ix, err := openWikiIndex(ctx, data, dir, "stuck", 8, hungEmbedder{})
+		done <- opened{ix, err}
 	}()
 	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("open with a hung embedder: %v", err)
+	case o := <-done:
+		if o.err != nil {
+			t.Fatalf("open with a hung embedder: %v", o.err)
 		}
+		// As the plugin's clean-up does: the reindex left behind is ended, and
+		// has let go of the index's file, before the directories go. Without
+		// it this test's own clean-up raced that reindex on the macOS runner.
+		t.Cleanup(o.ix.Close)
 	case <-time.After(15 * time.Second):
 		t.Fatal("opening the wiki waited on an embedder that does not answer")
 	}
