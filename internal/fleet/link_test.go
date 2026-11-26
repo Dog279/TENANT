@@ -1289,9 +1289,6 @@ func TestLinkVersionMismatch(t *testing.T) {
 		if _, err := r.mgr.Ping(ctxFor(t), id); err != nil {
 			t.Errorf("ping: %v", err)
 		}
-		if ack, err := r.mgr.Update(ctxFor(t), id, update); err != nil || ack != (UpdateAck{Received: 4, Applying: true}) {
-			t.Errorf("update = %+v, %v", ack, err)
-		}
 		_, err := r.call(t, id, "echo", `1`)
 		if !errors.Is(err, ErrIncompatible) || !strings.Contains(err.Error(), "link version") {
 			t.Errorf("call = %v, want ErrIncompatible", err)
@@ -1304,6 +1301,11 @@ func TestLinkVersionMismatch(t *testing.T) {
 		}
 		if len(k.tools.started) != 0 {
 			t.Error("a tool ran across a version mismatch")
+		}
+		// Last: a machine that says it is applying an update has its calls
+		// kept back from then on (TestCallsWaitOutAnUpdate).
+		if ack, err := r.mgr.Update(ctxFor(t), id, update); err != nil || ack != (UpdateAck{Received: 4, Applying: true}) {
+			t.Errorf("update = %+v, %v", ack, err)
 		}
 	}
 	t.Run("the child is two versions ahead", func(t *testing.T) {

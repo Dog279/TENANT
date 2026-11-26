@@ -21,7 +21,10 @@ package main
 //     `version`: it must run here and say the version it was sent as. Only
 //     then does the master hear "applying". Any failure up to here deletes
 //     what arrived and changes nothing.
-//  2. The trial. The running child drops its link, ends its background
+//  2. The trial. The running child lets the calls it is running finish
+//     (childDrain; its master sends it no new one from "applying" on, and
+//     keeps them back until this machine says how the update went:
+//     fleet.Manager, TEN-552). Then it drops its link, ends its background
 //     commands and its browser, gives up its audit log, and starts the new
 //     binary from where it was unpacked, as `child run --trial`, reading its
 //     standard input: the trial ends when the old child closes it or dies.
@@ -84,6 +87,11 @@ var (
 	// childUpdateHealth is how long the new binary has to reach the master,
 	// in its trial and again once it is installed. Tests shorten it.
 	childUpdateHealth = 60 * time.Second
+	// childUpdateDrain is how long a child with an update to apply gives the
+	// calls it is running to finish before it drops its link (childDrain).
+	// With childUpdateHealth it has to fit inside fleet.UpdateHold, the time
+	// the master keeps new calls back for. Tests shorten it.
+	childUpdateDrain = 2 * time.Minute
 	// childCommand starts this binary, or the one an update unpacked, again:
 	// the smoke test, the trial, the restart. With no console window: a child
 	// runs as a service with no console, and Windows would open one for a
@@ -421,6 +429,28 @@ func archiveKind(path string) (string, error) {
 // --- the update, step by step ---
 
 func childUpdateNow() time.Time { return time.Now().UTC().Truncate(time.Second) }
+
+// childDrain is step 2's first half (TEN-552): before the child drops its
+// link for an update, the calls it is running get to finish, up to
+// childUpdateDrain. A call cut off by the restart is one whose outcome its
+// master cannot know. The master sends no new call meanwhile (it keeps them
+// back from the moment this machine said "applying"), so the count only
+// falls; an older master still sends them, and then the limit is what ends
+// the wait. The calls still running at the limit end with the link, as every
+// running call did before.
+func childDrain(ctx context.Context, running func() int, log *slog.Logger) {
+	n := running()
+	if n == 0 {
+		return
+	}
+	log.Info("fleet child: an update is ready; the calls that are running finish first", "calls", n, "limit", childUpdateDrain)
+	for deadline := time.Now().Add(childUpdateDrain); n > 0 && time.Now().Before(deadline) && sleepCtx(ctx, 100*time.Millisecond); {
+		n = running()
+	}
+	if n > 0 && ctx.Err() == nil {
+		log.Warn("fleet child: calls are still running after the time an update gives them; they end with the restart", "calls", n, "limit", childUpdateDrain)
+	}
+}
 
 // rolledBack records an update as rolled back, and why.
 func rolledBack(dir string, st fleet.ChildUpdate, reason string, log *slog.Logger) {

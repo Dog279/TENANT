@@ -134,6 +134,24 @@ type Manager struct {
 	links    map[string]*link
 	greeting map[string]bool // machines with a connection between its upgrade and the end of its hello
 	last     map[string]lastSeen
+	held     map[string]hold // machines applying an update: the calls for them wait (awaitUpdate)
+	holdFor  time.Duration   // replaced by tests, before serve
+}
+
+// UpdateHold is the longest the master keeps calls back for a machine that
+// said it is applying an update: the time the machine gives the calls it is
+// running, the two starts of the new version, and room for the restarts. By
+// then the machine has said how the update went, or it is not coming back
+// soon.
+const UpdateHold = 7 * time.Minute
+
+// holdPoll is how often a call that is kept back looks again.
+const holdPoll = 100 * time.Millisecond
+
+// hold is a machine that said it is applying an update.
+type hold struct {
+	to    string // the version it was sent
+	until time.Time
 }
 
 type lastSeen struct {
@@ -174,6 +192,7 @@ func newManager(cfg ManagerConfig) (*Manager, error) {
 		ctx: ctx, cancel: cancel,
 		sem:   make(chan struct{}, maxPreUpgrade),
 		links: map[string]*link{}, greeting: map[string]bool{}, last: map[string]lastSeen{},
+		held: map[string]hold{}, holdFor: UpdateHold,
 	}, nil
 }
 
@@ -380,6 +399,9 @@ func (m *Manager) live(id string, toolCall bool) (*link, error) {
 // Tools asks a machine which tools it serves right now. Names are checked;
 // descriptions and schemas are the machine's own text.
 func (m *Manager) Tools(ctx context.Context, id string) ([]model.ToolSpec, error) {
+	if err := m.awaitUpdate(ctx, id); err != nil {
+		return nil, err
+	}
 	l, err := m.live(id, true)
 	if err != nil {
 		return nil, err
@@ -412,8 +434,13 @@ func (m *Manager) Tools(ctx context.Context, id string) ([]model.ToolSpec, error
 // calls in flight (ErrBusy), or unreadable in fleet.json. A context without
 // a deadline gets one of fifteen minutes; when the context ends the machine is
 // told to stop. A link that drops mid-call ends it with ErrOutcomeUnknown,
-// and nothing is sent again.
+// and nothing is sent again. A call for a machine that is applying an update
+// is kept back, unsent, until the machine says how the update went
+// (awaitUpdate).
 func (m *Manager) Call(ctx context.Context, id string, c Call) (Result, error) {
+	if err := m.awaitUpdate(ctx, id); err != nil {
+		return Result{}, err
+	}
 	l, err := m.live(id, true)
 	if err != nil {
 		return Result{}, err
@@ -494,7 +521,67 @@ func (m *Manager) Update(ctx context.Context, id string, u Update) (UpdateAck, e
 	}
 	var ack UpdateAck
 	err = l.request(ctx, requestTime, methodUpdate, u, &ack)
+	if err == nil && ack.Applying {
+		// From here the machine restarts into the new version, more than once.
+		m.mu.Lock()
+		m.held[id] = hold{to: u.Version, until: time.Now().Add(m.holdFor)}
+		m.mu.Unlock()
+	}
 	return ack, err
+}
+
+// awaitUpdate keeps a call back while its machine is applying an update
+// (TEN-552). A machine that takes an update finishes the calls it is running
+// and restarts into the new version; a call that reached it in between would
+// end with the process that had it, failed as offline or with an outcome
+// nobody knows. So from the machine's "applying" until a link on which it
+// says how that update went (done, or rolled back), a call waits here and is
+// not sent. It goes on when the machine has said so or the hold's limit has
+// passed, and whatever the machine is then decides it as it does any call. It
+// fails when ctx ends first, or when fleet.json no longer lets the machine
+// have a link.
+//
+// A link that drops and comes back between "applying" and the restart is
+// read like any other: if what the machine says then is of an earlier try at
+// the same version, the hold ends early and a call may still meet the
+// restart, as every call did before there was a hold.
+func (m *Manager) awaitUpdate(ctx context.Context, id string) error {
+	var (
+		since time.Time
+		to    string
+		tick  *time.Ticker
+	)
+	for {
+		m.mu.Lock()
+		h, ok := m.held[id]
+		if ok && !time.Now().Before(h.until) {
+			delete(m.held, id)
+			ok = false
+		}
+		m.mu.Unlock()
+		if !ok {
+			if !since.IsZero() {
+				CallHeld.Log(m.ctx, "name", m.label(id), "machine", id, "to", to, "waited", time.Since(since).Round(time.Millisecond))
+			}
+			return nil
+		}
+		if err := m.store.Check(id); err != nil {
+			return err
+		}
+		if tick == nil {
+			// ponytail: each held call polls; one broadcast for all of them if
+			// held calls are ever many.
+			since, to, tick = time.Now(), h.to, time.NewTicker(holdPoll)
+			defer tick.Stop()
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("fleet: the call was not sent: the machine is applying an update to %s and has not said how it went: %w", h.to, ctx.Err())
+		case <-m.ctx.Done():
+			return nil // the fleet is closing: live says so
+		case <-tick.C:
+		}
+	}
 }
 
 // Ping asks a machine's session whether it answers, and how fast.
@@ -576,6 +663,12 @@ func (m *Manager) serveLink(w http.ResponseWriter, r *http.Request) {
 	}
 	old := m.links[l.id]
 	m.links[l.id], l.connected = l, time.Now()
+	// A machine that says how the update went is over it, and the calls kept
+	// back for it go on. A trial run's hello is not that: the trial is stopped
+	// as soon as it has said hello.
+	if h, ok := m.held[l.id]; ok && l.update != nil && l.update.To == h.to && l.update.State != UpdateTrial {
+		delete(m.held, l.id)
+	}
 	m.mu.Unlock()
 	if old != nil {
 		// The machine connected again: the link it had is one it has given up.

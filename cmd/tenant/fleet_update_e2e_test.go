@@ -33,6 +33,7 @@ import (
 	"testing"
 	"time"
 
+	"tenant/internal/control"
 	"tenant/internal/fleet"
 	"tenant/internal/selfupdate"
 	"tenant/internal/version"
@@ -510,7 +511,7 @@ func TestFleetUpdateRealProcesses(t *testing.T) {
 		out, exit := f.update("alpha", "--version", "v2.0.0")
 		restarted := time.Since(started) // the machine is back by now, so it restarted before this
 		for _, want := range []string{"alpha: fetching v2.0.0 for " + runtime.GOOS + "/" + runtime.GOARCH, "alpha: fetched tenant_2.0.0_", "verified checksum only",
-			"the machine checked its SHA-256 and is applying it. Its background commands end at the restart",
+			"the machine checked its SHA-256 and is applying it. The calls it is running finish first, and new ones wait until it is back. Its background commands end at the restart",
 			"alpha: back on the new version 2.0.0"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("the update's output lacks %q", want)
@@ -631,6 +632,64 @@ func TestFleetUpdateRealProcesses(t *testing.T) {
 		if !strings.Contains(res, "\nafter-the-kill") {
 			t.Errorf("a command after the rollback:\n%s", res)
 		}
+	})
+
+	// TEN-552: an update costs the calls to the machine nothing. One turn makes
+	// two calls: a command that takes ten seconds, and one after it. The update
+	// starts while the first runs, so the machine says "applying" in the middle
+	// of it: it must finish and be answered, where before it was cut off a
+	// second later with an outcome nobody knew. The second is made while the
+	// machine restarts: it must wait on the master and be answered by the new
+	// version, where before it failed as offline.
+	step("an update costs a running call and the next one nothing", func(t *testing.T) {
+		f.rel.publish("v3.1.0", e2eBuild(t, filepath.Join(builds, "3.1.0"), "3.1.0", ""))
+		slowStart, slowEnd := h.join("call-start"), h.join("call-end")
+		var cli *e2eProc
+		launched := make(chan struct{})
+		go func() { // the operator, updating the machine while the agent works on it
+			defer close(launched)
+			for deadline := time.Now().Add(e2eWait); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+				if _, err := os.Stat(slowStart); err == nil {
+					cli = h.start("fleet update", e2eSpec{Argv: []string{"fleet", "update", "alpha", "--version", "v3.1.0", "--hub", m.dash, "--config", m.cfg, "--data", m.data}})
+					return
+				}
+			}
+		}()
+		turn := m.turn(e2eScript(
+			e2eCall("fleet_exec", map[string]any{"host": "alpha", "command": h.slow(slowStart, 10, slowEnd, "ran-through-the-update")}),
+			e2eCall("fleet_exec", map[string]any{"host": "alpha", "command": h.say("after-the-update")}),
+		), func(control.PendingApproval) string { return "approve" })
+		<-launched
+		if cli == nil {
+			t.Fatalf("the slow command did not start\n%s", strings.Join(turn.Results, "\n---\n"))
+		}
+		cli.ended("the update of a machine that was in the middle of a call")
+		out := cli.said()
+		t.Logf("the update said:\n%s\nthe turn's results:\n%s", out, strings.Join(turn.Results, "\n---\n"))
+		if !strings.Contains(out, "alpha: back on the new version 3.1.0") {
+			t.Errorf("the update:\n%s", out)
+		}
+		if len(turn.Results) != 2 {
+			t.Fatalf("the turn was handed %d results", len(turn.Results))
+		}
+		if !strings.Contains(turn.Results[0], "\nran-through-the-update") {
+			t.Errorf("the call that was running when the update came:\n%s", turn.Results[0])
+		}
+		if _, err := os.Stat(slowEnd); err != nil {
+			t.Errorf("the command that was running when the update came did not run to its end: %v", err)
+		}
+		if !strings.Contains(turn.Results[1], "\nafter-the-update") {
+			t.Errorf("the call made while the machine restarted:\n%s", turn.Results[1])
+		}
+		for i, res := range turn.Results {
+			if strings.Contains(res, "offline") || strings.Contains(res, "is not known") {
+				t.Errorf("result %d speaks of a machine that was away:\n%s", i+1, res)
+			}
+		}
+		if got := e2eMarkOf(t, f.bin); got != "3.1.0" {
+			t.Errorf("the installed binary is marked %q", got)
+		}
+		alpha.state("connected to the master")
 	})
 
 	// A machine on the default rule (decision A71) verifies the release

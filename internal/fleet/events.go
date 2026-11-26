@@ -168,6 +168,11 @@ var WorkRemembered = Events.Event(1205, event.Info, "Call", "This turn's work go
 		"A turn made calls on one or more machines.",
 		"None.")
 
+var CallHeld = Events.Event(1206, event.Info, "Call", "A call to {name} waited {waited} for the machine's update to {to}", "name", "machine", "to", "waited").
+	Doc("A call for a machine that was applying an update was kept back, unsent, until the machine said how the update went or the wait's limit passed. It was then made as any call is.",
+		"A turn called a machine between the moment it said it was applying an update and its first link after it: the machine restarts into the new version in between, and a call sent then would have ended with the process that had it.",
+		"None. A wait of several minutes means the machine did not say how its update went: tenant fleet show NAME says where it stands.")
+
 var WorkNotRemembered = Events.Event(2201, event.Warning, "Call", "This turn's work on machine {host} did not go into its memory: {err}", "host", "err").
 	Doc("The turn's notes about a machine could not be added to that machine's memory. The work was done; only the memory of it is missing.",
 		"The machine's memory is unavailable (no recovery key, or held by another process), or its store could not be written.",

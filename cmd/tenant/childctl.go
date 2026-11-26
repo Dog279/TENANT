@@ -770,11 +770,12 @@ func childServe(ctx context.Context, dir string, log *slog.Logger, hello func() 
 		}()
 		var staged *childStaged
 		got := make(chan childStaged, 1)
-		go func() { // an update, whole and checked: the link goes once the master has its answer
+		go func() { // an update, whole and checked: the link goes once the master has its answer, and the calls that are running theirs
 			select {
 			case s := <-ready: // nil in a trial: never
 				got <- s
 				sleepCtx(linkCtx, time.Second)
+				childDrain(linkCtx, client.Running, log)
 				drop()
 			case <-linkCtx.Done():
 			}

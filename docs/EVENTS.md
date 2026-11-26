@@ -1221,6 +1221,7 @@ Writes the `fleet` log.
 | [1203](#fleet-1203) | info | Call | `A call of {tool} on {name} asks first: this turn has read from {read_from}` |
 | [1204](#fleet-1204) | info | Call | `A note of this turn's work on {name} was kept for its memory` |
 | [1205](#fleet-1205) | info | Call | `This turn's work goes into the memory of {hosts}` |
+| [1206](#fleet-1206) | info | Call | `A call to {name} waited {waited} for the machine's update to {to}` |
 | [1301](#fleet-1301) | info | Update | `Update of {name}: {line}` |
 | [1401](#fleet-1401) | info | Memory | `Memory of machine {machine} was {what} a copy (generation {generation})` |
 | [1402](#fleet-1402) | info | Memory | `A forget was applied to the memory of machine {machine}` |
@@ -1454,6 +1455,20 @@ Writes the `fleet` log.
 **Why it happens.** A turn made calls on one or more machines.
 
 **What to do.** None.
+
+### fleet 1206
+
+`A call to {name} waited {waited} for the machine's update to {to}`
+
+- **Level:** info · **Channel:** operational · **Task:** Call · **Log:** fleet
+- **Fields:** `name`, `machine`, `to`, `waited`
+- **Find it:** `provider:fleet id:1206`
+
+**What it means.** A call for a machine that was applying an update was kept back, unsent, until the machine said how the update went or the wait's limit passed. It was then made as any call is.
+
+**Why it happens.** A turn called a machine between the moment it said it was applying an update and its first link after it: the machine restarts into the new version in between, and a call sent then would have ended with the process that had it.
+
+**What to do.** None. A wait of several minutes means the machine did not say how its update went: tenant fleet show NAME says where it stands.
 
 ### fleet 1301
 

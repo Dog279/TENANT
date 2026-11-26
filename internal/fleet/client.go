@@ -192,6 +192,13 @@ func (c *Client) Status() ChildStatus {
 	return c.status
 }
 
+// Running is how many tool calls this machine is in the middle of.
+func (c *Client) Running() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.running)
+}
+
 // Run holds the link until ctx ends, and returns ctx's error then. It dials
 // each of the master's addresses in turn, serves the master's requests, and
 // when the link drops dials again, waiting longer after each failure, with
