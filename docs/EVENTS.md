@@ -1212,7 +1212,7 @@ Writes the `fleet` log.
 | [3](#fleet-3) | info | Memory | `The machines' memory is open` |
 | [1001](#fleet-1001) | info | Setup | `This Tenant became a fleet master` |
 | [1002](#fleet-1002) | info | Setup | `Fleet machine {name}: {change}` |
-| [1003](#fleet-1003) | info | Setup | `Machine {name} enrolled from {remote} and waits to be confirmed` |
+| [1003](#fleet-1003) | info | Setup | `Machine {name} enrolled from {remote} with its one-time code` |
 | [1101](#fleet-1101) | info | Link | `Machine {name} connected from {remote}` |
 | [1102](#fleet-1102) | info | Link | `Machine {name} disconnected: {why}` |
 | [1103](#fleet-1103) | verbose | Link | `A connection from {remote} for {machine} did not become a link: {err}` |
@@ -1331,7 +1331,7 @@ Writes the `fleet` log.
 
 ### fleet 1003
 
-`Machine {name} enrolled from {remote} and waits to be confirmed`
+`Machine {name} enrolled from {remote} with its one-time code`
 
 - **Level:** info · **Channel:** operational · **Task:** Setup · **Log:** fleet
 - **Fields:** `name`, `machine`, `remote`, `certificate`

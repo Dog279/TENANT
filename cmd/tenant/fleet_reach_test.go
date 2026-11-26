@@ -28,6 +28,13 @@ import (
 // handler takes them from a signed-in browser elsewhere that gives the
 // sign-in key again (TestFleetConfirmFromElsewhere): still one handler, and
 // still not a request that carries only the API key.
+//
+// One more path, which no person takes (TEN-553): Tenant itself confirms a
+// machine as it enrolls, on the strength of its one-time code, unless the
+// operator asked for the six digits. That is the hub's enrolled, and it is
+// reached from one place only: the enroll endpoint, for the machine that has
+// just spent a code, through the hook the hub hands the manager it starts.
+// No tool, relay or page can name it.
 func TestOnlyTheOperatorConfirmsAMachine(t *testing.T) {
 	type site struct{ file, fn string }
 	var (
@@ -36,6 +43,7 @@ func TestOnlyTheOperatorConfirmsAMachine(t *testing.T) {
 		tuiConfirms   []site // calls of FleetControl.Confirm in the terminal app
 		dashConfirms  []site // calls of FleetControl.Confirm in the dashboard
 		ctlConfirms   []site // calls shaped like FleetControl.Confirm (four arguments) anywhere else
+		codeConfirms  []site // every use of a selector named enrolled: the hook that confirms by code
 		mentions      []string
 		toolNames     = map[string]string{}
 	)
@@ -108,6 +116,9 @@ func TestOnlyTheOperatorConfirmsAMachine(t *testing.T) {
 				}
 			}
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "enrolled" && !slices.Contains(codeConfirms, site{rel, name}) {
+					codeConfirms = append(codeConfirms, site{rel, name})
+				}
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
 					return true
@@ -150,8 +161,15 @@ func TestOnlyTheOperatorConfirmsAMachine(t *testing.T) {
 		t.Errorf("Store.Confirm is called from %v, want only %v", storeConfirms, want)
 	}
 	slices.SortFunc(opConfirms, func(a, b site) int { return strings.Compare(a.file+a.fn, b.file+b.fn) })
-	if want := []site{{"cmd/tenant/fleet_dashctl.go", "dashFleet.Confirm"}, {"cmd/tenant/fleetctl.go", "fleetConfirmCmd"}, {"cmd/tenant/fleettuictl.go", "fleetTUIControl.Confirm"}}; !slices.Equal(opConfirms, want) {
-		t.Errorf("a machine is confirmed from %v, want only the command line, the terminal and the dashboard's Fleet page: %v", opConfirms, want)
+	if want := []site{{"cmd/tenant/fleet_dashctl.go", "dashFleet.Confirm"}, {"cmd/tenant/fleetctl.go", "fleetConfirmCmd"}, {"cmd/tenant/fleethub.go", "fleetHub.enrolled"}, {"cmd/tenant/fleettuictl.go", "fleetTUIControl.Confirm"}}; !slices.Equal(opConfirms, want) {
+		t.Errorf("a machine is confirmed from %v, want only the command line, the terminal, the dashboard's Fleet page, and the hub for a machine that has just spent its code: %v", opConfirms, want)
+	}
+	// The hub's path is the enroll endpoint's alone: the hub hands it to the
+	// manager it starts (tick), and the endpoint calls it for the machine
+	// whose code it has just spent.
+	slices.SortFunc(codeConfirms, func(a, b site) int { return strings.Compare(a.file+a.fn, b.file+b.fn) })
+	if want := []site{{"cmd/tenant/fleethub.go", "fleetHub.tick"}, {"internal/fleet/enroll.go", "enrollHandler.ServeHTTP"}}; !slices.Equal(codeConfirms, want) {
+		t.Errorf("the hook that confirms a machine by its code is used from %v, want only %v", codeConfirms, want)
 	}
 	if want := []site{{"internal/dashboard/fleet.go", "Server.handleFleetConfirm"}}; !slices.Equal(dashConfirms, want) {
 		t.Errorf("the dashboard confirms a machine from %v, want only %v: the one handler that takes the digits from a browser on this computer, or from one elsewhere with the sign-in key again where the operator turned that on", dashConfirms, want)
