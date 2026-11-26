@@ -257,8 +257,8 @@ Restart each one: schtasks /End /TN "<task>", then schtasks /Run /TN "<task>"
 ```
 
 Ending a task is a hard stop: let a running turn finish first. Until they are restarted the old
-version keeps running, and it holds `tenant.prev`, so the next update is refused until then. A
-process of another account that this account may not open is not listed.
+version keeps running. On Windows it also holds `tenant.prev`, so the next update is refused
+until then. A process of another account that this account may not open is not listed.
 
 **A development build** (one built from a checkout, or by `scripts/devbuild`) is no release's
 predecessor, so `tenant update` refuses and says which build is running; `tenant update --force`
