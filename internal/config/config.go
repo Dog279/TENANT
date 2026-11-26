@@ -213,7 +213,7 @@ type Logs struct {
 	RateLimit LogRate `json:"rate_limit,omitzero"`
 	// Alerts are the alert rules (docs/LOGGING.md), read live. An entry
 	// named like a built-in rule (critical, unexpected-exit, audit-failures,
-	// sandbox-unattended, logbook-full) changes or disables it.
+	// sandbox-unattended, logbook-full, embedder-silent) changes or disables it.
 	Alerts []AlertRule `json:"alerts,omitempty"`
 }
 

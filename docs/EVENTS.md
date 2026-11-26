@@ -6547,6 +6547,7 @@ Writes the `system` log.
 | [101](#system-101) | info | Component | `{component} is starting` |
 | [102](#system-102) | info | Component | `{component} is running` |
 | [103](#system-103) | info | Component | `{component} stopped` |
+| [1110](#system-1110) | info | Component | `The embedder {embedder} answers again after {after}` |
 | [1301](#system-1301) | info | Tailscale | `Publish the dashboard to the tailnet` |
 | [1302](#system-1302) | info | Tailscale | `Withdraw the dashboard from the tailnet` |
 | [1401](#system-1401) | info | Component | `Removed {n} leftover browser profile folder(s)` |
@@ -6565,6 +6566,7 @@ Writes the `system` log.
 | [3020](#system-3020) | error | Shutdown | `Shutdown step {stage}/{step} panicked: {panic}` |
 | [3030](#system-3030) | error | Lifecycle | `{role} did not start: {why}` |
 | [3101](#system-3101) | error | Component | `{component} failed: {err}` |
+| [3110](#system-3110) | error | Component | `The embedder {embedder} has not answered for {for}: {err}` |
 | [4001](#system-4001) | critical | Audit | `A Security record was not written: {err}` |
 | [4002](#system-4002) | info | Audit | `Security records are written again, after {failed} were not` |
 | [5001](#system-5001) | info | Configuration | `{path} was edited; applied {changed}` |
@@ -6715,6 +6717,20 @@ Writes the `system` log.
 **What it means.** A component stopped in order.
 
 **Why it happens.** Tenant is shutting down, the operator turned it off, or a child process finished.
+
+**What to do.** None.
+
+### system 1110
+
+`The embedder {embedder} answers again after {after}`
+
+- **Level:** info · **Channel:** operational · **Task:** Component · **Log:** system
+- **Fields:** `embedder`, `after`
+- **Find it:** `provider:system id:1110`
+
+**What it means.** The embedder that system 3110 reported answered a question again. Memory recall and wiki search work again.
+
+**Why it happens.** The embedding server was restarted, or it finished what held it.
 
 **What to do.** None.
 
@@ -6970,6 +6986,20 @@ Writes the `system` log.
 **Why it happens.** Something it depends on failed: a connection, a file or its configuration.
 
 **What to do.** Open the component's log; the event before this one usually names the cause.
+
+### system 3110
+
+`The embedder {embedder} has not answered for {for}: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Component · **Log:** system
+- **Fields:** `embedder`, `for`, `err`
+- **Find it:** `provider:system id:3110`
+
+**What it means.** Tenant asks its embedder for one small embedding every five minutes, and for this long none came back. Memory recall and wiki search wait for an embedding, so they fail or time out meanwhile. Written again every 30 minutes while it lasts; the built-in alert rule embedder-silent fires on it.
+
+**Why it happens.** The embedding server is stopped, or it takes connections and does not answer: a model runner stuck at full processor looks like that, and its model list still loads.
+
+**What to do.** Restart the embedding server (for Ollama: restart it, then check `ollama ps`). Tenant goes on by itself once it answers, and system 1110 says so.
 
 ### system 4001
 

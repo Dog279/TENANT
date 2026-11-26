@@ -1675,6 +1675,12 @@ the feed with their status ("generation OK …", "EMBEDDINGS UNREACHABLE
 … degraded"). So a first run self-installs and a misconfigured
 endpoint is obvious in-UI, not a cryptic crash. (This is also why a
 down embedder no longer kills launch — see §5.12c wiki resilience.)
+An embedder that is up says only "is up; asking it for an embedding"
+there: "embeddings OK" (or SLOW, or NOT ANSWERING after 30 s) comes
+from the embedder's watch (`embedwatch.go`, TEN-555), which asks for a
+real embedding beside start-up and again every five minutes, and
+writes system 3110 (the `embedder-silent` alert) when none has come
+back for five.
 
 **Background self-improvement in the feed:** the TUI also runs the
 distillation scheduler in-process (default on, `--distill-every 5m` —

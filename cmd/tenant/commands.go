@@ -1862,6 +1862,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		c.backend = "echo"
 		pushSys("echo: responses are deterministic stubs — not a real model.")
 	}
+	startEmbedWatch(ctx, router, pushSys) // TEN-555: "embeddings OK" from a real embedding, and an event when they stop
 	st, closeStores, err := openStores(c)
 	if err != nil {
 		return err

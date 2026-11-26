@@ -81,6 +81,9 @@ var Builtin = []Spec{
 	{Name: "sandbox-unattended", Filter: "provider:sandbox id:2001,2002 data.surface:cron-*"},
 	{Name: "audit-failures", Filter: "tag:audit.failure", Count: 5, Window: "10m"},
 	{Name: "logbook-full", Filter: "provider:logbook id:2004 data.percent>=95"},
+	// TEN-555: the embedder has given no embedding for five minutes; memory
+	// recall and wiki search are failing behind a Tenant that looks up.
+	{Name: "embedder-silent", Filter: "provider:system id:3110"},
 	{Name: "critical", Filter: "level:critical"},
 }
 

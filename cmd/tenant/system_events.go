@@ -37,6 +37,19 @@ var sysUnavailable = catalog.System.Event(2110, event.Warning, "Component", "{co
 		"Its store or file could not be opened (permissions, a full disk, a database another process holds), or what it depends on failed.",
 		"Read the error and fix its cause, then restart Tenant, or for the embedder switch the model again.")
 
+// The embedder's watch (embedwatch.go): an error, so in the 3100s, and its
+// end in the 1100s.
+
+var sysEmbedderSilent = catalog.System.Event(3110, event.Error, "Component", "The embedder {embedder} has not answered for {for}: {err}", "embedder", "for", "err").
+	Doc("Tenant asks its embedder for one small embedding every five minutes, and for this long none came back. Memory recall and wiki search wait for an embedding, so they fail or time out meanwhile. Written again every 30 minutes while it lasts; the built-in alert rule embedder-silent fires on it.",
+		"The embedding server is stopped, or it takes connections and does not answer: a model runner stuck at full processor looks like that, and its model list still loads.",
+		"Restart the embedding server (for Ollama: restart it, then check `ollama ps`). Tenant goes on by itself once it answers, and system 1110 says so.")
+
+var sysEmbedderBack = catalog.System.Event(1110, event.Info, "Component", "The embedder {embedder} answers again after {after}", "embedder", "after").
+	Doc("The embedder that system 3110 reported answered a question again. Memory recall and wiki search work again.",
+		"The embedding server was restarted, or it finished what held it.",
+		"None.")
+
 // Storage (2200s).
 
 var sysNotSaved = catalog.System.Event(2201, event.Warning, "Storage", "{what} was not saved: {err}", "what", "path", "err").

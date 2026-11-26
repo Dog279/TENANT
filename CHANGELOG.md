@@ -37,6 +37,18 @@ Releases page.
   seconds for the embedder to say its dimension, and every wiki embedding request has a limit
   (3 minutes for a note, 30 seconds for a search), after which the tool says the embedder did
   not answer.
+  - **"embeddings OK" now means an embedding came back.** The launch line used to come from
+    the embedder's model list, which a stuck embedder still answers. Tenant now asks for one
+    small embedding at start and says `embeddings OK` with how long it took, `embeddings SLOW`
+    when that was more than 5 seconds, or `EMBEDDINGS NOT ANSWERING` after 30 seconds. Start-up
+    does not wait for it. `tenant doctor`'s embedding checks have the same 30-second limit; it
+    used to wait for ever.
+  - **New alert: `embedder-silent`.** While it runs, Tenant asks again every five minutes. An
+    embedder that has given no embedding for five minutes is an error in the system log
+    (system 3110, again every 30 minutes while it lasts) and fires the new built-in alert rule,
+    so you hear of it in minutes and not at the next restart. System 1110 says when it answers
+    again. Asking keeps the embedding model loaded while Tenant runs. To turn the alert off:
+    `tenant logs alerts disable embedder-silent`.
 - **A fleet machine joins with its one-time code alone (TEN-553).** Until now a machine that
   enrolled showed six digits and waited for a person to type them on the master (and, from
   another computer, to give the dashboard's sign-in key again). Now a code that is valid,
