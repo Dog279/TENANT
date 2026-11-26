@@ -193,6 +193,9 @@ type FleetEnrollment struct {
 	Expires    string // when the code stops working, as the page shows a time
 	Boot       bool
 	Addresses  []string // what the code tells the machine to dial
+	// Digits: the machine will wait for its six digits to be typed
+	// (fleet.confirm: digits). False: the code confirms it (TEN-553).
+	Digits bool
 	// Warning is the plain warning when none of them can be dialled from
 	// another site; "" with none.
 	Warning string
@@ -235,6 +238,10 @@ type FleetView struct {
 	// computer confirm a machine, with the sign-in key again
 	// (fleet.remote_confirm, off unless set at the master's terminal).
 	RemoteConfirm bool
+	// ConfirmDigits: a machine that enrolls waits for its six digits to be
+	// typed (fleet.confirm: digits). False, the default: its one-time code
+	// confirms it (TEN-553).
+	ConfirmDigits bool
 	Machines      []FleetMachine
 	Rules         []ToolRuleRow // the fleet's rules: what every newly confirmed machine starts with
 

@@ -71,7 +71,7 @@ var MachineChanged = Events.Event(1002, event.Info, "Setup", "Fleet machine {nam
 		"tenant fleet enroll, confirm, rename, revoke or permissions --from; the same in the terminal app; or the dashboard's Fleet page.",
 		"None when intended.")
 
-var Enrolled = Events.Event(1003, event.Info, "Setup", "Machine {name} enrolled from {remote} and waits to be confirmed", "name", "machine", "remote", "certificate").
+var Enrolled = Events.Event(1003, event.Info, "Setup", "Machine {name} enrolled from {remote} with its one-time code", "name", "machine", "remote", "certificate").
 	Doc("A machine spent its one-time code and is now pending: it shows six digits on its own screen and the master will not call it until they are typed here.",
 		"The line from tenant fleet enroll (or Add machine) was pasted on the machine.",
 		"Compare the six digits on the machine's own screen, then tenant fleet confirm <name>, /fleet confirm, or the Fleet page in a browser on this computer.")

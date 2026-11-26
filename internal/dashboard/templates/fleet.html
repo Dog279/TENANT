@@ -141,7 +141,7 @@
     <label class="dim"><input type="radio" name="runs" value="boot"> runs as root or SYSTEM, from boot</label>
     <button type="submit" class="btn sm">Make a code</button>
   </form>
-  <div class="dim mt">This makes a one-time code and the line to paste on the new machine. The code joins nothing by itself: the machine shows six digits and waits here until they are typed on the computer running Tenant{{if .View.RemoteConfirm}}, or in a signed-in browser elsewhere with the sign-in key again (remote confirmation is on){{end}}.</div>
+  <div class="dim mt">This makes a one-time code and the line to paste on the new machine. {{if .View.ConfirmDigits}}The code joins nothing by itself: the machine shows six digits and waits here until they are typed on the computer running Tenant{{if .View.RemoteConfirm}}, or in a signed-in browser elsewhere with the sign-in key again (remote confirmation is on){{end}}.{{else}}The code is all the machine needs: it joins as soon as the line is pasted there, and you are told here. Paste it only on that machine.{{end}}</div>
 </div>
 {{template "fl-defaults" .}}
 {{template "fl-groups" .}}
@@ -271,7 +271,7 @@
   {{end}}
   <p class="mt">The code tells the machine to dial {{range $i, $a := .Addresses}}{{if $i}}, {{end}}<span class="nm">{{$a}}</span>{{end}}. Change the list in a terminal: <code>tenant fleet address add HOST:PORT</code>.</p>
   {{with .Warning}}<div class="banner err" role="alert">{{.}}</div>{{end}}
-  <p class="mt">The machine then shows six digits and waits. It appears under Machines as waiting for you (reload this page): open it and type those digits, in a browser on the computer running Tenant (or in this one, where its page offers the form).</p>
+  {{if .Digits}}<p class="mt">The machine then shows six digits and waits. It appears under Machines as waiting for you (reload this page): open it and type those digits, in a browser on the computer running Tenant (or in this one, where its page offers the form).</p>{{else}}<p class="mt">That is all: the code confirms the machine, and it appears under Machines (reload this page) with a copy of this Tenant's approval settings. Whoever has the code can join under this name until it is used or expires, so paste it only on that machine.</p>{{end}}
 </div>
 {{end}}
 

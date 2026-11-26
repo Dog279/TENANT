@@ -36,6 +36,9 @@ type enrolled struct {
 	TTL       time.Duration
 	Expires   time.Time
 	Addresses []string // what the code tells the machine to dial
+	// Digits: the machine will wait for its six digits (fleet.confirm:
+	// digits). False: the code confirms it (TEN-553).
+	Digits bool
 }
 
 // issueCode makes the one-time code that enrolls one machine as name. by
@@ -70,7 +73,7 @@ func (o fleetOps) issueCode(name string, ttl time.Duration, adopt, by string) (e
 		detail += "; asked by " + by
 	}
 	o.audit(fleet.Machine{Name: name, ID: adopt}, "code issued", detail)
-	return enrolled{Name: name, Code: code, TTL: ttl, Expires: expires, Addresses: addrs}, nil
+	return enrolled{Name: name, Code: code, TTL: ttl, Expires: expires, Addresses: addrs, Digits: fleetConfirmDigits(o.cfgDir)}, nil
 }
 
 // pasteLine is one line to paste on the new machine, and where it runs.
@@ -198,7 +201,13 @@ func enrollText(e enrolled) string {
 			fmt.Fprintf(&b, "  %s:\n    %s\n", l.For, l.Line)
 		}
 	}
-	fmt.Fprintf(&b, "\nIt prints six digits and waits. Then, here:  tenant fleet confirm %s", fleetName(e.Name))
+	if e.Digits {
+		fmt.Fprintf(&b, "\nIt prints six digits and waits. Then, here:  tenant fleet confirm %s", fleetName(e.Name))
+	} else {
+		fmt.Fprintf(&b, "\nThat is all: the code confirms it, and it starts with a copy of this Tenant's approval settings.\n"+
+			"Whoever has the code can join as %s until it is used or expires, so paste it only on that machine.\n"+
+			"To have every machine wait for six digits typed here as well: tenant fleet digits on", fleetName(e.Name))
+	}
 	return b.String()
 }
 

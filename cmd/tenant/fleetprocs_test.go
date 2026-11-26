@@ -186,6 +186,10 @@ func TestFleetTwoProcesses(t *testing.T) {
 	wait("serve says it listens", 10*time.Second, func() bool { return said.has("fleet: listening on " + addr) })
 	p.must(nil, "fleet", "init", "--address", addr)
 
+	// This machine waits for its six digits, typed further down; by default
+	// its code alone would confirm it (TEN-553).
+	p.must(nil, "fleet", "digits", "on")
+
 	// enroll: the code alone on standard output.
 	code, _, err := p.tenant(nil, "fleet", "enroll", "web1")
 	if err != nil {
