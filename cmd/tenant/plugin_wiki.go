@@ -102,7 +102,9 @@ func launchWiki(ctx context.Context, e *pluginEnv) ([]plugin, func(), error) {
 	// One plugin, so a rebuild can swap it whole. wiki_save is the gated
 	// local-write counterpart: a fetched peer note (or research) can be
 	// ingested into the wiki on the user's direction. (TEN-244)
-	return []plugin{wikiTools{wiki.NewDispatcher(ix), newWikiSaveDispatcher(f.dir, ix, e.confirm)}}, nil, nil
+	// The cleanup ends a first reindex that is still running (TEN-555), so it
+	// does not write the index's file once the plugin has gone.
+	return []plugin{wikiTools{wiki.NewDispatcher(ix), newWikiSaveDispatcher(f.dir, ix, e.confirm)}}, ix.Close, nil
 }
 
 // wikiTools serves the read tools and wiki_save as one plugin.

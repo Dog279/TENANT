@@ -99,3 +99,40 @@ func TestReindexBehindHoldsReadersUntilItIsDone(t *testing.T) {
 		t.Errorf("the reader that waited did not find the note: %v", err)
 	}
 }
+
+// Close ends a reindex still running behind: it does not wait on the
+// embedder, and when it returns the index has let go of its file, which a
+// test's (or a plugin's) clean-up may then remove.
+func TestCloseEndsTheReindexBehind(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.md"), []byte("# A\nsome words\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	side := filepath.Join(t.TempDir(), "ix.json")
+	emb := slow{asked: make(chan struct{}, 1), release: make(chan struct{})}
+	ix, err := New(dir, side, "slow/2", emb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ended := make(chan error, 1)
+	ix.ReindexBehind(context.Background(), func(err error) { ended <- err })
+	<-emb.asked
+
+	closed := make(chan struct{})
+	go func() { ix.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close waited on an embedder that had not answered")
+	}
+	if err := <-ended; err == nil {
+		t.Error("a reindex that was cut short reported success")
+	}
+	if _, err := os.Stat(side); err == nil {
+		t.Error("the index's file was written by a reindex that was cut short")
+	}
+	ix.Close() // a second time changes nothing
+	if got := ix.List(); len(got) != 0 {
+		t.Errorf("after a reindex that was cut short the index lists %v", got)
+	}
+}

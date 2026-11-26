@@ -87,6 +87,12 @@ type Index struct {
 	// tool calls run concurrently within a single turn.
 	mu sync.Mutex
 
+	// behind stops the reindex ReindexBehind started and waits for it to end
+	// (Close); nil when there was none. It has a lock of its own: mu is held
+	// by that reindex for as long as it runs.
+	behindMu sync.Mutex
+	behind   func()
+
 	idx indexFile
 
 	// Derived graph (never persisted — rebuilt from idx.Notes so it
@@ -324,15 +330,39 @@ func (ix *Index) Reindex(ctx context.Context) (int, int, error) {
 // and held until the reindex ends, so whoever reads the index next (a list,
 // a read, a search) waits for it and never sees the index as it was before:
 // empty on a first run. done, when not nil, is told how it ended.
+//
+// Close stops it: whoever opened the index calls that when it is done with
+// it, so a reindex still running does not write the index's file after its
+// owner has gone (a plugin switched off, a process shutting down).
 func (ix *Index) ReindexBehind(ctx context.Context, done func(error)) {
+	ctx, cancel := context.WithCancel(ctx)
+	ended := make(chan struct{})
+	ix.behindMu.Lock()
+	ix.behind = func() { cancel(); <-ended }
+	ix.behindMu.Unlock()
 	ix.mu.Lock()
 	go func() {
 		_, _, err := ix.reindexLocked(ctx)
 		ix.mu.Unlock()
+		cancel()
 		if done != nil {
 			done(err)
 		}
+		close(ended)
 	}()
+}
+
+// Close ends the reindex ReindexBehind left running, if one still is, and
+// returns once it has let go of the index and of its file: an embedding in
+// flight is cancelled, and a save already begun is finished. The index can
+// still be read and searched afterwards.
+func (ix *Index) Close() {
+	ix.behindMu.Lock()
+	stop := ix.behind
+	ix.behindMu.Unlock()
+	if stop != nil {
+		stop()
+	}
 }
 
 // reindexLocked is Reindex's body; callers must already hold ix.mu. Split out
