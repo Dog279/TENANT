@@ -66,6 +66,9 @@
 //
 // One process holds a fleet's links at a time; a second is told which
 // (HeldError). A call to a machine that is offline, paused, pending or
-// revoked fails at once; nothing is queued and nothing is sent twice. What a
-// child sends is untrusted, down to the frame: see guard in manager.go.
+// revoked fails at once; nothing is queued and nothing is sent twice. The one
+// call that waits is a call to a machine that is applying an update: it is
+// kept back, unsent, until the machine says how the update went
+// (Manager.awaitUpdate). What a child sends is untrusted, down to the frame:
+// see guard in manager.go.
 package fleet

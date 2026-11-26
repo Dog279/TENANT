@@ -49,9 +49,10 @@ var (
 	// Tests point it at a server of their own.
 	fleetReleaseAPI = ""
 	// fleetUpdateWait is how long the master waits, once the machine is
-	// applying, for it to say how the update went: twice the child's own
-	// limit on each of its two starts, and room for the restarts.
-	fleetUpdateWait = 5 * time.Minute
+	// applying, for it to say how the update went: the time the child gives
+	// its running calls, twice its own limit on each of its two starts, and
+	// room for the restarts. Calls to the machine are kept back as long.
+	fleetUpdateWait = fleet.UpdateHold
 	// fleetUpdatePoll is how often the master looks while it waits.
 	fleetUpdatePoll = 500 * time.Millisecond
 	// fleetPieceWait is the longest a machine is waited on for its answer
@@ -289,7 +290,7 @@ func (u *fleetUpdates) run(mgr *fleet.Manager, st fleet.MachineStatus, o fleetUp
 		fail(fleetUpdFailed, err.Error())
 		return
 	default:
-		u.say(s, fleetUpdApplying, fmt.Sprintf("sent %s%s; the machine checked its SHA-256 and is applying it. Its background commands end at the restart", fleetMB(size), resumed))
+		u.say(s, fleetUpdApplying, fmt.Sprintf("sent %s%s; the machine checked its SHA-256 and is applying it. The calls it is running finish first, and new ones wait until it is back. Its background commands end at the restart", fleetMB(size), resumed))
 	}
 
 	trial := false

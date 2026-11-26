@@ -5,6 +5,15 @@ Releases page.
 
 ## Unreleased
 
+- **Updating a fleet machine no longer costs the calls to it (TEN-552, first part).** Until now
+  a machine that took an update dropped its link a second later: a call that was running ended
+  with an outcome nobody knew, and a call made while it restarted failed as offline. Now the
+  machine lets the calls it is running finish first (up to 2 minutes), and the master keeps new
+  calls to it back, unsent, until the machine is linked again and says how the update went;
+  they are then made on the new version, or on the old one after a rollback. A call waits at
+  most 7 minutes this way, and each one that waited is in the fleet log (fleet/1206).
+  Background commands still end at the restart. Both halves need this version: the first
+  update of a machine to it still behaves the old way on that machine.
 - **Fixed: Tenant could hang at start-up, with no dashboard, while its embedder was stuck
   (TEN-555).** Start-up re-indexed the wiki before anything else came up, and an embedder that
   took the request and never answered (an Ollama runner stuck at 100% CPU) held it there for as
