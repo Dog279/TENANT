@@ -8,6 +8,7 @@
 package selfupdate
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -105,13 +106,19 @@ func get(ctx context.Context, client *http.Client, url, token, accept string) (*
 // the form version.Version holds.
 func VersionOf(tag string) string { return strings.TrimPrefix(tag, "v") }
 
-// Compare orders two release versions ("1.2.3", a leading "v" allowed) by
-// their dotted numbers: -1, 0 or 1. A pre-release or build suffix after the
-// numbers is ignored, so "1.2.0-rc1" and "1.2.0" compare equal. ok is false
-// when either is not a version of that form.
+// Compare orders two versions ("1.2.3", a leading "v" allowed) the way
+// semantic versioning does: -1, 0 or 1. Their dotted numbers decide first.
+// With the same numbers, a pre-release ("1.2.0-rc.1") comes before the
+// release it leads to ("1.2.0"), and two pre-releases go by their parts
+// between the dots: a number before a word, numbers by value, words in ASCII
+// order, and the shorter first when it is the start of the longer. So
+// 0.3.0-dev.20261126 < 0.3.0-rc.1 < 0.3.0-rc.2 < 0.3.0: a release candidate
+// is told from the next one, and a development build (scripts/devbuild) from
+// both. Build metadata after "+" is ignored. ok is false when either is not
+// a version of that form.
 func Compare(a, b string) (c int, ok bool) {
-	pa, oka := numbers(a)
-	pb, okb := numbers(b)
+	pa, prea, oka := numbers(a)
+	pb, preb, okb := numbers(b)
 	if !oka || !okb {
 		return 0, false
 	}
@@ -124,29 +131,69 @@ func Compare(a, b string) (c int, ok bool) {
 			y = pb[i]
 		}
 		if x != y {
-			if x < y {
-				return -1, true
-			}
-			return 1, true
+			return cmp.Compare(x, y), true
 		}
 	}
-	return 0, true
+	return comparePre(prea, preb), true
 }
 
-func numbers(v string) ([]int, bool) {
-	v = strings.TrimPrefix(v, "v")
-	if i := strings.IndexAny(v, "-+"); i >= 0 {
-		v = v[:i]
+// comparePre orders what follows the "-" of two versions whose numbers are
+// equal. No pre-release at all is the release itself, the later of the two.
+func comparePre(a, b string) int {
+	switch {
+	case a == b:
+		return 0
+	case a == "":
+		return 1
+	case b == "":
+		return -1
 	}
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < min(len(as), len(bs)); i++ {
+		x, xnum := preNumber(as[i])
+		y, ynum := preNumber(bs[i])
+		switch {
+		case xnum && ynum:
+			if x != y {
+				return cmp.Compare(x, y)
+			}
+		case xnum != ynum: // a number comes before a word
+			if xnum {
+				return -1
+			}
+			return 1
+		case as[i] != bs[i]:
+			return strings.Compare(as[i], bs[i])
+		}
+	}
+	return cmp.Compare(len(as), len(bs))
+}
+
+// preNumber reads one part of a pre-release as a number: digits only, and
+// few enough to hold (a timestamp is 14).
+func preNumber(s string) (int64, bool) {
+	if len(s) == 0 || len(s) > 18 || strings.Trim(s, "0123456789") != "" {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	return n, err == nil
+}
+
+// numbers splits a version into its dotted numbers and its pre-release, the
+// text after the first "-" with any build metadata cut off.
+func numbers(v string) (nums []int, pre string, ok bool) {
+	v = strings.TrimPrefix(v, "v")
+	v, _, _ = strings.Cut(v, "+")
+	v, pre, _ = strings.Cut(v, "-")
 	var out []int
 	for _, f := range strings.Split(v, ".") {
 		n, err := strconv.Atoi(f)
 		if err != nil || n < 0 || len(f) > 9 {
-			return nil, false
+			return nil, "", false
 		}
 		out = append(out, n)
 	}
-	return out, len(out) > 0 && len(out) <= 4
+	return out, pre, len(out) > 0 && len(out) <= 4
 }
 
 // AssetName is the archive GoReleaser publishes for one target, mirroring
@@ -165,6 +212,38 @@ func AssetName(version, goos, goarch string) string {
 		ext = ".zip"
 	}
 	return "tenant_" + version + "_" + goos + "_" + arch + ext
+}
+
+// ParseAssetName reads an archive's name back: the version, system and
+// processor that AssetName makes it from. ok is false for any other name, a
+// .zip that is not Windows's and a .tar.gz that is among them. It is how a
+// build handed to `tenant fleet update --build` says what it is.
+func ParseAssetName(name string) (version, goos, goarch string, ok bool) {
+	rest, found := strings.CutPrefix(name, "tenant_")
+	if !found {
+		return "", "", "", false
+	}
+	if r, zip := strings.CutSuffix(rest, ".zip"); zip {
+		rest = r
+	} else if rest, found = strings.CutSuffix(rest, ".tar.gz"); !found {
+		return "", "", "", false
+	}
+	if r, is := strings.CutSuffix(rest, "_x86_64"); is {
+		rest, goarch = r, "amd64"
+	} else if r, is := strings.CutSuffix(rest, "_aarch64"); is {
+		rest, goarch = r, "arm64"
+	} else {
+		return "", "", "", false
+	}
+	i := strings.LastIndexByte(rest, '_')
+	if i <= 0 || i == len(rest)-1 {
+		return "", "", "", false
+	}
+	version, goos = rest[:i], rest[i+1:]
+	if AssetName(version, goos, goarch) != name {
+		return "", "", "", false
+	}
+	return version, goos, goarch, true
 }
 
 // Download fetches one release asset by its API URL into dest, streamed

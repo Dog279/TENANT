@@ -692,6 +692,62 @@ func TestFleetUpdateRealProcesses(t *testing.T) {
 		alpha.state("connected to the master")
 	})
 
+	// TEN-552: a build of the operator's own, sent in place of a release
+	// (`tenant fleet update --build`), as scripts/devbuild packs one: the
+	// archive a release would carry, under a development version. alpha takes
+	// its master's hash, so it takes the build; nothing is fetched for it.
+	const devVersion = "3.2.0-dev.20261126193000.e56d774"
+	devArchive := filepath.Join(builds, "dev", selfupdate.AssetName(devVersion, runtime.GOOS, runtime.GOARCH))
+	step("a build of your own goes to a machine that trusts its master", func(t *testing.T) {
+		if err := packRelease(devArchive, e2eBuild(t, filepath.Join(builds, "dev"), devVersion, "")); err != nil {
+			t.Fatal(err)
+		}
+		if out, exit := f.update("alpha", "--build", devArchive, "--version", "v9.9.9"); exit == 0 || !strings.Contains(out, "do not go together") {
+			t.Errorf("--build with --version: exit %d\n%s", exit, out)
+		}
+		if out, exit := f.update("alpha", "--build", f.bin); exit == 0 || !strings.Contains(out, "not a build's archive by its name") {
+			t.Errorf("a bare binary as a build: exit %d\n%s", exit, out)
+		}
+		otherOS := "linux"
+		if runtime.GOOS == "linux" {
+			otherOS = "darwin"
+		}
+		wrong := filepath.Join(builds, "dev", selfupdate.AssetName(devVersion, otherOS, runtime.GOARCH))
+		if err := os.WriteFile(wrong, []byte("another system's build"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if out, exit := f.update("alpha", "--build", wrong); exit == 0 || !strings.Contains(out, "is a build for "+otherOS+"/"+runtime.GOARCH) || !strings.Contains(out, "nothing was sent") {
+			t.Errorf("another system's build: exit %d\n%s", exit, out)
+		}
+		if parts, _ := filepath.Glob(filepath.Join(childDataDir(alpha.dir), "update", "*")); len(parts) != 0 {
+			t.Errorf("a refused build sent the machine something: %v", parts)
+		}
+
+		out, exit := f.update("alpha", "--build", devArchive)
+		t.Logf("the update said:\n%s", out)
+		for _, want := range []string{"alpha: sending " + filepath.Base(devArchive), "which no release vouches for",
+			"the machine is set to trust this master's hash", "alpha: back on the new version " + devVersion} {
+			if !strings.Contains(out, want) {
+				t.Errorf("the update's output lacks %q", want)
+			}
+		}
+		if exit != 0 || strings.Contains(out, "fetching") {
+			t.Fatalf("exit %d\n%s", exit, out)
+		}
+		if got := e2eMarkOf(t, f.bin); got != devVersion {
+			t.Errorf("the installed binary is marked %q", got)
+		}
+		if got := f.reported(t, alpha.id); got != fleetQuote(devVersion) {
+			t.Errorf("the master shows alpha on %s", got)
+		}
+		if st := alpha.state("connected to the master"); !strings.Contains(st, "updated from 3.1.0 to "+devVersion) {
+			t.Errorf("tenant child status:\n%s", st)
+		}
+		if out, exit := f.update("alpha", "--build", devArchive); exit != 0 || !strings.Contains(out, "already runs "+devVersion) {
+			t.Errorf("the same build again: exit %d\n%s", exit, out)
+		}
+	})
+
 	// A machine on the default rule (decision A71) verifies the release
 	// itself: a signed release comes back on the new version, and one with
 	// no signature bundle is refused before the archive is on the wire.
@@ -715,6 +771,19 @@ func TestFleetUpdateRealProcesses(t *testing.T) {
 		}
 		if got := f.reported(t, gamma.id); got != fleetQuote("5.0.0") {
 			t.Errorf("gamma reports %s", got)
+		}
+		// And it takes no build of the operator's own (TEN-552): no release
+		// vouches for one. It refuses on the first piece, and the operator
+		// is told what would make it take one.
+		out, exit = f.update("gamma", "--build", devArchive)
+		if exit == 0 || !strings.Contains(out, "the machine refused the update") || !strings.Contains(out, "`tenant child updates master`, run on that machine") {
+			t.Errorf("a build to a machine that verifies releases: exit %d\n%s", exit, out)
+		}
+		if parts, _ := filepath.Glob(filepath.Join(childDataDir(gamma.dir), "update", "*")); len(parts) != 0 {
+			t.Errorf("the refused build left %v on the machine", parts)
+		}
+		if got := f.reported(t, gamma.id); got != fleetQuote("5.0.0") {
+			t.Errorf("after a refused build gamma reports %s", got)
 		}
 	})
 
