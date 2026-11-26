@@ -5,6 +5,22 @@ Releases page.
 
 ## Unreleased
 
+- **New: send a fleet machine a build of your own (TEN-552, second part).**
+  `go run ./scripts/devbuild [system/processor ...]` builds Tenant from a checkout and packs each
+  target as the archive a release would carry, under a development version of its own
+  (`0.3.0-dev.20261126193000.e56d774`: the last release's numbers, the time of the build, the
+  commit, and `.dirty` for uncommitted changes). `tenant fleet update <name> --build <archive>`
+  sends one in place of a release. Nothing is fetched; a build for another system or processor
+  than the machine's is refused before anything is sent; the machine checks, tries and rolls
+  back as it does with a release. Only a machine set to `updates master` takes one (`tenant
+  child install --updates master`, or `tenant child updates master` on it); any other refuses
+  it on the first piece, and the command says what to set.
+- **Fixed: `tenant fleet update` could not move a machine from one release candidate to the
+  next.** Versions were compared by their numbers alone, so a machine on `0.3.0-rc.1` asked to
+  take `0.3.0-rc.2` was answered "already runs 0.3.0-rc.2" and sent nothing. Versions are now
+  ordered as semantic versioning orders them: a release candidate before the one after it, and
+  both before the release. `tenant doctor`'s check of each machine's version against the
+  master's follows the same order.
 - **Updating a fleet machine no longer costs the calls to it (TEN-552, first part).** Until now
   a machine that took an update dropped its link a second later: a call that was running ended
   with an outcome nobody knew, and a call made while it restarted failed as offline. Now the

@@ -169,7 +169,7 @@ func (f *fakeFleet) Recover(id, was string, identity []byte) (string, error) {
 	return "generation 3 was read", nil
 }
 
-func (f *fakeFleet) Update(id, version, arch string, allowOlder bool) error {
+func (f *fakeFleet) Update(id, version, arch, _ string, allowOlder bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	m, err := f.change("update", id, version, arch, fmt.Sprint(allowOlder))

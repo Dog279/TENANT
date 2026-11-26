@@ -79,10 +79,12 @@ type FleetControl interface {
 	// Update starts sending the machine a newer Tenant over its link (`tenant
 	// fleet update`): version "" is the latest release; allowOlder lets one
 	// older than the machine runs go; arch names the machine's processor when
-	// it is too old to say. It refuses at once what cannot start (offline,
-	// not confirmed, held by another process); the rest shows in the
-	// machine's Update.
-	Update(machine, version, arch string, allowOlder bool) error
+	// it is too old to say. build, when it is not "", is the full path of an
+	// archive on this Tenant's computer to send in place of a release: a
+	// build of the operator's own (`--build`). It refuses at once what cannot
+	// start (offline, not confirmed, held by another process); the rest shows
+	// in the machine's Update.
+	Update(machine, version, arch, build string, allowOlder bool) error
 	// Recover reads the machine's memory from its newest copy made under
 	// another fleet key, with identity, the fleet's recovery identity the
 	// operator brought (`tenant fleet recover`), and makes it the machine's
@@ -1138,8 +1140,10 @@ func (s *Server) handleFleetScheme(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleFleetUpdate is POST /fleet/update (machine, version, allow_older=yes,
-// arch): start updating a machine over its link. What can be refused at once
-// is the flash; the rest is the machine's Update on its page and in the API.
+// arch, build): start updating a machine over its link. What can be refused
+// at once is the flash; the rest is the machine's Update on its page and in
+// the API. build is the command line's (`tenant fleet update --build`): the
+// page has no field for it.
 func (s *Server) handleFleetUpdate(w http.ResponseWriter, r *http.Request) {
 	if s.fleet == nil {
 		s.fleetDone(w, r, "", "", "")
@@ -1150,7 +1154,7 @@ func (s *Server) handleFleetUpdate(w http.ResponseWriter, r *http.Request) {
 		s.fleetDone(w, r, "", "", fleetGone)
 		return
 	}
-	err := s.fleet.Update(m.ID, strings.TrimSpace(r.FormValue("version")), strings.TrimSpace(r.FormValue("arch")), r.FormValue("allow_older") == "yes")
+	err := s.fleet.Update(m.ID, strings.TrimSpace(r.FormValue("version")), strings.TrimSpace(r.FormValue("arch")), r.FormValue("build"), r.FormValue("allow_older") == "yes")
 	if err != nil {
 		s.fleetDone(w, r, m.ID, "", s.flashFor(r.Context(), "fleet update", err, "Couldn't start updating that machine. Nothing was sent."))
 		return

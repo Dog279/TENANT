@@ -77,7 +77,16 @@ type fleetUpdateOpts struct {
 	version    string // vX.Y.Z; "" is the latest release
 	allowOlder bool   // send a version older than the machine runs (or one that cannot be compared)
 	arch       string // amd64 | arm64, for a machine too old to say
+	// build is an archive on this computer to send in place of a release
+	// (--build; TEN-552): a development build, named as a release's archive is
+	// (scripts/devbuild writes them). Its name says its version, system and
+	// processor. No release vouches for it, so only a machine set to trust
+	// its master's hash takes it.
+	build string
 }
+
+// buildNamed is what the name of a build's archive has to be.
+const buildNamed = "tenant_<version>_<system>_<processor>.tar.gz, or .zip for Windows, as `go run ./scripts/devbuild` writes it"
 
 // versionArg is the form --version takes.
 var versionArg = regexp.MustCompile(`^v?[0-9]{1,9}(\.[0-9]{1,9}){1,3}(-[0-9A-Za-z.]{1,32})?$`)
@@ -156,6 +165,19 @@ func (u *fleetUpdates) Start(mgr *fleet.Manager, machine string, o fleetUpdateOp
 	if o.arch != "" && o.arch != "amd64" && o.arch != "arm64" {
 		return fmt.Errorf("--arch is amd64 or arm64, not %s", fleetQuote(o.arch))
 	}
+	if o.build != "" {
+		switch _, _, _, named := selfupdate.ParseAssetName(filepath.Base(o.build)); {
+		case o.version != "":
+			return errors.New("a build is sent as it is: --build and --version do not go together")
+		case !filepath.IsAbs(o.build):
+			return fmt.Errorf("the build %s is not a full path on this computer", fleetQuote(o.build))
+		case !named:
+			return fmt.Errorf("%s is not a build's archive by its name, which says what it is: %s", fleetQuote(filepath.Base(o.build)), buildNamed)
+		}
+		if fi, err := os.Stat(o.build); err != nil || !fi.Mode().IsRegular() {
+			return fmt.Errorf("the build %s is not a file this Tenant can read", fleetQuote(o.build))
+		}
+	}
 	all, err := mgr.Machines()
 	if err != nil {
 		return err
@@ -193,6 +215,10 @@ func (u *fleetUpdates) run(mgr *fleet.Manager, st fleet.MachineStatus, o fleetUp
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute+fleetUpdateWait)
 	defer cancel()
 	fail := func(stage, line string) { u.say(s, stage, line) }
+	if o.build != "" {
+		u.runBuild(ctx, mgr, st, o, s)
+		return
+	}
 	repo := updateRepo()
 	if repo == "" {
 		fail(fleetUpdRefused, "no release source: this build names no repository (TENANT_UPDATE_REPO=owner/name sets one)")
@@ -268,8 +294,64 @@ func (u *fleetUpdates) run(mgr *fleet.Manager, st fleet.MachineStatus, o fleetUp
 		fail(fleetUpdFailed, err.Error()+". Nothing was sent")
 		return
 	}
-	sent, from, opening, err := sendUpdate(ctx, mgr, st.ID, archive, fleet.Update{Version: newV, SHA256: sum, Size: size,
-		Asset: filepath.Base(archive), Checksums: checksums, Bundle: bundle, Signature: signature})
+	u.send(ctx, mgr, st, s, archive, fleet.Update{Version: newV, SHA256: sum, Size: size,
+		Asset: filepath.Base(archive), Checksums: checksums, Bundle: bundle, Signature: signature}, "")
+}
+
+// runBuild is run for a build handed to this master (--build) in place of a
+// release: nothing is fetched and nothing is verified here, since nothing
+// vouches for a build but the operator who sends it. Its name says what it
+// is; a build for another system or processor than the machine's is refused
+// before anything is sent, and the machine itself checks that the binary runs
+// there and says the version it was sent as.
+func (u *fleetUpdates) runBuild(ctx context.Context, mgr *fleet.Manager, st fleet.MachineStatus, o fleetUpdateOpts, s *fleetUpdateState) {
+	fail := func(stage, line string) { u.say(s, stage, line) }
+	name := filepath.Base(o.build)
+	newV, goos, arch, ok := selfupdate.ParseAssetName(name)
+	if !ok {
+		fail(fleetUpdRefused, fleetQuote(name)+" is not a build's archive by its name: "+buildNamed+". Nothing was sent")
+		return
+	}
+	u.mu.Lock()
+	s.To = newV
+	u.mu.Unlock()
+	switch has := st.Arch; {
+	case goos != st.Reported.OS || has != "" && arch != has:
+		if has == "" {
+			has = "a processor it does not say"
+		}
+		fail(fleetUpdRefused, fmt.Sprintf("%s is a build for %s/%s, and the machine is %s/%s: nothing was sent", name, goos, arch, fleetQuote(st.Reported.OS), has))
+		return
+	case newV == st.Reported.Version:
+		fail(fleetUpdDone, "already runs "+newV+", by its own account: nothing was sent")
+		return
+	}
+	fi, err := os.Stat(o.build)
+	var sum string
+	if err == nil && fi.Size() == 0 {
+		err = errors.New("it is empty")
+	}
+	if err == nil {
+		sum, err = selfupdate.SHA256(o.build)
+	}
+	if err != nil {
+		fail(fleetUpdFailed, "the build cannot be read: "+err.Error()+". Nothing was sent")
+		return
+	}
+	u.say(s, fleetUpdSending, fmt.Sprintf("sending %s (%s): a build this Tenant was handed, which no release vouches for", name, fleetMB(fi.Size())))
+	u.send(ctx, mgr, st, s, o.build, fleet.Update{Version: newV, SHA256: sum, Size: fi.Size()},
+		"A machine takes a build of your own only when it is set to trust its master's hash: `tenant child updates master`, run on that machine")
+}
+
+// send is the second half of a machine's update, a release's or a build's:
+// the archive goes over the link in pieces, and the machine is waited on to
+// say how the update went. unverified, when there is one, is said besides when
+// the machine refuses the archive on its first piece: what a machine that
+// verifies releases needs to be told about one that is not a release.
+func (u *fleetUpdates) send(ctx context.Context, mgr *fleet.Manager, st fleet.MachineStatus, s *fleetUpdateState, archive string, upd fleet.Update, unverified string) {
+	fail := func(stage, line string) { u.say(s, stage, line) }
+	newV, size := upd.Version, upd.Size
+	sent, from, opening, err := sendUpdate(ctx, mgr, st.ID, archive, upd)
 	if opening.Rule != "" || err == nil {
 		u.say(s, "", ruleWords(opening.Rule, opening.Verified))
 	}
@@ -287,7 +369,11 @@ func (u *fleetUpdates) run(mgr *fleet.Manager, st fleet.MachineStatus, o fleetUp
 		fail(fleetUpdFailed, fmt.Sprintf("the machine went offline during the transfer, after %s of %s. Nothing changed there: a machine applies an update only once all of it has arrived and checked", fleetMB(sent), fleetMB(size)))
 		return
 	case err != nil:
-		fail(fleetUpdFailed, err.Error())
+		line := err.Error()
+		if unverified != "" && opening.Rule == "" && sent == 0 {
+			line += ". " + unverified
+		}
+		fail(fleetUpdFailed, line)
 		return
 	default:
 		u.say(s, fleetUpdApplying, fmt.Sprintf("sent %s%s; the machine checked its SHA-256 and is applying it. The calls it is running finish first, and new ones wait until it is back. Its background commands end at the restart", fleetMB(size), resumed))
@@ -543,6 +629,7 @@ func fleetUpdateCmd(args []string) error {
 	ver := fs.String("version", "", "install this release (vX.Y.Z) instead of the latest")
 	older := fs.Bool("allow-older", false, "send a version older than the machine runs")
 	arch := fs.String("arch", "", "the machine's processor, amd64 or arm64, for a machine too old to say")
+	build := fs.String("build", "", "send this archive, a build of your own (go run ./scripts/devbuild), in place of a release")
 	hub := fs.String("hub", "", "the running Tenant's dashboard address, when it is not where config.json says")
 	cli, err := openFleetCLI(fs, args)
 	if err != nil {
@@ -582,12 +669,32 @@ func fleetUpdateCmd(args []string) error {
 		}
 		machines = []fleet.Machine{m}
 	default:
-		return errors.New("usage: tenant fleet update <name> | --all | --group <group> [--version vX.Y.Z] [--allow-older] [--arch amd64|arm64] [--hub ADDR]")
+		return errors.New("usage: tenant fleet update <name> | --all | --group <group> [--version vX.Y.Z | --build ARCHIVE] [--allow-older] [--arch amd64|arm64] [--hub ADDR]")
+	}
+	o := fleetUpdateOpts{version: *ver, allowOlder: *older, arch: *arch}
+	if *build != "" {
+		// The running Tenant reads the archive itself, from where it runs: it
+		// is told the whole path. What is wrong with it that can be seen from
+		// here is said before anything is asked.
+		abs, err := filepath.Abs(*build)
+		if err != nil {
+			return err
+		}
+		switch _, _, _, named := selfupdate.ParseAssetName(filepath.Base(abs)); {
+		case *ver != "":
+			return errors.New("a build is sent as it is: --build and --version do not go together")
+		case !named:
+			return fmt.Errorf("%s is not a build's archive by its name, which says what it is: %s", fleetQuote(filepath.Base(abs)), buildNamed)
+		}
+		if fi, err := os.Stat(abs); err != nil || !fi.Mode().IsRegular() {
+			return fmt.Errorf("there is no build at %s", abs)
+		}
+		o.build = abs
 	}
 	token, _ := dashboardClientToken(cli.c.cfgDir, cli.c.lc, true)
 	h := fleetHubClient{base: attachBaseURL(*hub, cli.c.lc), token: token, http: &http.Client{Timeout: 30 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
-	return h.update(context.Background(), os.Stdout, machines, fleetUpdateOpts{version: *ver, allowOlder: *older, arch: *arch})
+	return h.update(context.Background(), os.Stdout, machines, o)
 }
 
 // fleetHubClient is the running Tenant's dashboard, as a command asks it.
@@ -623,7 +730,7 @@ func (h fleetHubClient) update(ctx context.Context, out io.Writer, machines []fl
 // err is that the hub could not be asked at all.
 func (h fleetHubClient) updateOne(ctx context.Context, out io.Writer, m fleet.Machine, o fleetUpdateOpts) (ok bool, err error) {
 	name := fleetName(m.Name)
-	form := url.Values{"machine": {m.ID}, "version": {o.version}, "arch": {o.arch}, "confirm": {"yes"}}
+	form := url.Values{"machine": {m.ID}, "version": {o.version}, "arch": {o.arch}, "build": {o.build}, "confirm": {"yes"}}
 	if o.allowOlder {
 		form.Set("allow_older", "yes")
 	}

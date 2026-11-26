@@ -462,6 +462,8 @@ tenant fleet update web1 --version v1.4.0      # that release
 tenant fleet update --all                      # every confirmed machine, one after the other
 tenant fleet update web1 --version v1.3.0 --allow-older
 tenant fleet update old1 --arch arm64          # a machine too old to say its processor
+tenant fleet update web1 --build dist/dev/tenant_0.3.0-dev.20261126193000.e56d774_linux_x86_64.tar.gz
+                                               # a build of your own, not a release (below)
 ```
 
 The command asks the running Tenant that holds the fleet (through its dashboard, with the
@@ -548,6 +550,45 @@ record in the machine's audit log. `tenant fleet update` says for each machine w
 applied. A machine from before this setting takes its master's hash. Downgrades are refused on
 the master unless `--allow-older`, as before; a signed older release is still a genuine release,
 and a machine on the default rule takes it.
+
+**Sending a build of your own (TEN-552).** Between releases, a machine set to `updates master`
+can be sent what you built yourself. Build and pack it from a checkout of the repository:
+
+```
+go run ./scripts/devbuild                      # for the computer you are on
+go run ./scripts/devbuild darwin/arm64         # for another system and processor
+go run ./scripts/devbuild all                  # the six targets a release has
+```
+
+Each target becomes an archive in `dist/dev/`, named as a release's is, under a development
+version of its own: `<the last release's numbers>-dev.<UTC time of the build>.<commit>`, with
+`.dirty` at the end when the tree had changes that were not committed. For example
+`0.3.0-dev.20261126193000.e56d774`. The time makes every build its own version; the commit says
+what a machine runs (`tenant fleet show`, the Fleet page, `tenant version` on the machine).
+Then, on the master, with the archive on the master's own disk:
+
+```
+tenant fleet update web1 --build <archive>
+web1: sending tenant_0.3.0-dev.20261126193000.e56d774_linux_x86_64.tar.gz (14.8 MB): a build this Tenant was handed, which no release vouches for
+web1: the machine is set to trust this master's hash (`updates master` on the machine): it checks the archive against the SHA-256 sent with it, not against a signature
+web1: sent 14.8 MB; the machine checked its SHA-256 and is applying it. ...
+web1: back on the new version 0.3.0-dev.20261126193000.e56d774
+```
+
+- Nothing is fetched and nothing is verified on the master: the archive's name says its
+  version, system and processor, and the master sends its SHA-256 with it. A build for another
+  system or processor than the machine's is refused before anything is sent.
+- The machine does what it does with a release: it checks the hash, runs the binary once to see
+  that it runs there and says the version it was sent as, runs it on trial, and rolls back by
+  itself if it does not reach the master.
+- A machine on the default rule refuses a build on the first piece, before any of the archive
+  is sent: no release vouches for it. The command says so and names what to set.
+- The running Tenant reads the archive itself, so with `--hub` the path is one on the computer
+  that Tenant runs on. `--version` does not go with `--build`, and `--allow-older` is not asked
+  for: builds are not ordered against what a machine runs.
+- A development version sorts before the release candidates of the same numbers, so a release
+  updates over a build without `--allow-older`. `tenant update` on a computer that runs a build
+  leaves it alone unless forced, as with any development build.
 
 On the machine: the archive goes to `<dir>-data/update/<sha256>.part` (a dropped link resumes
 there), and nothing else is touched until it is whole and hashes right. The binary is unpacked

@@ -25,6 +25,7 @@ var anything = []string{"**"}
 var rules = []rule{
 	{Pkg: "cmd/**", May: anything, Notes: "the composition root and command adapters"},
 	{Pkg: "scripts/releasekey", May: []string{"internal/selfupdate", "internal/fsperm"}, Notes: "signs releases in the exact form the binary verifies (TEN-542); both are stdlib-only leaves"},
+	{Pkg: "scripts/devbuild", May: []string{"internal/selfupdate"}, Notes: "names a development build's archive exactly as `tenant fleet update --build` reads it back, and orders its version as the binary does (TEN-552); a stdlib-only leaf"},
 	{Pkg: "scripts/**", Notes: "build tools stand alone"},
 	{Pkg: "reference/**", May: []string{"reference/**"}, Notes: "examples for tool builders; never tenant/internal"},
 	{Pkg: "internal/archtest", Notes: "these tests"},

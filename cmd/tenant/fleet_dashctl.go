@@ -441,7 +441,7 @@ func dashUpdate(st fleetUpdateState) *dashboard.FleetUpdate {
 
 // Update starts updating a machine over its link, in this process, which
 // must be the one that holds the fleet: only it has the links.
-func (d dashFleet) Update(id, version, arch string, allowOlder bool) error {
+func (d dashFleet) Update(id, version, arch, build string, allowOlder bool) error {
 	m, err := d.machine(id)
 	if err != nil {
 		return err
@@ -453,7 +453,7 @@ func (d dashFleet) Update(id, version, arch string, allowOlder bool) error {
 		}
 		return dashboard.PlainError("Nothing was sent: no process holds the fleet right now, so no machine is online.")
 	}
-	if err := upd.Start(mgr, m.ID, fleetUpdateOpts{version: version, arch: arch, allowOlder: allowOlder}); err != nil {
+	if err := upd.Start(mgr, m.ID, fleetUpdateOpts{version: version, arch: arch, allowOlder: allowOlder, build: build}); err != nil {
 		return dashboard.PlainError("Nothing was sent: " + err.Error() + ".")
 	}
 	return nil
