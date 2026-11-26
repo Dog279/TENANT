@@ -139,6 +139,10 @@ func TestFleetRehomeEndToEnd(t *testing.T) {
 	b := &e2eMaster{t: t, host: h, cfg: h.join("b-cfg"), data: h.join("b-data"), scripted: true, client: &http.Client{Timeout: 30 * time.Second}}
 	b.serve()
 	recoveryB := b.initKeeping()
+	// The machine moves the way this test types it through: B asks for the
+	// six digits rehome prints (by default its code alone would confirm it).
+	b.must(nil, "fleet", "digits", "on")
+	b.digits = true
 	if recoveryB == recoveryA {
 		t.Fatal("two fleets share a recovery identity")
 	}

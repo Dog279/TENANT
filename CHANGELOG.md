@@ -5,6 +5,17 @@ Releases page.
 
 ## Unreleased
 
+- **A fleet machine joins with its one-time code alone (TEN-553).** Until now a machine that
+  enrolled showed six digits and waited for a person to type them on the master (and, from
+  another computer, to give the dashboard's sign-in key again). Now a code that is valid,
+  unused and not expired confirms the machine as it enrolls: paste one line on the machine and
+  it is online. You are told when a machine joins, with the address it came from and what it
+  reports, and the Security log records it. If a code is ever presented a second time, the
+  second machine is refused and the first is paused until you have looked. To keep the six
+  digits as a second step, run `tenant fleet digits on` (`fleet.confirm: digits` in
+  `config.json`); everything then works as before, remote confirmation included.
+  - **New: `tenant fleet pause <name>` and `tenant fleet resume <name>`.** A paused machine gets
+    no calls and its link is refused; its certificate, approval settings and memory stay.
 - **Fixed (Windows): a save could fail while another program had the file open.** Tenant
   replaces a file by renaming a finished copy over it, and Windows refuses that rename while
   any other handle is open on the file (a virus scanner, the search indexer, a reader of

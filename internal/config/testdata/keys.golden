@@ -64,6 +64,7 @@ config.json: embed_endpoint
 config.json: embed_model
 config.json: fallbacks
 config.json: fleet
+config.json: fleet.confirm
 config.json: fleet.listen
 config.json: fleet.remote_confirm
 config.json: gateway

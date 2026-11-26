@@ -39,6 +39,11 @@ type ManagerConfig struct {
 	Role string
 	// Refused and Alert are the enroll endpoint's audit (NewEnrollHandler).
 	Refused, Alert func(Refusal)
+	// Enrolled, when not nil, is told of a machine that has just spent its
+	// enrollment code, with the address it came from, before the machine is
+	// answered. It reports whether it confirmed the machine there and then
+	// (TEN-553); the machine is told, and shows no digits.
+	Enrolled func(m Machine, remote string) bool
 	// Connected, when not nil, is told the id of each machine whose link is
 	// up, once per link, on a goroutine of its own: the master's memory
 	// compares its copy with the machine's then (TEN-532).
@@ -222,7 +227,7 @@ func (m *Manager) serve(ln net.Listener) {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle(EnrollPath, NewEnrollHandler(m.store, m.cfg.Refused, m.cfg.Alert))
+	mux.Handle(EnrollPath, newEnrollHandler(m.store, m.cfg.Refused, m.cfg.Alert, m.cfg.Enrolled))
 	mux.HandleFunc(LinkPath, m.serveLink)
 	m.srv = &http.Server{
 		Handler:      mux,

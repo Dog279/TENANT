@@ -353,6 +353,10 @@ type enrollRequest struct {
 type enrollResponse struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	// Confirmed says the master confirmed the machine as it enrolled, on the
+	// strength of the code alone (TEN-553): there are no digits to type. A
+	// master from before that never sets it.
+	Confirmed bool `json:"confirmed,omitempty"`
 }
 
 // parseEnrollRequest reads the body a stranger sent. Keys it does not know
@@ -449,7 +453,11 @@ type enrollHandler struct {
 	store   *Store
 	refused func(Refusal)
 	alert   func(Refusal)
-	limit   attemptLimiter
+	// enrolled is told of a machine that has just spent its code and is
+	// pending, before the machine is answered. It reports whether it confirmed
+	// the machine there and then; nil confirms nothing.
+	enrolled func(m Machine, remote string) bool
+	limit    attemptLimiter
 }
 
 // NewEnrollHandler is the master's enroll endpoint, to be served at
@@ -465,7 +473,13 @@ type enrollHandler struct {
 // enrolled has the code, or had it first. Either may be nil. They run on the
 // request's goroutine.
 func NewEnrollHandler(s *Store, refused, alert func(Refusal)) http.Handler {
-	return &enrollHandler{store: s, refused: refused, alert: alert,
+	return newEnrollHandler(s, refused, alert, nil)
+}
+
+// newEnrollHandler is NewEnrollHandler with the hook that may confirm a
+// machine as it enrolls (ManagerConfig.Enrolled).
+func newEnrollHandler(s *Store, refused, alert func(Refusal), enrolled func(Machine, string) bool) http.Handler {
+	return &enrollHandler{store: s, refused: refused, alert: alert, enrolled: enrolled,
 		limit: attemptLimiter{max: enrollAttempts, window: enrollWindow}}
 }
 
@@ -538,8 +552,9 @@ func (h *enrollHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	Enrolled.Log(r.Context(), "name", m.Name, "machine", m.ID, "remote", r.RemoteAddr, "certificate", ref.Fingerprint)
+	confirmed := h.enrolled != nil && h.enrolled(m, r.RemoteAddr)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(enrollResponse{ID: m.ID, Name: m.Name})
+	_ = json.NewEncoder(w).Encode(enrollResponse{ID: m.ID, Name: m.Name, Confirmed: confirmed})
 }
 
 // Enroll runs on the machine being enrolled. It reads code, dials the
@@ -551,6 +566,8 @@ func (h *enrollHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // It returns the Child to save as child.json and the six digits to show the
 // operator. The machine is then pending: it connects like any other and is
 // told WaitingForConfirmation until those digits are typed on the master.
+// The digits are "" when the master confirmed the machine as it enrolled
+// (TEN-553): nothing is left to type.
 //
 // The secret is sent once, to the first address that proves to be the
 // master. A code is spent by that, so a failure after the secret went out is
@@ -623,6 +640,9 @@ func Enroll(ctx context.Context, code string, id Identity, self Reported) (Child
 		Sandbox: self.Sandbox, Ceiling: Ceiling(self.Ceiling)}
 	if err := child.validate(); err != nil {
 		return fail(fmt.Errorf("fleet: the master's answer: %w", err))
+	}
+	if out.Confirmed {
+		return child, "", nil
 	}
 	return child, ConfirmCode(ec.Fingerprint, id.Fingerprint), nil
 }

@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -930,5 +931,45 @@ func TestEnrollDistrustsTheAnswer(t *testing.T) {
 	}
 	if got := clip("  refused\x1b[2J\nnow \xff " + strings.Repeat("é", 300)); len(got) > 200 || !utf8.ValidString(got) || strings.ContainsAny(got, "\x1b\n") || !strings.HasPrefix(got, "refused") {
 		t.Errorf("clip = %q", got)
+	}
+}
+
+// TEN-553: a master may confirm a machine as it enrolls, on the strength of
+// its code. The hook is told of the pending machine and where it came from
+// before the machine is answered; when it says yes the machine is told, and
+// has no digits to show. When it says no, the digits are there as before.
+func TestEnrollConfirmedByItsCode(t *testing.T) {
+	m := newMaster(t)
+	s := m.serve(t, nil)
+	var seen []string
+	s.handler.enrolled = func(mach Machine, remote string) bool {
+		seen = append(seen, mach.Name+" "+string(mach.State)+" "+strconv.FormatBool(remote != ""))
+		if mach.Name != "yes" {
+			return false
+		}
+		_, err := m.store.Confirm(m.id.Fingerprint, mach.ID, ConfirmCode(m.id.Fingerprint, mach.Fingerprint))
+		return err == nil
+	}
+	for name, wantDigits := range map[string]bool{"yes": false, "no": true} {
+		code := must(m.store.CreateEnrollment(m.id.Fingerprint, name, 0, ""))(t)
+		child := newIdentity(t)
+		got, digits, err := Enroll(ctxFor(t), code, child, linuxBox)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (digits != "") != wantDigits {
+			t.Errorf("%s: digits = %q", name, digits)
+		}
+		want := StateConfirmed
+		if wantDigits {
+			want = StatePending
+		}
+		if mach := must(m.store.Machine(got.ID))(t); mach.State != want {
+			t.Errorf("%s: the machine is %s, want %s", name, mach.State, want)
+		}
+	}
+	slices.Sort(seen)
+	if !slices.Equal(seen, []string{"no pending true", "yes pending true"}) {
+		t.Errorf("the hook was told %q", seen)
 	}
 }
