@@ -319,6 +319,22 @@ func (ix *Index) Reindex(ctx context.Context) (int, int, error) {
 	return ix.reindexLocked(ctx)
 }
 
+// ReindexBehind starts Reindex and returns at once (TEN-555): start-up does
+// not wait for an embedder. The index's lock is taken before this returns
+// and held until the reindex ends, so whoever reads the index next (a list,
+// a read, a search) waits for it and never sees the index as it was before:
+// empty on a first run. done, when not nil, is told how it ended.
+func (ix *Index) ReindexBehind(ctx context.Context, done func(error)) {
+	ix.mu.Lock()
+	go func() {
+		_, _, err := ix.reindexLocked(ctx)
+		ix.mu.Unlock()
+		if done != nil {
+			done(err)
+		}
+	}()
+}
+
 // reindexLocked is Reindex's body; callers must already hold ix.mu. Split out
 // so Search can refresh without re-entering the (non-reentrant) mutex.
 func (ix *Index) reindexLocked(ctx context.Context) (int, int, error) {

@@ -352,13 +352,14 @@ func openWikiIndex(ctx context.Context, dataDir, dir, embModel string, dim int, 
 	}
 	// The first reindex runs beside start-up, never in it (TEN-555): an
 	// embedder that takes the connection and does not answer held the
-	// dashboard and every other plugin back for as long as it hung. A search
-	// that comes first waits for it on the index's lock, and one that finds
-	// it failed reindexes itself.
-	go func() {
-		if _, _, rerr := ix.Reindex(ctx); rerr != nil {
+	// dashboard and every other plugin back for as long as it hung. Whoever
+	// reads the index first waits for it on the index's lock (so a list never
+	// sees the index empty), and a search that finds it failed reindexes
+	// itself.
+	ix.ReindexBehind(ctx, func(rerr error) {
+		if rerr != nil {
 			wiki.ReindexFailed.Log(ctx, "err", rerr)
 		}
-	}()
+	})
 	return ix, nil
 }
