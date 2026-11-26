@@ -35,6 +35,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"tenant/internal/fsperm"
 	"tenant/internal/memory/cosine"
@@ -85,6 +86,12 @@ type Index struct {
 	// through the memoized toolmux activator, with MaxParallelTools=3 letting
 	// tool calls run concurrently within a single turn.
 	mu sync.Mutex
+
+	// behind stops the reindex ReindexBehind started and waits for it to end
+	// (Close); nil when there was none. It has a lock of its own: mu is held
+	// by that reindex for as long as it runs.
+	behindMu sync.Mutex
+	behind   func()
 
 	idx indexFile
 
@@ -288,6 +295,27 @@ func (ix *Index) save() error {
 	return fsperm.WriteFile(ix.sidecar, b)
 }
 
+// How long one embedding request may take (TEN-555). An embedder that takes
+// the connection and never answers would otherwise hold the index's lock,
+// and whatever waits on it, for as long as the caller's context lives: all
+// of start-up, once. A file's chunks go in one request, so its limit is
+// generous for a CPU-only embedder and a large note. Variables for the tests.
+var (
+	fileEmbedTimeout  = 3 * time.Minute
+	queryEmbedTimeout = 30 * time.Second
+)
+
+// embed is one request to the embedder, given up after limit.
+func (ix *Index) embed(ctx context.Context, limit time.Duration, texts []string) ([][]float32, error) {
+	ctx, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	vecs, err := ix.embedder.Embed(ctx, texts)
+	if err != nil && ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("the embedder did not answer within %s: %w", limit, err)
+	}
+	return vecs, err
+}
+
 // Reindex brings the index in sync with the files on disk. Only
 // changed/new files are re-embedded; deleted files are dropped.
 // Returns (filesIndexed, chunksEmbedded).
@@ -295,6 +323,46 @@ func (ix *Index) Reindex(ctx context.Context) (int, int, error) {
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
 	return ix.reindexLocked(ctx)
+}
+
+// ReindexBehind starts Reindex and returns at once (TEN-555): start-up does
+// not wait for an embedder. The index's lock is taken before this returns
+// and held until the reindex ends, so whoever reads the index next (a list,
+// a read, a search) waits for it and never sees the index as it was before:
+// empty on a first run. done, when not nil, is told how it ended.
+//
+// Close stops it: whoever opened the index calls that when it is done with
+// it, so a reindex still running does not write the index's file after its
+// owner has gone (a plugin switched off, a process shutting down).
+func (ix *Index) ReindexBehind(ctx context.Context, done func(error)) {
+	ctx, cancel := context.WithCancel(ctx)
+	ended := make(chan struct{})
+	ix.behindMu.Lock()
+	ix.behind = func() { cancel(); <-ended }
+	ix.behindMu.Unlock()
+	ix.mu.Lock()
+	go func() {
+		_, _, err := ix.reindexLocked(ctx)
+		ix.mu.Unlock()
+		cancel()
+		if done != nil {
+			done(err)
+		}
+		close(ended)
+	}()
+}
+
+// Close ends the reindex ReindexBehind left running, if one still is, and
+// returns once it has let go of the index and of its file: an embedding in
+// flight is cancelled, and a save already begun is finished. The index can
+// still be read and searched afterwards.
+func (ix *Index) Close() {
+	ix.behindMu.Lock()
+	stop := ix.behind
+	ix.behindMu.Unlock()
+	if stop != nil {
+		stop()
+	}
 }
 
 // reindexLocked is Reindex's body; callers must already hold ix.mu. Split out
@@ -398,7 +466,7 @@ func (ix *Index) reindexLocked(ctx context.Context) (int, int, error) {
 		for i, c := range chunks {
 			texts[i] = embedText(c) + enrich
 		}
-		vecs, err := ix.embedder.Embed(ctx, texts)
+		vecs, err := ix.embed(ctx, fileEmbedTimeout, texts)
 		if err != nil {
 			return len(onDisk), embedded, fmt.Errorf("wiki: embed %s: %w", rel, err)
 		}
@@ -499,7 +567,7 @@ func (ix *Index) Search(ctx context.Context, query string, k int) ([]Hit, error)
 	if len(ix.idx.Chunks) == 0 {
 		return nil, nil
 	}
-	qv, err := ix.embedder.Embed(ctx, []string{"search query: " + query})
+	qv, err := ix.embed(ctx, queryEmbedTimeout, []string{"search query: " + query})
 	if err != nil {
 		return nil, fmt.Errorf("wiki: embed query: %w", err)
 	}

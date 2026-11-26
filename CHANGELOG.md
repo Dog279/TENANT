@@ -5,6 +5,13 @@ Releases page.
 
 ## Unreleased
 
+- **Fixed: Tenant could hang at start-up, with no dashboard, while its embedder was stuck
+  (TEN-555).** Start-up re-indexed the wiki before anything else came up, and an embedder that
+  took the request and never answered (an Ollama runner stuck at 100% CPU) held it there for as
+  long as it hung. The first re-index now runs beside start-up, start-up waits at most 10
+  seconds for the embedder to say its dimension, and every wiki embedding request has a limit
+  (3 minutes for a note, 30 seconds for a search), after which the tool says the embedder did
+  not answer.
 - **A fleet machine joins with its one-time code alone (TEN-553).** Until now a machine that
   enrolled showed six digits and waited for a person to type them on the master (and, from
   another computer, to give the dashboard's sign-in key again). Now a code that is valid,
