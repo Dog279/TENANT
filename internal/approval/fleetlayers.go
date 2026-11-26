@@ -10,7 +10,7 @@ package approval
 //
 // A machine's fresh copy is, each layer winning over the one before it:
 //
-//  1. a copy of the master's local scheme, clamped (Inherit);
+//  1. a copy of the master's local scheme (Inherit);
 //  2. the fleet's default categories, each replacing the copy's mode;
 //  3. the fleet's rules (Scheme.Overlay);
 //  4. the rules of each group it is a member of, in ascending name order
@@ -518,8 +518,8 @@ func (f *Fleet) RemoveGroupRule(name, pattern string) (bool, error) {
 }
 
 // Fresh is the scheme machine id would start with if it were confirmed now:
-// Inherit (the master's copy, clamped, with the default categories and the
-// fleet's rules), then the rules of each of id's groups in name order. It
+// Inherit (the master's copy, with the default categories and the fleet's
+// rules), then the rules of each of id's groups in name order. It
 // changes nothing. Where Inherit is refused, or the groups can't be read, so
 // is this: a group rule may have been a deny.
 func (f *Fleet) Fresh(id string, local Scheme) (Scheme, error) {
@@ -589,18 +589,13 @@ func (f *Fleet) appliedLocked(id string) (s Scheme, groups []string, err error) 
 }
 
 // MasterCopy is the category modes a new machine takes from local, the
-// master's local scheme, before any fleet default: the master's own, with
-// exec, write, destructive, send and sandbox no looser than ask (the first
-// step of Inherit).
+// master's local scheme, before any fleet default: the master's own (the
+// first step of Inherit).
 func MasterCopy(local Scheme) map[string]string {
 	out := make(map[string]string, len(Categories))
 	modes := SavedModes(local.Permissions) // as the master reads them: an entry it skips is not copied
 	for _, c := range Categories {
-		m := modes[c]
-		if m == ModeAllow && clamped[c] {
-			m = ModeAsk
-		}
-		out[c] = m.String()
+		out[c] = modes[c].String()
 	}
 	return out
 }

@@ -107,7 +107,7 @@ type FleetControl interface {
 	// SetDefault sets what a newly confirmed machine starts with for one
 	// safety category (settings key fleet_permissions): mode is ask, allow or
 	// deny, or "" to unset it, so that a new machine takes this Tenant's own
-	// mode for it again (clamped as today). It refuses a category that is not
+	// mode for it again. It refuses a category that is not
 	// one, and refuses while fleet_permissions cannot be read (the text stays
 	// as written). It moves no machine.
 	SetDefault(category, mode string) error
@@ -262,7 +262,7 @@ type FleetView struct {
 
 // FleetDefault is one safety category of the fleet's defaults. Mode is ask,
 // allow or deny where the operator set it for new machines, "" where it is
-// unset: then a new machine takes this Tenant's own mode, clamped, which
+// unset: then a new machine takes this Tenant's own mode, which
 // Inherited says (ask, allow or deny, as of this read). Can is worded for a
 // machine ("on this machine").
 type FleetDefault struct {

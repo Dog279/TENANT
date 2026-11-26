@@ -7,8 +7,11 @@ package main
 // behind a button approver, whereas a cron job runs with NOBODY watching and has
 // no channel to scope to. So this surface is stricter — EVERY gated/destructive
 // tool is cut on the safe surface (no kept-gated exceptions), team/orchestra
-// fan-out is cut everywhere, plus any name matching extraDeny (cron uses it to
-// cut the cron_* tools so a scheduled job cannot schedule more jobs).
+// fan-out is cut there too, plus any name matching extraDeny (cron uses it to
+// cut the cron_* tools so a scheduled job cannot schedule more jobs). The EXEC
+// surface, which the operator turns on knowingly, keeps the fan-out tools: a
+// helper it spawns inherits the job's approver and exec surface
+// (inheritExecSurface), so it answers to the same unattended rules.
 //
 // The surface is a live filtered VIEW over the full registry, not a snapshot
 // copied into a StaticRegistry. That distinction sank the daily brief for five
@@ -31,7 +34,7 @@ import (
 	"tenant/internal/model"
 )
 
-// fanOut reports whether a tool is team/orchestra fan-out (cut on every
+// fanOut reports whether a tool is team/orchestra fan-out (cut on the safe
 // unattended surface — it spawns sub-agents that aren't individually gated).
 func fanOut(name string) bool {
 	return strings.HasPrefix(name, "team") || strings.HasPrefix(name, "orchestr") || name == "spawn_agent"
@@ -45,9 +48,10 @@ func readCommsSafe(sp model.ToolSpec) bool {
 
 // execAllowed reports whether a tool may run on an unattended EXEC surface:
 // gated/dangerous tools ARE allowed (the caller stamps the turn ctx with an
-// auto-approver), but team/orchestra fan-out is still cut.
-func execAllowed(sp model.ToolSpec) bool {
-	return !fanOut(sp.Name)
+// auto-approver), and so is team/orchestra fan-out: a helper spawned from the
+// run inherits its approver and exec surface (inheritExecSurface).
+func execAllowed(model.ToolSpec) bool {
+	return true
 }
 
 // restrictedView is the live filtered registry. Everything answers from the
@@ -129,7 +133,7 @@ func restrictReadComms(full agent.ToolRegistry, inner agent.ToolDispatcher, surf
 	return restrictSurface(full, inner, surface, readCommsSafe, extraDeny)
 }
 
-// restrictExec is the exec surface (gated tools kept; team/orchestra cut). Only
+// restrictExec is the exec surface (gated tools and team/orchestra kept). Only
 // for explicitly exec-opted-in unattended jobs whose turn ctx carries an
 // auto-approver.
 func restrictExec(full agent.ToolRegistry, inner agent.ToolDispatcher, surface string, extraDeny func(name string) bool) (*restrictedView, *readCommsDispatcher) {

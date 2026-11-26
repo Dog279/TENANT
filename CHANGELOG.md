@@ -5,6 +5,36 @@ Releases page.
 
 ## Unreleased
 
+- **Fixed (Windows): a save could fail while another program had the file open.** Tenant
+  replaces a file by renaming a finished copy over it, and Windows refuses that rename while
+  any other handle is open on the file (a virus scanner, the search indexer, a reader of
+  Tenant's own). The rename is now tried again for up to about 300 ms before it is reported.
+- **A new fleet machine starts with this Tenant's approval settings as they are.** Until now
+  a machine's copy held Run commands, Change files, Irreversible actions, Send messages and
+  Leave the sandbox at Ask first even where this Tenant allows them, so a master set to allow
+  commands still asked for every `fleet_exec`. The copy is now exact: what this Tenant allows
+  without asking, the machine does too. To start every machine tighter than the master, set a
+  fleet default (`tenant fleet permissions --defaults set exec ask`, or Fleet > Defaults).
+  Machines already confirmed keep the settings they have; to give them the new copy run
+  `tenant fleet permissions --all --from master` (or **Copy again** on a machine's page). A
+  turn that has read from one machine still asks before it acts on another.
+- **Fixed: `$variables` lost in a PowerShell command wrapped in `powershell -Command "..."`.**
+  `os_exec` (and so `fleet_exec` on a Windows machine) already runs in PowerShell; when the
+  agent wrapped its script in a second one, the outer shell expanded every `$name` inside the
+  double quotes to nothing and the script failed. A plain wrapper is now taken off and the
+  script runs as written (the approval shows the script that runs); a wrapper that cannot be
+  taken off safely runs as given and the result says why it probably failed.
+- **Fixed: a scheduled exec job could not post what it read.** The exec runner never passed the
+  sensitive-egress check to the job's approver, so every Discord message, mail or other outbound
+  call that quoted a wiki, memory or mail read was refused. A report built from the wiki now
+  goes out, and each such flow is still a Security record; a vault secret still never leaves in a
+  message.
+- **A scheduled exec job keeps the helper tools** (`spawn_agent`, `team_*`): a helper inherits the
+  job's approver and exec surface, so the same unattended rules apply to it, and the `cron_*`
+  tools stay refused. Jobs without exec still have no helper tools.
+- **The dashboard's chat follows the conversation.** New messages and the activity rail keep
+  the view at the newest line. Scrolling up holds your place; scrolling back to the bottom, or
+  sending a message, follows again.
 - **Fixed: a scheduled exec job could not write its own notes** when Tenant runs from a folder
   that also holds the wiki (an install at `C:\Tenant` with the wiki in `C:\Tenant\twiki`): the
   guard that keeps an unattended job out of Tenant's own files took the whole install folder,
@@ -22,6 +52,10 @@ Releases page.
   - **Two columns.** On a wide screen Research, Sub-agents, Tools, Scheduled jobs, Fleet, a
     machine's page, Approvals & safety and Access put the forms and settings on one side and
     the list on the other, each scrolling on its own. A narrow screen stacks them as before.
+  - **Chat's activity list scrolls on its own.** Opened beside the chat, a long run's lines
+    ran down past the message box and made the whole page scroll. The list now keeps to the
+    height of the chat, scrolls inside it and follows the newest line, as the terminal app's
+    feed does.
   - **A confirm step no longer moves the page.** It opens as a box over the page: under its
     button on a wide screen, at the bottom of a phone's.
   - **Helpers are called Sub-agents on the dashboard:** the page, its words, and the run

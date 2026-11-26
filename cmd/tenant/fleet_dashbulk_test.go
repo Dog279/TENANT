@@ -116,7 +116,7 @@ func TestFleetDashDefaultsGroupsAndBulk(t *testing.T) {
 		t.Errorf("no Security record of the fleet rule:\n%s", strings.Join(settingsRecords(), "\n"))
 	}
 	// What the page reads back: every category, what is set, and what this
-	// Tenant's own would give (exec is allowed here, and clamped to ask).
+	// Tenant's own would give (exec is allowed here).
 	view := newDashFleet(d.l.c, d.l.stg, &d.l.stgMu).View()
 	def := func(cat string) dashboard.FleetDefault {
 		i := slices.IndexFunc(view.Defaults, func(x dashboard.FleetDefault) bool { return x.Category == cat })
@@ -125,7 +125,7 @@ func TestFleetDashDefaultsGroupsAndBulk(t *testing.T) {
 		}
 		return view.Defaults[i]
 	}
-	if w, e := def("web"), def("exec"); w.Mode != "deny" || w.Inherited != "allow" || e.Mode != "" || e.Inherited != "ask" {
+	if w, e := def("web"), def("exec"); w.Mode != "deny" || w.Inherited != "allow" || e.Mode != "" || e.Inherited != "allow" {
 		t.Errorf("the view's defaults: web %+v, exec %+v", w, e)
 	}
 	// Unset gives it back to this Tenant's own; that may loosen, so it asks.
@@ -263,7 +263,7 @@ func TestFleetDashDefaultsGroupsAndBulk(t *testing.T) {
 	if ans := d.post("/fleet/bulk", "action", "copy", "machine", a.id); !strings.Contains(ans.body, "Done on 1 of 1.") {
 		t.Fatalf("copy again: %d\n%s", ans.code, ans.body)
 	}
-	if s := d.l.schemeOf(a.id); s.Permissions["web"] != "allow" || s.Permissions["exec"] != "ask" || s.ToolRules["os_exec(git status *)"] != "allow" || s.ToolRules["x_post"] != "deny" {
+	if s := d.l.schemeOf(a.id); s.Permissions["web"] != "allow" || s.Permissions["exec"] != "allow" || s.ToolRules["os_exec(git status *)"] != "allow" || s.ToolRules["x_post"] != "deny" {
 		t.Errorf("a fresh copy of a member of web: %+v", s)
 	}
 

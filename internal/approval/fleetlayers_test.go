@@ -440,8 +440,8 @@ func TestFleet_AppliedAndMasterCopy(t *testing.T) {
 	const id = "m00000000000000ab"
 	f := layered(t, `{"x_post":"deny"}`, `{"exec":"allow"}`, `{"ops":{"machines":["`+id+`"],"tool_rules":{"web_interact":"deny"}}}`)
 	local := Scheme{Permissions: map[string]string{CatExec: "allow", CatWeb: "allow", CatSend: "deny"}}
-	if got := MasterCopy(local); got[CatExec] != "ask" || got[CatWeb] != "allow" || got[CatSend] != "deny" || got[CatMCP] != "ask" || len(got) != len(Categories) {
-		t.Errorf("the master's copy: %v; want exec clamped to ask whatever the fleet's default says, and every category", got)
+	if got := MasterCopy(local); got[CatExec] != "allow" || got[CatWeb] != "allow" || got[CatSend] != "deny" || got[CatMCP] != "ask" || len(got) != len(Categories) {
+		t.Errorf("the master's copy: %v; want the master's own modes, and every category", got)
 	}
 	if s := mustInherit(t, f, local); s.Permissions[CatExec] != "allow" {
 		t.Errorf("Inherit lost the fleet's default over the master's copy: %v", s.Permissions)

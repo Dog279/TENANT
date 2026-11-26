@@ -158,8 +158,8 @@ func TestFleetDashConfirmFromElsewhere(t *testing.T) {
 		t.Errorf("no Security record of the wrong digits, from elsewhere:\n%s", strings.Join(got, "\n"))
 	}
 
-	// The key and the machine's own digits: confirmed, clamped as at this
-	// computer, and the link comes up.
+	// The key and the machine's own digits: confirmed, with the scheme it
+	// would get at this computer, and the link comes up.
 	a := d.send(http.MethodPost, "/fleet/confirm", form(ch.code, fleetDashKey), elsewhere)
 	if a.code != http.StatusSeeOther || a.page != "/fleet/"+ch.id || a.errMsg != "" || !strings.HasPrefix(a.msg, "web1 is confirmed.") {
 		t.Fatalf("turned on, the key and the machine's digits: %d to %s, msg %q, err %q", a.code, a.page, a.msg, a.errMsg)
@@ -170,8 +170,8 @@ func TestFleetDashConfirmFromElsewhere(t *testing.T) {
 	if m, _ := fleet.Open(d.l.cfg).Machine(ch.id); m.State != fleet.StateConfirmed {
 		t.Fatalf("the machine is %s", m.State)
 	}
-	if scheme := d.l.schemeOf(ch.id); scheme.Permissions["exec"] != "ask" {
-		t.Errorf("the scheme it started with: %v; want exec no looser than ask whatever the master allows", scheme.Permissions)
+	if scheme := d.l.schemeOf(ch.id); scheme.Permissions["exec"] != "allow" {
+		t.Errorf("the scheme it started with: %v; want exec as the master has it", scheme.Permissions)
 	}
 	eventually(t, "the confirmed machine links", func() bool { return client.Status().State == fleet.LinkConnected && online(d.mgr, ch.id) })
 	// Every request the proxy passes on comes from this computer, so the record

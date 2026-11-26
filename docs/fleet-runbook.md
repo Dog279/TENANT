@@ -175,15 +175,14 @@ flag for the digits, no tool and no relay command, and a request that carries on
 is refused. The screen shows what the machine said about itself (OS, account, version, sandbox,
 ceiling: its own words, not checked) and the approval scheme it will start with:
 
-- a copy of the master's local scheme, with exec, write, destructive, send and sandbox no
-  looser than **ask** whatever the master allows;
+- a copy of the master's local scheme: what the master allows unasked, the machine does too
+  (to start every machine tighter, set a fleet default: `tenant fleet permissions --defaults`);
 - the fleet's default categories and rules for new machines laid over it (`tenant fleet
   permissions --defaults`), and the rules of each group it is already in (section 3a);
 - anything you set here: `tenant fleet confirm web1 --set exec=allow`.
 
 Each line of the screen says where its value came from when it is not the master's own:
-`set by you`, `fleet default`, `fleet rule`, `group <name>`, or `(this master: allow)` for a
-category the copy clamped.
+`set by you`, `fleet default`, `fleet rule` or `group <name>`.
 
 The enroll endpoint takes five attempts a minute from one address. A code that is presented
 twice is refused and raises an alert: compare the digits on the machine's own screen.
@@ -287,8 +286,7 @@ scheme on purpose, at a step you take, and each laying has one Security record p
 again with `--from master`) is built in this order, each layer winning over the one before it
 where they disagree:
 
-1. a copy of the master's local scheme, clamped (exec, write, destructive, send, sandbox no
-   looser than ask);
+1. a copy of the master's local scheme, as it is;
 2. the fleet's default categories: each one you set replaces the copy's mode;
 3. the fleet's rules;
 4. the rules of each group the machine is in, groups in ascending name order (compared without
@@ -358,7 +356,7 @@ The Fleet page does all of this with the same operations and the same records, w
 `dashboard` as their surface:
 
 - **The fleet's defaults:** each safety category as Ask, Allow, Deny or **From this Tenant**
-  (unset; the page says what this Tenant's own setting gives now, clamped), and the fleet's
+  (unset; the page says what this Tenant's own setting gives now), and the fleet's
   rules with the editor a machine's page has.
 - **Groups:** make one, open it to add or take out machines and rules, **Apply** it to its
   members, delete it. The list can be narrowed to one group.

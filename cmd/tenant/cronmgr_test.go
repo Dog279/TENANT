@@ -17,6 +17,7 @@ import (
 	croneng "tenant/internal/cron"
 	"tenant/internal/logs"
 	"tenant/internal/memory/soul"
+	"tenant/internal/model"
 	"tenant/internal/plugins/discord"
 	"tenant/internal/runtrace"
 )
@@ -391,5 +392,55 @@ func TestCronExecApproverWriteRoots(t *testing.T) {
 	// Without roots, the install folder is protected whole, as before.
 	if cronExecApprover(cfg, data)(ctx, "os_write", "write "+filepath.Join(exeDir(), "work", "x.py")) {
 		t.Error("no roots: a write under the install folder must still be refused")
+	}
+}
+
+// An exec job's sensitive-egress gate reaches the cron approver through the
+// run context (originConfirm(nil) on the exec agent), so a report built from a
+// wiki read can be posted; with no approver on the context it fails closed. A
+// vault secret still may not go into a message, and the cron_* tools a helper
+// would see on the full plugin set stay refused.
+func TestCronExecEgressAndHelpers(t *testing.T) {
+	ap := cronExecApprover("/cfgdir", "/datadir")
+	ctx := context.Background()
+	confirm := originConfirm(nil)
+	wiki := "discord_send_message arguments contain sensitive data from wiki. This check is separate"
+	if !confirm(withOffsiteConfirm(ctx, ap), "sensitive_egress", wiki) {
+		t.Error("the exec agent's egress confirm must reach the cron approver and allow a wiki report")
+	}
+	if confirm(ctx, "sensitive_egress", wiki) {
+		t.Error("with no approver on the context the gate must fail closed")
+	}
+	vault := "discord_send_message arguments contain secret data from vault. This check is separate"
+	if ap(ctx, "sensitive_egress", vault) {
+		t.Error("a vault secret must not leave in a message")
+	}
+	for _, a := range []string{"cron_add", "cron_remove", "cron_enable"} {
+		if ap(ctx, a, "a helper schedules a job") {
+			t.Errorf("%s must stay refused on the exec surface, helpers included", a)
+		}
+	}
+	if !execAllowed(model.ToolSpec{Name: "spawn_agent"}) || !execAllowed(model.ToolSpec{Name: "team_await"}) {
+		t.Error("the exec surface keeps the helper tools")
+	}
+}
+
+// The exec agent is built with the egress confirm.
+func TestCronExecAgentConfirmsEgress(t *testing.T) {
+	src, err := os.ReadFile("cronmgr.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	i := strings.Index(s, `AgentID: "tenant-cron-exec"`)
+	if i < 0 {
+		t.Fatal("no exec agent in cronmgr.go")
+	}
+	block := s[i:]
+	if j := strings.Index(block, "})"); j > 0 {
+		block = block[:j]
+	}
+	if !strings.Contains(block, "ConfirmSensitiveEgress: originConfirm(nil)") {
+		t.Error("the exec agent must set ConfirmSensitiveEgress: originConfirm(nil)")
 	}
 }

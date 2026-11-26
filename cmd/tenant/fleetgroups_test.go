@@ -280,7 +280,7 @@ func TestFleetDefaultCategories(t *testing.T) {
 	// Copy again takes the defaults and the groups.
 	g.must("group", "add", "ops", "alpha")
 	g.must("permissions", "alpha", "--from", "master")
-	if s := g.schemeOf(g.alpha.id); s.Permissions["mcp"] != "deny" || s.ToolRules["x_post"] != "deny" || s.Permissions["exec"] != "ask" {
+	if s := g.schemeOf(g.alpha.id); s.Permissions["mcp"] != "deny" || s.ToolRules["x_post"] != "deny" || s.Permissions["exec"] != "allow" {
 		t.Errorf("alpha copied again: %v", s)
 	}
 }

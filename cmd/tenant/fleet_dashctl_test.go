@@ -294,8 +294,8 @@ func TestFleetDashConfirmRefusals(t *testing.T) {
 		t.Fatalf("the machine is %s", m.State)
 	}
 	scheme := d.l.schemeOf(ch.id)
-	if scheme.Permissions["exec"] != "ask" || scheme.Permissions["web"] != "deny" {
-		t.Errorf("the scheme it started with: %v; want exec no looser than ask whatever the master allows, and web as set", scheme.Permissions)
+	if scheme.Permissions["exec"] != "allow" || scheme.Permissions["web"] != "deny" {
+		t.Errorf("the scheme it started with: %v; want exec as the master has it, and web as set", scheme.Permissions)
 	}
 	eventually(t, "the confirmed machine links", func() bool { return client.Status().State == fleet.LinkConnected && online(d.mgr, ch.id) })
 	if got := d.records(catalog.FleetMachineChanged); !hasRecord(got, "operator@dashboard", "name=web1", "machine="+ch.id, "change=confirmed", `"set_by_the_operator":{"web":"deny"}`) {
@@ -326,7 +326,7 @@ func TestFleetDashConfirmRefusals(t *testing.T) {
 
 func TestFleetDashSettingsAndDrift(t *testing.T) {
 	d := newFleetDash(t, settings{
-		Permissions: map[string]string{"exec": "allow", "web": "allow", "mcp": "deny"},
+		Permissions: map[string]string{"exec": "ask", "web": "allow", "mcp": "deny"},
 		ToolRules:   map[string]string{"os_exec(git status *)": "allow", "write_note": "deny"},
 	})
 	d.l.must("permissions", "--defaults", "add", "os_exec(systemctl status *)", "allow")
@@ -346,10 +346,10 @@ func TestFleetDashSettingsAndDrift(t *testing.T) {
 		`<tr><th>Sandbox</th><td class="fl-said">&#34;host&#34;</td></tr>`,
 		`<tr><th>Its own limit</th><td class="fl-said">&#34;no-exec&#34;</td></tr>`,
 		`<tr><th>Memory</th><td>unknown <span class="dim">`, // its reason follows
-		`<strong>Run commands</strong>: Ask first <span class="dim">(this master: allow)</span>`,
+		`<strong>Run commands</strong>: Ask first`,
 		`<strong>Act on websites</strong>: Allow`,
 		`<strong>Connect remote services</strong>: Block`,
-		`Rule <span class="nm">os_exec(git status *)</span> <span class="risk">asks you first</span>`,
+		`Rule <span class="nm">os_exec(git status *)</span> <span class="tag">runs without asking</span>`,
 		`Rule <span class="nm">os_exec(systemctl status *)</span> <span class="tag">runs without asking</span> <span class="dim">fleet rule</span>`,
 		`Rule <span class="nm">write_note</span> <span class="act-errtag">blocked</span>`,
 	} {
@@ -427,7 +427,7 @@ func TestFleetDashSettingsAndDrift(t *testing.T) {
 	if scheme.Permissions["exec"] != "allow" || scheme.Permissions["web"] != "allow" || scheme.ToolRules["os_exec(uptime *)"] != "allow" || scheme.ToolRules["os_exec(systemctl status *)"] != "" {
 		t.Fatalf("the machine's scheme in the settings file: %+v", scheme)
 	}
-	if got := d.l.saved(); got.Permissions["exec"] != "allow" || got.ToolRules["os_exec(uptime *)"] != "" {
+	if got := d.l.saved(); got.Permissions["exec"] != "ask" || got.ToolRules["os_exec(uptime *)"] != "" {
 		t.Fatalf("a machine's change reached the master's own scheme: %v %v", got.Permissions, got.ToolRules)
 	}
 	page = d.page("/fleet/" + ch.id)
@@ -489,7 +489,7 @@ func TestFleetDashSettingsAndDrift(t *testing.T) {
 	}
 	scheme = d.l.schemeOf(ch.id)
 	if scheme.Permissions["exec"] != "ask" || scheme.Permissions["web"] != "deny" || scheme.Permissions["mcp"] != "deny" || len(scheme.ToolRules) != 3 ||
-		scheme.ToolRules["os_exec(git status *)"] != "ask" || scheme.ToolRules["os_exec(systemctl status *)"] != "allow" || scheme.ToolRules["write_note"] != "deny" {
+		scheme.ToolRules["os_exec(git status *)"] != "allow" || scheme.ToolRules["os_exec(systemctl status *)"] != "allow" || scheme.ToolRules["write_note"] != "deny" {
 		t.Fatalf("after Copy again: %+v", scheme)
 	}
 	if page = d.page("/fleet/" + ch.id); !strings.Contains(page, "No differences") {
