@@ -273,7 +273,7 @@ func TestMemoryHostileChild(t *testing.T) {
 		"a generation past the last one":        {list: `[{"key":"` + c.KeyID + `","gen":18446744073709551615,"hash":"` + c.Hash + `","ok":true}]`},
 		"a generation that is negative":         {list: `[{"key":"` + c.KeyID + `","gen":-1,"hash":"` + c.Hash + `","ok":true}]`},
 		"a list too long":                       {list: "[" + strings.Repeat(`{"key":"`+c.KeyID+`","gen":1,"hash":"`+c.Hash+`","ok":true},`, 200) + `{"key":"` + c.KeyID + `","gen":1,"hash":"` + c.Hash + `","ok":true}]`},
-		"bytes that do not hash to the copy":    {get: pieces([]int64{int64(len(blob))}, [][]byte{append(bytes.Clone(blob[:len(blob)-1]), 0)})},
+		"bytes that do not hash to the copy":    {get: pieces([]int64{int64(len(blob))}, [][]byte{append(bytes.Clone(blob[:len(blob)-1]), ^blob[len(blob)-1])})}, // its last byte turned over: a 0 put there is the blob itself one time in 256
 		"another key's snapshot under its name": {get: pieces([]int64{int64(len(otherBlobs[0]))}, [][]byte{otherBlobs[0]})},
 		"a size larger than any snapshot":       {get: pieces([]int64{maxMemoryBytes + 1}, [][]byte{blob[:10]})},
 		"a size of zero":                        {get: pieces([]int64{0}, [][]byte{blob[:10]})},
