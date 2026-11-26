@@ -161,14 +161,43 @@ button per line, and nowhere else: not in the address bar, not after a reload, n
 The Security log records that a code was made, for which name and by which dashboard session.
 The API key cannot make a code.
 
-The machine prints **six digits** and shows as `pending` on the master. Until you confirm it,
-the master sends it nothing.
+**That is all.** A machine that presents a code that is valid, unused and not expired is
+confirmed as it enrolls (TEN-553). It gets its approval scheme (below), the operator is told
+where they look (the terminal app's feed, serve's log) with what the machine said about itself
+and the address it came from, and the Security log has the record, with `enroll-code` as its
+surface and Tenant as its actor. `tenant fleet revoke web1` undoes it.
+
+The code is the whole check, so treat it as a password for its fifteen minutes: paste it on
+the one machine it is for, and nowhere a second person or a log can read it. Whoever uses it
+first joins under that name. If a code is presented a **second** time, the second machine is
+refused, an alert is raised, and the machine that code enrolled is **paused** until you have
+looked: resume it if it is yours (`tenant fleet resume web1`), revoke it if it is not. You can
+pause a machine yourself the same way (`tenant fleet pause web1`): no call goes to a paused
+machine and its link is refused, while its certificate, scheme and memory stay.
+
+### Asking for six digits as well (`fleet.confirm`)
+
+For a fleet where the code may pass through hands you do not trust, turn the second step on:
+
+```
+tenant fleet digits            # says whether it is on
+tenant fleet digits on         # every machine that enrolls from now on waits for its six digits
+tenant fleet digits off        # back to the code alone; asks you to type "off" at a terminal
+```
+
+Turning it on needs nobody. Turning it off again takes a person at a terminal, so a script or
+the agent cannot take the second step away with this command. It is `fleet.confirm` in
+`config.json` (`"digits"`; empty or `"auto"` is the default, and any other value is read as
+`digits`); the running Tenant reads it at each enrollment, so no restart is needed. With it on, the machine prints **six digits** and shows as
+`pending` on the master, and until you confirm it the master sends it nothing:
 
 ```
 tenant fleet confirm web1           # at a terminal: shows what the machine reported, asks for the six digits
 ```
 
-Confirming takes a person: at a terminal, with `/fleet confirm web1 <digits>` typed in the
+The digits come from the two certificates of the connection the machine enrolled over, so they
+show that the machine which used the code is the one whose screen you are reading. Confirming
+takes a person: at a terminal, with `/fleet confirm web1 <digits>` typed in the
 terminal app, or on the dashboard's Fleet page (the machine's own page, **Confirm this
 machine**) in a browser signed in on the master itself, at its 127.0.0.1 address. There is no
 flag for the digits, no tool and no relay command, and a request that carries only the API key
@@ -189,7 +218,7 @@ twice is refused and raises an alert: compare the digits on the machine's own sc
 
 ### Confirming from another computer (TEN-545)
 
-A browser that reaches the dashboard over the LAN, by a tailnet name or through a proxy is not
+This applies only with `fleet.confirm: digits`; by default there is nothing to confirm. A browser that reaches the dashboard over the LAN, by a tailnet name or through a proxy is not
 "on the master": its Fleet page shows the pending machine and says where to confirm it. On a
 master with no screen (Windows Server Core, a headless box) that means a console for every
 machine. You can let a signed-in browser elsewhere confirm instead. It is off until you turn
@@ -559,7 +588,7 @@ tenant fleet enroll web1                 # prints a one-time code
 # on the machine: stop its child first (its service, or the `tenant child run` holding it)
 TENANT_ENROLL_CODE='<code>' tenant child rehome        # or: printf '%s\n' '<code>' | tenant child rehome
 #   add --system (from an elevated shell) for the machine's own child
-# start its child again; then, on the new master:
+# start its child again. With fleet.confirm: digits on the new master, then there:
 tenant fleet confirm web1                # the six digits rehome printed
 ```
 
@@ -569,8 +598,9 @@ in one step); its key, ceiling, tool list, sandbox, secret list, pause, audit lo
 copies stay. It refuses, before the code is read and with nothing changed, while a child
 process runs on the directory, on the machine's own child from a terminal that is not elevated,
 and for an account that may not write the child's files; a code that does not enroll leaves the
-machine its old master's. The new master holds the machine as pending until you type its
-digits, as for any new machine. From then on the old master's certificate is refused, whatever
+machine its old master's. The new master confirms the machine by its code, or (with
+`fleet.confirm: digits`) holds it as pending until you type its digits, as for any new
+machine. From then on the old master's certificate is refused, whatever
 address it answers at. The audit log gets a `rehome` record: the account, and the old and new
 masters' fingerprints. Nothing on the link, no tool and no master-side command makes a machine
 rehome.

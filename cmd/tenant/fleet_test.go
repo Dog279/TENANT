@@ -50,6 +50,11 @@ func newFleetLab(t *testing.T) *fleetLab {
 	}
 	l := &fleetLab{t: t, cfg: filepath.Join(root, "cfg"), data: filepath.Join(root, "data")}
 	l.c = &commonFlags{cfgDir: l.cfg, dataDir: l.data, agent: "main"}
+	// The lab's machines wait for their six digits (fleet.confirm: digits),
+	// which confirm() types: the flow these tests were written for, and still
+	// the one an operator can ask for. A test of the default, where the code
+	// alone confirms a machine (TEN-553), calls confirmByCode first.
+	l.confirmMode("digits")
 	prevWait, prevAsk, prevEvery, prevFleet := fleetInitWait, fleetAsk, fleetWatchInterval, defaultFleet
 	fleetInitWait, fleetWatchInterval, defaultFleet = 0, 25*time.Millisecond, approval.NewFleet(categorize)
 	fleetAsk = func(prompt string) (string, error) {
@@ -137,6 +142,15 @@ func (l *fleetLab) master() *fleet.Manager {
 	}
 	l.must("init", "--address", mgr.Addr().String())
 	return mgr
+}
+
+// confirmMode sets fleet.confirm in the lab's config.json; "" is the default.
+// The running hub reads it at each enrollment.
+func (l *fleetLab) confirmMode(mode string) {
+	l.t.Helper()
+	if err := persistLaunchConfig(l.cfg, nil, func(lc *launchConfig) { lc.Fleet.Confirm = mode }); err != nil {
+		l.t.Fatal(err)
+	}
 }
 
 // sync does what the settings watcher does when the file changed.
@@ -423,7 +437,8 @@ func TestFleetScreensEscapeWhatAMachineSays(t *testing.T) {
 			"confirm": {confirmScreen(m, fleetPreview{Scheme: scheme}), confirmScreen(clean, fleetPreview{Scheme: approval.Scheme{Permissions: scheme.Permissions, ToolRules: map[string]string{"x": "allow"}}})},
 			"list":    {listText([]fleet.Machine{m}, map[string]fleet.MachineStatus{m.ID: link}), listText([]fleet.Machine{clean}, map[string]fleet.MachineStatus{m.ID: {Machine: clean}})},
 			"show":    {showText(m, &link, &scheme, nil), showText(clean, &fleet.MachineStatus{Machine: clean, LastError: "x", Remote: "y"}, &approval.Scheme{Permissions: scheme.Permissions, ToolRules: map[string]string{"x": "allow"}}, nil)},
-			"alert":   {alertLine(t, evil), alertLine(t, "web1")},
+			"alert":   {alertLine(t, evil, true), alertLine(t, "web1", true)},
+			"paused":  {alertLine(t, evil, false), alertLine(t, "web1", false)},
 		} {
 			got, want := pair[0], pair[1]
 			for i := 0; i < len(got); i++ {
@@ -449,10 +464,18 @@ func TestFleetScreensEscapeWhatAMachineSays(t *testing.T) {
 }
 
 // alertLine is the replay alert as the operator's feed gets it.
-func alertLine(t *testing.T, text string) string {
+func alertLine(t *testing.T, text string, digits bool) string {
 	t.Helper()
 	var said []string
-	h := &fleetHub{tell: func(s string) { said = append(said, s) }}
+	// A hub over an empty fleet: the machine the code enrolled is not there to
+	// pause, and the alert says so. digits is fleet.confirm in its config dir.
+	cfg := t.TempDir()
+	if digits {
+		if err := persistLaunchConfig(cfg, nil, func(lc *launchConfig) { lc.Fleet.Confirm = "digits" }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := &fleetHub{cfgDir: cfg, store: fleet.Open(cfg), tell: func(s string) { said = append(said, s) }}
 	h.alert(fleet.Refusal{Reason: fleet.RefusedReplay, Name: text, Source: text, Machine: "m0123456789abcdef"})
 	if len(said) != 1 {
 		t.Fatalf("the alert was told %d times", len(said))
@@ -873,6 +896,11 @@ func TestFleetReplayedCodeRaisesTheAlert(t *testing.T) {
 // the fleet.
 func TestFleetHubTakesTheFleetWhenInitRuns(t *testing.T) {
 	l := newFleetLab(t)
+	// A Tenant with nothing in its config dir yet: not even the lab's own
+	// config.json, which is written again once that has been looked at.
+	if err := os.Remove(filepath.Join(l.cfg, "config.json")); err != nil {
+		t.Fatal(err)
+	}
 	l.stop = startFleetHub(context.Background(), l.c, "tui", newApprovalBroker(slog.Default()), l.tell, slog.Default())
 	if fleetManager() != nil || fleetStore() != nil {
 		t.Fatal("a Tenant that was never made a master holds a fleet")
@@ -883,6 +911,7 @@ func TestFleetHubTakesTheFleetWhenInitRuns(t *testing.T) {
 	if entries, _ := os.ReadDir(l.cfg); len(entries) != 0 {
 		t.Fatalf("looking for a fleet left files behind: %v", entries)
 	}
+	l.confirmMode("digits")
 	if o := fleetOrigin(context.Background()); !o.Open || o.Name != "local" {
 		t.Fatalf("the local origin: %+v", o)
 	}

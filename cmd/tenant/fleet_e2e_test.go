@@ -669,6 +669,7 @@ type e2eMaster struct {
 	flags     []string          // serve's own, beside the dirs
 	scripted  bool              // on the scripted model, with a dashboard: it takes turns
 	master    bool              // its dirs hold a fleet: serve listens for it as it starts
+	digits    bool              // `fleet digits on` was run: its machines wait for their six digits
 	shipped   bool              // the intervals a shipped Tenant runs with
 	env       map[string]string // for its serve process
 	proc      *e2eProc
@@ -984,18 +985,14 @@ var e2eEnrolled = regexp.MustCompile(`Enrolled as (\S+) \((m[0-9a-f]{16})\)`)
 // digits. The service it "installs" is written down, not registered.
 func (m *e2eMaster) enroll(h *e2eHost, name string, flags ...string) *e2eChild {
 	m.t.Helper()
-	c := &e2eChild{t: m.t, host: h, m: m, name: name, dir: h.join(name, "child"), scratch: h.join(name)}
-	if !h.wsl {
-		if err := os.MkdirAll(c.scratch, 0o700); err != nil {
-			m.t.Fatal(err)
-		}
+	// These machines wait for their six digits, the flow this harness types
+	// through (confirm). The default, where the code alone confirms a machine
+	// (TEN-553), is joinByCode's.
+	if !m.digits {
+		m.must(nil, "fleet", "digits", "on")
+		m.digits = true
 	}
-	code, errOut, exit := m.cli(nil, "fleet", "enroll", name)
-	if code = strings.TrimSpace(code); exit != 0 || !strings.HasPrefix(code, "tntfleet1_") || strings.ContainsAny(code, " \n") {
-		m.t.Fatalf("fleet enroll %s: exit %d, standard output %q\n%s", name, exit, code, errOut)
-	}
-	out, errOut, exit := h.run(e2eSpec{Argv: append([]string{"child", "install", "--dir", c.dir}, flags...),
-		Env: map[string]string{childCodeEnv: code}, Scratch: c.scratch})
+	c, out, errOut, exit, code := m.install(h, name, flags...)
 	digits, enrolled := confirmationCode.FindStringSubmatch(out), e2eEnrolled.FindStringSubmatch(out)
 	if exit != 0 || digits == nil || enrolled == nil || enrolled[1] != name {
 		m.t.Fatalf("child install for %s: exit %d\n%s\n%s", name, exit, out, errOut)
@@ -1005,6 +1002,41 @@ func (m *e2eMaster) enroll(h *e2eHost, name string, flags ...string) *e2eChild {
 	}
 	c.digits, c.id = digits[1], enrolled[2]
 	return c
+}
+
+// joinByCode is enroll on a master that asks for no digits (the default): the
+// machine's one paste is all there is, and it is confirmed when it returns.
+func (m *e2eMaster) joinByCode(h *e2eHost, name string, flags ...string) *e2eChild {
+	m.t.Helper()
+	c, out, errOut, exit, code := m.install(h, name, flags...)
+	enrolled := e2eEnrolled.FindStringSubmatch(out)
+	if exit != 0 || enrolled == nil || enrolled[1] != name || !strings.Contains(out, "confirmed it with the enrollment code") || confirmationCode.MatchString(out) {
+		m.t.Fatalf("child install for %s, on a master that asks for no digits: exit %d\n%s\n%s", name, exit, out, errOut)
+	}
+	if strings.Contains(out+errOut, code) {
+		m.t.Errorf("child install printed the enrollment code")
+	}
+	c.id = enrolled[2]
+	return c
+}
+
+// install makes a one-time code on the master and spends it on h with
+// `tenant child install`: what that printed, and the code.
+func (m *e2eMaster) install(h *e2eHost, name string, flags ...string) (c *e2eChild, out, errOut string, exit int, code string) {
+	m.t.Helper()
+	c = &e2eChild{t: m.t, host: h, m: m, name: name, dir: h.join(name, "child"), scratch: h.join(name)}
+	if !h.wsl {
+		if err := os.MkdirAll(c.scratch, 0o700); err != nil {
+			m.t.Fatal(err)
+		}
+	}
+	code, errOut, exit = m.cli(nil, "fleet", "enroll", name)
+	if code = strings.TrimSpace(code); exit != 0 || !strings.HasPrefix(code, "tntfleet1_") || strings.ContainsAny(code, " \n") {
+		m.t.Fatalf("fleet enroll %s: exit %d, standard output %q\n%s", name, exit, code, errOut)
+	}
+	out, errOut, exit = h.run(e2eSpec{Argv: append([]string{"child", "install", "--dir", c.dir}, flags...),
+		Env: map[string]string{childCodeEnv: code}, Scratch: c.scratch})
+	return c, out, errOut, exit, code
 }
 
 // confirm confirms the machine on the master: the operator types its six

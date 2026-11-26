@@ -103,7 +103,7 @@ func (d dashFleet) View() dashboard.FleetView {
 		v.Dial = strings.Join(fleetDefaultAddresses(v.Listen), ", ")
 		return v
 	}
-	v.Master, v.RemoteConfirm = true, fleetRemoteConfirmOn(d.ops.cfgDir)
+	v.Master, v.RemoteConfirm, v.ConfirmDigits = true, fleetRemoteConfirmOn(d.ops.cfgDir), fleetConfirmDigits(d.ops.cfgDir)
 	if rec, _, err := d.ops.store.Recovery(); err == nil && rec == "" {
 		v.NoRecovery = true
 	}
@@ -424,7 +424,7 @@ func (d dashFleet) Enroll(name string, boot bool, by string) (dashboard.FleetEnr
 		return dashboard.FleetEnrollment{}, err
 	}
 	out := dashboard.FleetEnrollment{Name: fleetName(e.Name), Code: e.Code, Expires: dashTime(e.Expires), Boot: boot,
-		Addresses: e.Addresses, Warning: addressWarning(e.Addresses)}
+		Addresses: e.Addresses, Warning: addressWarning(e.Addresses), Digits: e.Digits}
 	lines, note := enrollPaste(e.Code, boot)
 	for _, l := range lines {
 		out.Lines = append(out.Lines, dashboard.FleetPasteLine{For: l.For, Line: l.Line})

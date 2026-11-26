@@ -254,9 +254,18 @@ func (o fleetOps) preview(m fleet.Machine, set map[string]string) (*approval.Fle
 // Security log, and what happened in the fleet log. Both are written before it
 // returns, so a one-shot command's reach the log book as a running Tenant's
 // do. (A fleet being made has its own line in the fleet log: initFleet.)
+// actor is who the Security records of these operations name: the operator,
+// except where Tenant itself acted on a machine's enrollment code.
+func (o fleetOps) actor() string {
+	if o.surface == surfaceEnrollCode {
+		return actorTenant
+	}
+	return actorOperator
+}
+
 func (o fleetOps) audit(m fleet.Machine, change, detail string) {
 	_ = catalog.FleetMachineChanged.Audit(context.Background(), "name", m.Name, "machine", m.ID, "change", change, "detail", detail,
-		"actor", actorOperator, "surface", o.surface)
+		"actor", o.actor(), "surface", o.surface)
 	if change != "initialised" {
 		_ = fleet.MachineChanged.Audit(context.Background(), "name", m.Name, "machine", m.ID, "change", change, "detail", detail, "surface", o.surface)
 	}
@@ -286,7 +295,7 @@ func (o fleetOps) confirmMachine(ref, code string, set map[string]string) (fleet
 			reason += "; asked by " + o.by
 		}
 		_ = catalog.FleetConfirmRefused.Audit(context.Background(), "name", m.Name, "machine", m.ID, "reason", reason,
-			"actor", actorOperator, "surface", o.surface)
+			"actor", o.actor(), "surface", o.surface)
 		_ = fleet.ConfirmRefused.Audit(context.Background(), "name", m.Name, "machine", m.ID, "reason", reason, "surface", o.surface)
 		return m, fleetPreview{}, err
 	}
@@ -633,7 +642,8 @@ func cmdFleet(_ context.Context, args []string) error {
 		"confirm": fleetConfirmCmd, "rename": fleetRenameCmd, "revoke": fleetRevokeCmd,
 		"permissions": fleetPermissionsCmd, "perms": fleetPermissionsCmd, "relay": fleetRelayCmd,
 		"update": fleetUpdateCmd, "recover": fleetRecoverCmd, "address": fleetAddressCmd, "group": fleetGroupCmd,
-		"remote-confirm": fleetRemoteConfirmCmd,
+		"remote-confirm": fleetRemoteConfirmCmd, "digits": fleetDigitsCmd,
+		"pause": fleetPauseCmd(true), "resume": fleetPauseCmd(false),
 	}[args[0]]
 	if run == nil {
 		return fleetUsage()
@@ -656,7 +666,12 @@ func fleetUsage() error {
   show <name>             everything known about one machine
   confirm <name> [--set category=mode]...
                           confirm a pending machine: you type the six digits it shows
+                          (only with "digits on": by default a machine's code confirms it)
+  digits [on|off]         whether a machine that enrolled waits for you to type the six digits it
+                          shows (off by default: its one-time code is enough)
   rename <name> <new-name>
+  pause <name>            switch a confirmed machine off for now: no call goes to it
+  resume <name>           switch a paused machine on again
   revoke <name> [--keep-scheme | --delete-scheme]
   permissions <name> [set <category> <mode> | add <pattern> <mode> | rm <pattern>]
   permissions <name> --from defaults|master
@@ -1404,6 +1419,42 @@ func fleetRenameCmd(args []string) error {
 	return nil
 }
 
+// fleetPauseCmd is `tenant fleet pause|resume <name>`: the operator switches
+// a confirmed machine off for now, or on again. While it is paused no call
+// goes to it and its link is refused; its certificate, scheme and memory
+// stay. Tenant pauses a machine itself when its enrollment code is presented
+// a second time (fleetHub.alert); resume is how the operator says the
+// machine is theirs.
+func fleetPauseCmd(pause bool) func(args []string) error {
+	verb, done := "resume", "resumed: calls go to it again, and it may link"
+	if pause {
+		verb, done = "pause", "paused: no call goes to it and its link is refused until `tenant fleet resume`"
+	}
+	return func(args []string) error {
+		cli, err := openFleetCLI(flag.NewFlagSet("fleet "+verb, flag.ContinueOnError), args)
+		if err != nil {
+			return err
+		}
+		if len(cli.pos) != 1 {
+			return errors.New("usage: tenant fleet " + verb + " <name>")
+		}
+		m, err := cli.ops.machine(cli.pos[0])
+		if err != nil {
+			return err
+		}
+		set := cli.store.Resume
+		if pause {
+			set = cli.store.Pause
+		}
+		if err := set(m.ID); err != nil {
+			return fmt.Errorf("%s was not %sd: %w", fleetName(m.Name), verb, err)
+		}
+		cli.ops.audit(m, verb+"d", "")
+		fmt.Printf("%s (%s) is %s\n", fleetName(m.Name), m.ID, done)
+		return nil
+	}
+}
+
 func fleetRevokeCmd(args []string) error {
 	fs := flag.NewFlagSet("fleet revoke", flag.ContinueOnError)
 	keep := fs.Bool("keep-scheme", false, "keep the machine's approval scheme under its id, for a machine enrolled later to adopt")
@@ -1713,6 +1764,72 @@ func fleetRemoteConfirmSwitch(o fleetOps, lc *launchConfig, args []string) (stri
 		return state(on), nil
 	}
 	return "", errors.New("usage: fleet remote-confirm [on|off]")
+}
+
+// fleetDigitsCmd is `tenant fleet digits [on|off]` (TEN-553): whether a
+// machine that enrolled waits for a person to type its six digits, or is
+// confirmed by its one-time code (the default). Turning the digits on needs
+// nobody: it only closes. Turning them off again takes a person at a
+// terminal, as turning remote confirmation on does: it is the operator who
+// asked for the second step, and a command a script or the agent runs must
+// not take it away. The file is no better guarded than config.json is. The
+// running Tenant reads it at each enrollment.
+func fleetDigitsCmd(args []string) error {
+	cli, err := openFleetCLI(flag.NewFlagSet("fleet digits", flag.ContinueOnError), args)
+	if err != nil {
+		return err
+	}
+	state := func(on bool) string {
+		if on {
+			return "the six digits are on: a machine that enrolls waits until you type the digits it shows (tenant fleet confirm <name>)"
+		}
+		return "the six digits are off: a machine is confirmed by its one-time enrollment code, and you are told when it joins"
+	}
+	switch len(cli.pos) {
+	case 0:
+		fmt.Println(state(fleetConfirmDigits(cli.c.cfgDir)))
+		return nil
+	case 1:
+		on, err := parseOnOff(cli.pos[0])
+		if err != nil {
+			return err
+		}
+		if !on && fleetConfirmDigits(cli.c.cfgDir) {
+			answer, err := fleetAsk("With the digits off, whoever holds a machine's one-time code can join under its name until the code is used or expires.\n" +
+				"Type off to turn them off (Enter alone cancels): ")
+			if err != nil {
+				return err
+			}
+			if !strings.EqualFold(answer, "off") {
+				return errors.New("not turned off")
+			}
+		}
+		mode := map[bool]string{true: "digits", false: ""}[on]
+		if err := persistLaunchConfig(cli.c.cfgDir, cli.c.lc, func(lc *launchConfig) { lc.Fleet.Confirm = mode }); err != nil {
+			return err
+		}
+		cli.ops.audit(fleet.Machine{Name: "(this master)"}, "six digits at enrollment turned "+map[bool]string{true: "on", false: "off"}[on],
+			"whether a machine that enrolled waits for its six digits to be typed (fleet.confirm)")
+		if now := fleetConfirmDigits(cli.c.cfgDir); now != on {
+			return fmt.Errorf("config.json was written, and now says the six digits are %s: another process saved it at the same moment. Run this again", map[bool]string{true: "on", false: "off"}[now])
+		}
+		fmt.Println(state(on))
+		return nil
+	}
+	return errors.New("usage: tenant fleet digits [on|off]")
+}
+
+// fleetConfirmDigits is fleet.confirm as config.json holds it now (TEN-553):
+// whether a machine that enrolled waits for a person to type its six digits.
+// False, the default: its one-time code confirms it. A file that cannot be
+// read, and a value that is not "auto", ask for the digits.
+func fleetConfirmDigits(cfgDir string) bool {
+	lc, err := loadLaunchConfig(cfgDir)
+	if err != nil {
+		return true
+	}
+	mode := strings.ToLower(strings.TrimSpace(lc.Fleet.Confirm))
+	return mode != "" && mode != "auto"
 }
 
 // fleetRemoteConfirmOn is fleet.remote_confirm as config.json holds it now.

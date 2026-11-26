@@ -18,6 +18,7 @@ package main
 // fleetStore and fleetOrigin.
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -202,6 +203,7 @@ func fleetOrigin(ctx context.Context) approval.Origin {
 // fleetHub is one process's view of the fleet in its config dir.
 type fleetHub struct {
 	cfgDir, dataDir string
+	agent           string // whose settings file holds the scheme a new machine copies
 	role            string // serve | tui: how another process names this one
 	local           *approvalBroker
 	tell            func(string) // the operator's status feed
@@ -244,7 +246,7 @@ func startFleetHub(ctx context.Context, c *commonFlags, role string, local *appr
 	if tell == nil {
 		tell = func(string) {}
 	}
-	h := &fleetHub{cfgDir: c.cfgDir, dataDir: c.dataDir, role: role, local: local, tell: tell, log: log,
+	h := &fleetHub{cfgDir: c.cfgDir, dataDir: c.dataDir, agent: c.agent, role: role, local: local, tell: tell, log: log,
 		store: fleet.Open(c.cfgDir), listen: defaultFleetListen, relays: map[string]bool{}, updates: newFleetUpdates(c.dataDir)}
 	h.rollout = newFleetRollout(h.updates)
 	theFleet.Store(h)
@@ -346,7 +348,7 @@ func (h *fleetHub) tick(ctx context.Context) {
 		return
 	}
 	mgr, err = fleet.StartManager(fleet.ManagerConfig{Store: h.store, Identity: id, Addr: listen, Role: h.role,
-		Refused: h.refused, Alert: h.alert, Connected: h.connected})
+		Refused: h.refused, Alert: h.alert, Enrolled: h.enrolled, Connected: h.connected})
 	var held *fleet.HeldError
 	switch {
 	case errors.As(err, &held):
@@ -499,13 +501,69 @@ func (h *fleetHub) refused(r fleet.Refusal) {
 	fleet.EnrollRefused.Log(context.Background(), "reason", string(r.Reason), "remote", r.Source, "name", r.Name, "machine", r.Machine)
 }
 
+// enrolled is told of a machine that has just spent its enrollment code. It
+// confirms the machine there and then (TEN-553) unless the operator asked
+// for the six digits (fleet.confirm: digits): the code was made a moment ago
+// for this one machine and is spent now, and that is the check. The machine
+// gets its scheme as at any confirmation, the Security log has the record,
+// and the operator is told where they look, with how to undo it. A machine
+// that could not be confirmed stays pending, to be confirmed by its digits.
+func (h *fleetHub) enrolled(m fleet.Machine, remote string) bool {
+	if fleetConfirmDigits(h.cfgDir) {
+		return false
+	}
+	id, err := fleetIdentity(h.cfgDir)
+	if err == nil {
+		o := fleetOps{cfgDir: h.cfgDir, dataDir: h.dataDir, store: h.store, surface: surfaceEnrollCode,
+			by:      "the machine itself, with its one-time enrollment code, from " + remote,
+			schemes: func() (*approval.Fleet, error) { return defaultFleet, nil },
+			local: func() (approval.Scheme, error) {
+				stg, err := loadSettings(h.cfgDir, h.agent)
+				return approval.Scheme{Permissions: stg.Permissions, ToolRules: stg.ToolRules}, err
+			}}
+		_, _, err = o.confirmMachine(m.ID, fleet.ConfirmCode(id.Fingerprint, m.Fingerprint), nil)
+	}
+	if err != nil {
+		h.tell(fmt.Sprintf("fleet: %s enrolled from %s but could not be confirmed by its code alone (%v). It waits: `tenant fleet confirm %s` with the six digits it shows.",
+			fleetQuote(m.Name), fleetQuote(remote), err, m.Name))
+		return false
+	}
+	said := ""
+	for _, s := range []struct{ what, text string }{{"system", m.Reported.OS}, {"account", m.Reported.User}, {"Tenant", m.Reported.Version}} {
+		if s.text != "" {
+			said += ", " + s.what + " " + fleetQuote(s.text)
+		}
+	}
+	h.tell(fmt.Sprintf("fleet: %s (%s) joined with its enrollment code, from %s, and is confirmed. It reports%s. Not your machine? `tenant fleet revoke %s`.",
+		fleetQuote(m.Name), m.ID, fleetQuote(remote), cmp.Or(strings.TrimPrefix(said, ","), " nothing about itself"), m.Name))
+	return true
+}
+
 // alert is raised when a spent enrollment code is presented again: someone
 // other than the machine it enrolled holds the code, or held it first. The
 // operator is told where they look (the feed; serve's log) and the Security
 // log keeps it as an error, which the alert rules can act on.
+//
+// Where a code alone confirms a machine (TEN-553), nobody compared digits,
+// so the machine that code enrolled is paused until the operator has looked:
+// it may be the one that had the code first and should not have.
 func (h *fleetHub) alert(r fleet.Refusal) {
 	_ = catalog.FleetCodeReplayed.Audit(context.Background(), "name", r.Name, "machine", r.Machine, "remote", r.Source, "certificate", r.Fingerprint)
 	fleet.CodeReplayed.Log(context.Background(), "name", r.Name, "machine", r.Machine, "remote", r.Source)
+	if !fleetConfirmDigits(h.cfgDir) && r.Machine != "" {
+		paused := "It could not be paused: revoke it if it is not yours."
+		if m, err := h.store.Machine(r.Machine); err == nil && m.State == fleet.StatePaused {
+			paused = "It is paused already."
+		} else if err := h.store.Pause(r.Machine); err == nil {
+			paused = "It is PAUSED: no call goes to it."
+			o := fleetOps{surface: surfaceEnrollCode}
+			o.audit(m, "paused", "its enrollment code was presented a second time, from "+r.Source)
+		}
+		h.tell(fmt.Sprintf("fleet: ALERT: the enrollment code for %s was presented a second time, from %s, and refused. "+
+			"Someone other than the machine it enrolled (%s) has that code, or had it first. %s Check that machine is yours, then `tenant fleet resume %s`; if it is not, `tenant fleet revoke %s` and enroll yours again.",
+			fleetQuote(r.Name), fleetQuote(r.Source), r.Machine, paused, r.Machine, r.Machine))
+		return
+	}
 	h.tell(fmt.Sprintf("fleet: ALERT: the enrollment code for %s was presented a second time, from %s, and refused. "+
 		"Someone other than the machine it enrolled (%s) has that code, or had it first: compare the six digits on the machine's own screen before you confirm it, or `tenant fleet revoke %s` and enroll it again.",
 		fleetQuote(r.Name), fleetQuote(r.Source), r.Machine, r.Machine))

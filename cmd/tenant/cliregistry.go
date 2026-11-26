@@ -244,7 +244,7 @@ func cliCommands() []*cliCommand {
 				{Syntax: "peer share …", Desc: "what each peer may see"},
 			}},
 		{Names: []string{"fleet"}, Section: "connect", Run: cmdFleet,
-			Sub:     []string{"init", "enroll", "list", "show", "confirm", "rename", "revoke", "permissions", "group", "relay", "remote-confirm", "update", "recover"},
+			Sub:     []string{"init", "enroll", "list", "show", "confirm", "rename", "pause", "resume", "revoke", "permissions", "group", "relay", "digits", "remote-confirm", "update", "recover"},
 			Flags:   []string{"--listen", "--address", "--ttl", "--adopt", "--set", "--keep-scheme", "--delete-scheme", "--defaults", "--from", "--group", "--all", "--wait"},
 			Summary: "own other machines from this one: enroll a machine as a child, confirm it, set what the agent may do there",
 			Rows: []cmdreg.Row{
@@ -264,6 +264,8 @@ func cliCommands() []*cliCommand {
 				{Syntax: "fleet group rules <group> [add <pattern> <mode> | rm <pattern>]", Desc: "a group's rules: laid after the fleet's rules, groups in name order, each winning over the one before"},
 				{Syntax: "fleet group apply <group>", Desc: "lay the fleet's rules and each member's groups' rules over every confirmed member's scheme, on purpose; its categories stay"},
 				{Syntax: "fleet relay [discord|imessage [on|off]]", Desc: "whether a turn from that relay may reach the fleet at all (off by default)"},
+				{Syntax: "fleet pause <name> | fleet resume <name>", Desc: "switch a confirmed machine off for now (no call goes to it), or on again"},
+				{Syntax: "fleet digits [on|off]", Desc: "whether a machine that enrolled waits for you to type the six digits it shows (off by default: its one-time code confirms it)"},
 				{Syntax: "fleet remote-confirm [on|off]", Desc: "whether a signed-in dashboard browser on another computer may confirm a machine, with the sign-in key again (off by default)"},
 				{Syntax: "fleet update <name> | --all | --group <group> [--version vX.Y.Z] [--allow-older]", Desc: "send machines a newer Tenant over their links, fetched and verified here; each restarts into it, or rolls back if it does not reach the master within a minute"},
 				{Syntax: "fleet recover <name> [--was ID]", Desc: "read a machine's memory made under another fleet key (a master rebuilt from nothing) with the recovery identity, given at the terminal or on standard input, never an argument"},

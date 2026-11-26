@@ -270,9 +270,13 @@ func childInstall(ctx context.Context, in io.Reader, out io.Writer, dir string, 
 		}
 		return err
 	}
-	fmt.Fprintf(out, "Enrolled as %s (%s). This machine now waits for its master to confirm it.\n\n    confirmation code: %s\n\n"+
-		"Type that code on the master (tenant fleet confirm %s). Until then the master sends this machine nothing.\n",
-		child.Name, child.ID, digits, child.Name)
+	if digits == "" {
+		fmt.Fprintf(out, "Enrolled as %s (%s). Its master confirmed it with the enrollment code: nothing more to type.\n", child.Name, child.ID)
+	} else {
+		fmt.Fprintf(out, "Enrolled as %s (%s). This machine now waits for its master to confirm it.\n\n    confirmation code: %s\n\n"+
+			"Type that code on the master (tenant fleet confirm %s). Until then the master sends this machine nothing.\n",
+			child.Name, child.ID, digits, child.Name)
+	}
 	if o.system {
 		if err := registerChildOSLog(); err != nil {
 			fmt.Fprintf(out, "note: %v (the audit lines still reach the system log, under a longer heading)\n", err)
@@ -432,10 +436,15 @@ func childRehome(ctx context.Context, in io.Reader, out io.Writer, dir string) e
 	_ = os.Remove(fleet.ChildStatusPath(dir))
 	recorded := audit.Rehome(childAccount(false), old.MasterFingerprint, next.MasterFingerprint)
 
-	fmt.Fprintf(out, "This machine now trusts the master at %s, as %s (%s); it was %s under its old master.\n"+
-		"It waits for that master to confirm it.\n\n    confirmation code: %s\n\n"+
-		"Type that code on the new master (tenant fleet confirm %s). Until then that master sends this machine nothing, and the old master is refused.\n",
-		strings.Join(next.MasterAddresses, ", "), next.Name, next.ID, old.ID, digits, next.Name)
+	fmt.Fprintf(out, "This machine now trusts the master at %s, as %s (%s); it was %s under its old master.\n",
+		strings.Join(next.MasterAddresses, ", "), next.Name, next.ID, old.ID)
+	if digits == "" {
+		fmt.Fprintln(out, "That master confirmed it with the enrollment code: nothing more to type. The old master is refused.")
+	} else {
+		fmt.Fprintf(out, "It waits for that master to confirm it.\n\n    confirmation code: %s\n\n"+
+			"Type that code on the new master (tenant fleet confirm %s). Until then that master sends this machine nothing, and the old master is refused.\n",
+			digits, next.Name)
+	}
 	if next.ID != old.ID {
 		fmt.Fprintf(out, "Its memory copies were made as %s and stay here: the new master reads them with the old fleet's recovery identity "+
 			"(tenant fleet recover %s --was %s).\n", old.ID, next.Name, old.ID)

@@ -574,6 +574,13 @@ type Fleet struct {
 	// at this computer only. It is switched at this computer's terminal
 	// (`tenant fleet remote-confirm`), never from the dashboard.
 	RemoteConfirm bool `json:"remote_confirm,omitempty"`
+	// Confirm is how a machine that enrolled becomes a confirmed one
+	// (TEN-553). Empty or "auto", the default: at once, on the strength of
+	// its one-time enrollment code. "digits": it waits until a person types
+	// the six digits the machine shows, for a fleet that wants to know the
+	// machine that used the code is the one in front of them. Anything else
+	// is read as "digits": a value nobody understands does not open a door.
+	Confirm string `json:"confirm,omitempty"`
 }
 
 // IMessage holds the iMessage drive-allowlist: the normalized handles

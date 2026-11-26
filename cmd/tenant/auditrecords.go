@@ -31,6 +31,10 @@ const (
 	// refusals of one carry the same word).
 	surfaceDashboardRemote = "dashboard-remote"
 	surfaceCLI             = "cli" // a tenant command
+	// surfaceEnrollCode is a fleet machine confirmed by Tenant itself as it
+	// enrolled, on the strength of its one-time code (TEN-553): no person
+	// typed anything, so the record's actor is Tenant.
+	surfaceEnrollCode = "enroll-code"
 )
 
 // saveCredentials saves creds and files a record for each secret the save
