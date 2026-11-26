@@ -324,3 +324,39 @@ func TestRelaunchHonorsFlagsAndEnabled(t *testing.T) {
 		t.Errorf("a turned-off skill should stay off: %v", err)
 	}
 }
+
+// TEN-555: an embedder that takes the request and never answers does not
+// hold start-up. The wiki opens on the declared dimension after the probe's
+// short wait, and its first reindex runs beside start-up.
+func TestWikiOpenDoesNotWaitOnAHungEmbedder(t *testing.T) {
+	prev := wikiProbeTimeout
+	wikiProbeTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { wikiProbeTimeout = prev })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel) // the reindex left behind lets go
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.md"), []byte("# A\nwords\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := openWikiIndex(ctx, t.TempDir(), dir, "stuck", 8, hungEmbedder{})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("open with a hung embedder: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("opening the wiki waited on an embedder that does not answer")
+	}
+}
+
+// hungEmbedder answers only when its caller gives up.
+type hungEmbedder struct{}
+
+func (hungEmbedder) Embed(ctx context.Context, _ []string) ([][]float32, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}

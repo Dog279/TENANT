@@ -5,6 +5,13 @@ Releases page.
 
 ## Unreleased
 
+- **Fixed: Tenant could hang at start-up, with no dashboard, while its embedder was stuck
+  (TEN-555).** Start-up re-indexed the wiki before anything else came up, and an embedder that
+  took the request and never answered (an Ollama runner stuck at 100% CPU) held it there for as
+  long as it hung. The first re-index now runs beside start-up, start-up waits at most 10
+  seconds for the embedder to say its dimension, and every wiki embedding request has a limit
+  (3 minutes for a note, 30 seconds for a search), after which the tool says the embedder did
+  not answer.
 - **Fixed (Windows): a save could fail while another program had the file open.** Tenant
   replaces a file by renaming a finished copy over it, and Windows refuses that rename while
   any other handle is open on the file (a virus scanner, the search indexer, a reader of

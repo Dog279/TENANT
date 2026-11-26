@@ -35,6 +35,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"tenant/internal/fsperm"
 	"tenant/internal/memory/cosine"
@@ -288,6 +289,27 @@ func (ix *Index) save() error {
 	return fsperm.WriteFile(ix.sidecar, b)
 }
 
+// How long one embedding request may take (TEN-555). An embedder that takes
+// the connection and never answers would otherwise hold the index's lock,
+// and whatever waits on it, for as long as the caller's context lives: all
+// of start-up, once. A file's chunks go in one request, so its limit is
+// generous for a CPU-only embedder and a large note. Variables for the tests.
+var (
+	fileEmbedTimeout  = 3 * time.Minute
+	queryEmbedTimeout = 30 * time.Second
+)
+
+// embed is one request to the embedder, given up after limit.
+func (ix *Index) embed(ctx context.Context, limit time.Duration, texts []string) ([][]float32, error) {
+	ctx, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	vecs, err := ix.embedder.Embed(ctx, texts)
+	if err != nil && ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("the embedder did not answer within %s: %w", limit, err)
+	}
+	return vecs, err
+}
+
 // Reindex brings the index in sync with the files on disk. Only
 // changed/new files are re-embedded; deleted files are dropped.
 // Returns (filesIndexed, chunksEmbedded).
@@ -398,7 +420,7 @@ func (ix *Index) reindexLocked(ctx context.Context) (int, int, error) {
 		for i, c := range chunks {
 			texts[i] = embedText(c) + enrich
 		}
-		vecs, err := ix.embedder.Embed(ctx, texts)
+		vecs, err := ix.embed(ctx, fileEmbedTimeout, texts)
 		if err != nil {
 			return len(onDisk), embedded, fmt.Errorf("wiki: embed %s: %w", rel, err)
 		}
@@ -499,7 +521,7 @@ func (ix *Index) Search(ctx context.Context, query string, k int) ([]Hit, error)
 	if len(ix.idx.Chunks) == 0 {
 		return nil, nil
 	}
-	qv, err := ix.embedder.Embed(ctx, []string{"search query: " + query})
+	qv, err := ix.embed(ctx, queryEmbedTimeout, []string{"search query: " + query})
 	if err != nil {
 		return nil, fmt.Errorf("wiki: embed query: %w", err)
 	}

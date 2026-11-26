@@ -13,6 +13,7 @@ import (
 	"tenant/internal/cmdreg"
 	"tenant/internal/model"
 	"tenant/internal/plugins/wiki"
+	"time"
 )
 
 // wikiPlugin declares the wiki plugin: the agent answers from a markdown
@@ -315,29 +316,49 @@ func checkWikiFreshness(_ context.Context, e *doctorEnv) checkResult {
 // auto-reindexes lazily on first use, so it self-heals when the
 // embedder comes back). A search while the embedder is down surfaces a
 // clean tool error in the feed instead of a startup crash.
+//
+// wikiProbeTimeout is how long start-up waits for the embedder to say its
+// dimension before it takes the declared one: the one embedding start-up
+// still waits for. A variable so a test need not wait it out.
+var wikiProbeTimeout = 10 * time.Second
+
 func buildWikiIndex(ctx context.Context, c *commonFlags, router *model.Router, dir string) (*wiki.Index, error) {
 	emb, embProfile, err := router.EmbedderForRole(ctx, model.RoleEmbedder)
 	if err != nil {
 		return nil, fmt.Errorf("wiki plugin: resolve embedder: %w", err)
 	}
-	dim := embProfile.EmbedDim // declared; preferred = actual (probed) when reachable
-	if probe, perr := emb.Embed(ctx, []string{"wiki embedder fingerprint probe"}); perr == nil && len(probe) == 1 && len(probe[0]) > 0 {
+	return openWikiIndex(ctx, c.dataDir, dir, embProfile.Model, embProfile.EmbedDim, emb)
+}
+
+// openWikiIndex is buildWikiIndex once the embedder is known: dim is the
+// dimension the profile declares, used when the embedder does not say.
+func openWikiIndex(ctx context.Context, dataDir, dir, embModel string, dim int, emb model.Embedder) (*wiki.Index, error) {
+	pctx, cancel := context.WithTimeout(ctx, wikiProbeTimeout)
+	probe, perr := emb.Embed(pctx, []string{"wiki embedder fingerprint probe"})
+	cancel()
+	if perr == nil && len(probe) == 1 && len(probe[0]) > 0 {
 		dim = len(probe[0])
 	} else {
 		wiki.EmbedderProbeFailed.Log(ctx, "declared_dim", dim, "err", perr)
 	}
-	embedID := embProfile.Model + "/" + strconv.Itoa(dim)
+	embedID := embModel + "/" + strconv.Itoa(dim)
 	absVault, _ := filepath.Abs(dir)
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(absVault))
-	sidecar := filepath.Join(c.dataDir, "wiki", fmt.Sprintf("%x.json", h.Sum64()))
+	sidecar := filepath.Join(dataDir, "wiki", fmt.Sprintf("%x.json", h.Sum64()))
 	ix, err := wiki.New(dir, sidecar, embedID, emb)
 	if err != nil {
 		return nil, fmt.Errorf("wiki plugin: %w", err)
 	}
-	if _, _, rerr := ix.Reindex(ctx); rerr != nil {
-		// Embedder down at launch — don't crash; lazy reindex on first search.
-		wiki.ReindexFailed.Log(ctx, "err", rerr)
-	}
+	// The first reindex runs beside start-up, never in it (TEN-555): an
+	// embedder that takes the connection and does not answer held the
+	// dashboard and every other plugin back for as long as it hung. A search
+	// that comes first waits for it on the index's lock, and one that finds
+	// it failed reindexes itself.
+	go func() {
+		if _, _, rerr := ix.Reindex(ctx); rerr != nil {
+			wiki.ReindexFailed.Log(ctx, "err", rerr)
+		}
+	}()
 	return ix, nil
 }
