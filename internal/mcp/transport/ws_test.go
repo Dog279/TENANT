@@ -1469,10 +1469,25 @@ func TestWS_IdleLinkCost(t *testing.T) {
 
 			before := runtime.NumGoroutine()
 			fromServer, fromClient := recvAsync(bg, client), recvAsync(bg, server)
-			time.Sleep(20 * time.Millisecond)
 			// The transport starts no goroutine: the two Recv calls are all there is.
-			if n := runtime.NumGoroutine() - before; n > 2 {
-				t.Errorf("an idle link holds %d goroutines beyond the two callers of Recv", n-2)
+			// The count is the whole process's, and it is not exact while
+			// goroutines come and go elsewhere: it read one too many on CI's
+			// macOS runner, once, and never in 2400 rounds of this link alone.
+			// So it is read a few times. A goroutine the link started would be
+			// there every time; and if one is, the stacks say whose it is.
+			extra := 0
+			for i := range 10 { // 200 ms at most: half an interval, inside what the ping count below allows
+				time.Sleep(20 * time.Millisecond)
+				if extra = runtime.NumGoroutine() - before - 2; extra <= 0 {
+					if i > 0 {
+						t.Logf("the goroutine count was right at reading %d, not before", i+1)
+					}
+					break
+				}
+			}
+			if extra > 0 {
+				stacks := make([]byte, 1<<20)
+				t.Errorf("an idle link holds %d goroutines beyond the two callers of Recv:\n%s", extra, stacks[:runtime.Stack(stacks, true)])
 			}
 			time.Sleep(intervals*interval + interval/2)
 
