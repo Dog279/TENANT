@@ -234,8 +234,8 @@ func FuzzFleetDashSaid(f *testing.F) {
 		m, link := saidEverywhere(said)
 		list, one := pager.pages(t, m, link)
 		cell := `<td class="fl-said">` + pageText(q) + `</td>`
-		if n := strings.Count(list, cell); n != 3 {
-			t.Errorf("the list for %q has exactly %q %d times, want 3", said, cell, n)
+		if n := strings.Count(list, cell); n != 4 { // its system, its user, and its version twice: the list and the Updates card
+			t.Errorf("the list for %q has exactly %q %d times, want 4", said, cell, n)
 		}
 		if n := strings.Count(one, cell+"</tr>"); n < 6 { // five things it reports, and why its link ended
 			t.Errorf("the machine's page for %q has exactly %q %d times, want 6", said, cell, n)

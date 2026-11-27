@@ -126,6 +126,7 @@
   {{template "ui-empty" "No machines yet. Add one: give it a name, then paste the line this page shows on the new machine."}}
   {{end}}
 </div>
+{{if and .Shown (not .NoGroup)}}{{template "fl-updates" .}}{{end}}
 </div>
 <div class="col">
 <div class="card">
@@ -249,7 +250,39 @@
     <span class="dim"><a class="linkbtn" href="/fleet">Reload</a> to see how far it has got. Stop starts no more machines; those updating now finish.</span>
   </div>
   {{end}}
-  <div class="dim mt">A rollout is kept only until Tenant restarts on this computer.</div>
+  <div class="dim mt">The last rollout is kept until the next one starts, across a restart of Tenant. One that a restart cut short is not taken up again. Before a new one, give its interrupted machines a few minutes to link again and say how their update went: an update sent to one sooner replaces its record, and how the interrupted one went may then never be recorded. A machine that already runs the version is sent nothing.</div>
+</div>
+{{end}}
+
+{{/* fl-updates is the one place that says, for each machine shown, which
+     version it reports, the last update this Tenant sent it and how that
+     went: rolled back and why, or that it has not redialled. The record is
+     the process's that holds the fleet. The last line may quote what the
+     machine said: element content only. */}}
+{{define "fl-updates"}}
+<div class="card">
+  <div class="card-head">Updates <span class="dim">· each machine's version, and the last update this Tenant sent it</span></div>
+  {{if not .View.Here}}
+  <div class="dim">The process that holds the fleet keeps the record of updates.</div>
+  {{else}}
+  <div class="table-wrap"><table class="ovtable fl-facts fl-upd">
+    <tr><th>Machine</th><th>Version*</th><th>Last update</th><th>When</th><th>How it went</th></tr>
+    {{range .Shown}}
+    <tr>
+      <td><a class="linkbtn" href="{{.Href}}">{{.Name}}</a></td>
+      <td class="fl-said">{{.Version}}</td>
+      {{with .Update}}
+      <td>to {{or .To "a version not yet known"}}</td>
+      <td>{{or .Finished .Started}}</td>
+      <td><span class="{{.Pill}}">{{.Words}}</span>{{with .Away}} <strong>has not redialled since {{.}}</strong>{{end}}{{with .Last}} <span class="dim">{{.}}</span>{{end}}</td>
+      {{else}}
+      <td class="dim" colspan="3">none sent from this Tenant</td>
+      {{end}}
+    </tr>
+    {{end}}
+  </table></div>
+  <div class="dim mt">* Reported by the machine. A machine that took an update and has not said how it went is recorded when it links again: back on the new version, or rolled back and why.</div>
+  {{end}}
 </div>
 {{end}}
 
@@ -413,6 +446,7 @@
   {{with $m.Update}}
   <div><span class="{{if eq .Stage "done"}}on-tag{{else if .Running}}risk{{else}}act-errtag{{end}}">{{.Words}}</span>{{with .To}} to {{.}}{{end}} <span class="dim">· started {{.Started}}{{with .Finished}}, ended {{.}}{{end}}</span></div>
   {{range .Lines}}<div class="dim">{{.}}</div>{{end}}
+  {{with .Away}}<div class="banner warn mt">This machine took the update and has not redialled since {{.}}. What it says when it links again is recorded here.</div>{{end}}
   {{if .Running}}<p class="mt"><a class="linkbtn" href="{{$m.Href}}">Reload</a> to see how far it has got.</p>{{end}}
   {{end}}
   {{if ne $m.State "confirmed"}}

@@ -1184,8 +1184,8 @@ func TestFleetReportedTextIsOnlyText(t *testing.T) {
 				t.Errorf("the list for %q is missing exactly %q", evil, want)
 			}
 		}
-		if cell := `<td class="fl-said">` + esc + `</td>`; strings.Count(list, cell) != 3 { // its system, its user, its version
-			t.Errorf("the list for %q has exactly %q %d times, want 3", evil, cell, strings.Count(list, cell))
+		if cell := `<td class="fl-said">` + esc + `</td>`; strings.Count(list, cell) != 4 { // its system, its user, its version, and its version again in the Updates card
+			t.Errorf("the list for %q has exactly %q %d times, want 4", evil, cell, strings.Count(list, cell))
 		}
 		for _, want := range []string{
 			`<strong>` + esc + `</strong> <span class="on-tag">online</span>`,

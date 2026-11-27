@@ -660,10 +660,95 @@ The Fleet page shows the rollout while it runs and afterwards (reload it): each 
 waiting, its live stage, done, skipped and why, rolled back, failed or not started. **Stop**
 starts no more machines; those updating finish. So does the fleet port going down, or another
 process taking the fleet: the rollout starts nothing over links it no longer holds. One rollout
-runs at a time. It is kept in the
-running Tenant's memory: a restart of the master forgets it, though each machine still finishes
-or rolls back by itself. `tenant fleet update --all` and `--group <group>` stay as they were:
+runs at a time. `tenant fleet update --all` and `--group <group>` stay as they were:
 one machine after the other, going on past a failure.
+
+### The master restarts during a rollout or an update (TEN-552)
+
+The Tenant that holds the fleet writes the rollout and each machine's last update to
+`<data>/fleet-updates.json` at every step. A Tenant that starts on that data folder and takes
+the fleet reads it back, so the Fleet page still shows the last rollout and each machine's last
+update after a restart. A file that does not read (cut off by a power loss, edited by hand) is
+logged as `system/2110` and treated as no record: the master starts all the same, and the next
+update writes a new file.
+
+**A rollout that was running is not taken up again.** It is closed where it stood, the
+operator's feed says so (`fleet: the rollout started … was cut short when this Tenant stopped
+…`), and the Fleet page shows each machine as it was:
+
+- **done**, skipped, rolled back or failed: as recorded before the restart;
+- **interrupted**: its update was under way. What became of it is filled in from the machine's
+  own word (below);
+- **not started**: nothing was ever sent to it.
+
+Nothing is sent to any machine because of the restart. To finish, start a new rollout over the
+same machines: one that already runs the version counts as done and is sent nothing. A rollout
+does not go on by itself because that would update machines on the word of a process that is
+gone, to a "latest" that may have moved since.
+
+**Wait before the new rollout.** Give the machines shown as interrupted a few minutes to link
+again and say how their update went (the Updates card shows it), and start the new rollout
+then. A machine has one record, its last update, and an update sent to it replaces that
+record. Sent while the interrupted one is still unsettled, the new update takes its place, and
+how the interrupted one went may never be recorded: if the latest release has moved since, a
+machine that is still applying the first refuses the new archive ("this machine is already
+applying another update"), and that refusal is all its record then says. The machine itself
+is no worse for it: it finishes the first update or rolls it back, and the version it reports
+says which. Updates are not refused for a machine whose last one is unsettled, because one
+that never says anything (it stays on its old version without a word) would then never be
+updated again.
+
+**An update that was under way** is ended in the record by how far it had got:
+
+| It was | The record says | On the machine |
+|---|---|---|
+| fetching the release | failed: this Tenant stopped before anything was sent | nothing changed |
+| sending the archive | failed: this Tenant stopped while the archive was on its way | most likely nothing changed: a machine applies an update only once all of it has arrived and checked, and an update sent again goes on from what arrived. If the machine did have all of it (it checks and unpacks the archive for some seconds before it answers the last piece), it goes on by itself, and its word on its next link corrects the record |
+| being applied by the machine | failed, and waiting for the machine's word | the machine goes on by itself: it comes back on the new version, or puts the old one back |
+
+In the last case nobody was waiting when the machine finished, so the master reads what the
+machine says on its **next link**: "the machine linked again: back on the new version 1.4.0",
+or "the machine linked again: rolled back to "1.3.2": "<why>"". The same goes for an update
+whose machine went quiet past the 7 minutes the master waits: its word is recorded whenever it
+links again, hours later if need be, and a rollout that stopped at that machine then shows it
+as "failed, then done" (or "then rolled back"). Until then, while it has no link, the page says
+**has not redialled since** and the time: when its link ended, or, when that was before this
+Tenant started, when the update was last written down. `GET /api/fleet` gives the same time as
+`not_redialled_since` in the machine's `update`.
+
+**Whose word it is.** A machine keeps its word about its last update until the next one starts
+its trial run, which is after it has taken the archive and let its running calls finish. A
+machine that links in between (its link dropped, or the master restarted) still says what
+became of the update before. When that one was to the same version, a second try at a version
+that rolled back, the master tells the two apart by the time on the word, which is the
+machine's own clock both times: it notes the time on the word the machine has when an update
+starts, and takes only a later one as that update's. So yesterday's "rolled back" is never
+recorded as today's. A machine whose clock was set back past its earlier word in between has
+its new word passed over; it is then known by the version it reports.
+
+The machines themselves need nothing: each redials by itself (the wait doubles from one second
+to a ceiling of one minute) and is online as soon as its link is made.
+
+Not covered: calls to a machine that is still applying an update when the master comes back
+are not kept back, as they are while one master watches the whole update (above); one made
+before the machine has redialled fails as offline.
+
+**Two Tenants on one data folder** (serve and the terminal app) write the same file, and
+nothing keeps them apart: there is no lock between processes, and a Tenant does not read the
+file again before it writes it, so the one that writes last wins. A Tenant reads the file only
+when it takes the fleet, and then keeps what it has itself unless the saved record started
+later. One that takes the fleet from another that is still running therefore reports that
+other's rollout as cut short, and the two then overwrite each other's record. Do not run fleet
+updates from two Tenants on one data folder: start a rollout or an update from one Tenant, and
+let that one keep the fleet until every machine has said how it went.
+
+### Where to look: the Updates card (TEN-552)
+
+The Fleet page has one card, **Updates**, with a row for each machine shown: the version it
+reports, the last update this Tenant sent it and when, and how that went: done, rolled back
+with the machine's reason, failed with the reason, or **has not redialled since** a time for a
+machine that took an update and has not come back. A machine's own page says the same in its
+Update card, with every line of the update.
 
 ## 5b. Losing the master (TEN-533)
 
@@ -774,6 +859,8 @@ online as soon as a link is made; there is no command to bring it back.
 | `fleet: <name> is offline: offline since …` | no link. Nothing was sent, nothing is queued. A dead link is noticed within a minute (two missed 30 s pings). |
 | `fleet: OUTCOME UNKNOWN … call <id>` | the link dropped mid-call. The call was not sent again. When the machine is back: `fleet_process {"host":…,"action":"result","id":"<id>"}`. The machine keeps the last 32 results (2 MiB at most) for ten minutes; a pause or a restart of its child drops them. The id of a call is also in the machine's audit log. |
 | `tenant serve (process N) holds the fleet, on …` | this process does not hold the links; work from that one. |
+| Fleet page: "has not redialled since …" | the machine took an update, never said how it went, and has no link now. It may be restarting, rolled back and unable to reach the master, or off. Look at it: `tenant child status` on the machine shows its last update. Its word is recorded here when it links again. |
+| Fleet page: "The rollout was cut short when this Tenant stopped" | the master restarted during a rollout. Nothing more was sent. Give the machines that show as interrupted a few minutes to link again and say how their update went, then start a new rollout for the ones that did not get the version (section 5a, "The master restarts"). |
 | `child status`: "the master rejected this machine" | its certificate is not pinned on the master (revoked, or the master was rebuilt), or the master cannot read `fleet.json` just now. The child keeps trying, slowly. |
 | `child status`: "it is revoked" | the master revoked it. The child has stopped (exit 0) and will not connect with this key again: uninstall and enroll anew, or `tenant child rehome` with a code from the master it should trust now. |
 | memory "needs recovery key" (`fleet show`, `/fleet`, the Fleet page, doctor) | the machine's copies, or this master's own snapshot, were made under another fleet key. Nothing is overwritten. `tenant fleet recover <name>` with that fleet's recovery identity (section 5b). |
@@ -783,6 +870,8 @@ online as soon as a link is made; there is no command to bring it back.
 The master was killed or restarted: its machines reconnect by themselves (the wait doubles
 from one second to a ceiling of one minute). A command that was running on a machine runs on;
 ask for its result as above. A machine's child that restarts ends its background commands.
+A rollout or an update the master was in the middle of is reported where it stopped, not taken
+up again (section 5a, "The master restarts during a rollout or an update").
 
 ## 8. Running it for a test
 
