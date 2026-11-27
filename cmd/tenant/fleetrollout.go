@@ -119,7 +119,9 @@ func (r *fleetRollout) saved() {
 // was last saved: a machine that was being updated is interrupted, one that
 // was waiting never started, and nothing more is sent. cut reports that there
 // was such a machine: the rollout did not get to its end. It does nothing
-// once this process has a rollout of its own.
+// while this process has a rollout running, or one that started no earlier
+// than s: a second read (this process took the fleet again) brings in only a
+// later rollout, one another Tenant ran in between.
 func (r *fleetRollout) restore(s fleetRolloutState, at time.Time) (cut bool) {
 	s.Machines = slices.Clone(s.Machines) // the caller's are not this rollout's to change
 	if !s.Over() {
@@ -143,7 +145,7 @@ func (r *fleetRollout) restore(s fleetRolloutState, at time.Time) (cut bool) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.cur != nil {
+	if r.cur != nil && (!r.cur.Over() || !s.Started.After(r.cur.Started)) {
 		return false
 	}
 	r.cur = &s

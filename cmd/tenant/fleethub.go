@@ -213,7 +213,6 @@ type fleetHub struct {
 	act             *event.Activity // the fleet port's lifetime in the fleet log (fleet.Listening)
 	updates         *fleetUpdates   // `tenant fleet update`, run here while this process holds the fleet
 	rollout         *fleetRollout   // a staggered update of many machines, through updates
-	restored        sync.Once       // restore: what an earlier Tenant saved of them, read when this one first holds the fleet
 
 	mu      sync.Mutex
 	mgr     *fleet.Manager
@@ -364,7 +363,7 @@ func (h *fleetHub) tick(ctx context.Context) {
 	}
 	// Before this process can be asked for an update of its own: what the
 	// Tenant that held the fleet before it left.
-	h.restored.Do(h.restore)
+	h.restore()
 	h.mu.Lock()
 	h.mgr, h.run = mgr, want
 	h.mu.Unlock()
@@ -501,9 +500,11 @@ func (h *fleetHub) connected(id string) {
 }
 
 // restore brings back what an earlier Tenant on this data dir saved of the
-// fleet's updates and its rollout (fleetUpdates.restore), once, when this
-// process first holds the fleet. A rollout that Tenant was in the middle of
-// is closed where it stood, and the operator is told where that was.
+// fleet's updates and its rollout (fleetUpdates.restore), each time this
+// process takes the fleet: another Tenant may have held it since this one
+// last did. What this process has itself stays, unless what was saved is
+// later. A rollout that Tenant was in the middle of is closed where it
+// stood, and the operator is told where that was.
 func (h *fleetHub) restore() {
 	ro, at, err := h.updates.restore()
 	if err != nil {

@@ -662,6 +662,9 @@ func TestFleetRolloutCardAfterARestart(t *testing.T) {
 			{ID: "m0000000000000004", Name: "web5", Status: "interrupted", Stage: "done", Reason: "the machine linked again: back on the new version 2.0.0"},
 			{ID: "m0000000000000005", Name: "web6", Status: "interrupted"},
 			{ID: "m0000000000000006", Name: "web7", Status: "not_started", Reason: "not started: the rollout was cut short when this Tenant stopped"},
+			{ID: "m0000000000000007", Name: "web8", Status: "failed", Stage: "done", Reason: "the machine linked again: back on the new version 2.0.0"},
+			{ID: "m0000000000000008", Name: "web9", Status: "failed", Stage: "rolled_back", Reason: "the machine linked again: rolled back"},
+			{ID: "m0000000000000009", Name: "web10", Status: "failed", Reason: "the machine went offline during the transfer"},
 		}}
 	body := get(t, fleetServer(f), "/fleet").Body.String()
 	for _, want := range []string{
@@ -671,6 +674,10 @@ func TestFleetRolloutCardAfterARestart(t *testing.T) {
 		`<a class="linkbtn" href="/fleet/m0000000000000004">web5</a> <span class="on-tag">interrupted, then done</span>`,
 		`<a class="linkbtn" href="/fleet/m0000000000000005">web6</a> <span class="risk">interrupted</span></div>`,
 		`<span class="tag">not started</span> <span class="dim">not started: the rollout was cut short when this Tenant stopped</span>`,
+		// A machine that failed by saying nothing in time, and said later.
+		`<a class="linkbtn" href="/fleet/m0000000000000007">web8</a> <span class="on-tag">failed, then done</span> <span class="dim">the machine linked again: back on the new version 2.0.0</span>`,
+		`<a class="linkbtn" href="/fleet/m0000000000000008">web9</a> <span class="act-errtag">failed, then rolled back</span>`,
+		`<a class="linkbtn" href="/fleet/m0000000000000009">web10</a> <span class="act-errtag">failed</span> <span class="dim">the machine went offline during the transfer</span>`,
 		"The last rollout is kept until the next one starts, across a restart of Tenant. One that a restart cut short is not taken up again",
 	} {
 		if !strings.Contains(body, want) {

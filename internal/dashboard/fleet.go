@@ -312,9 +312,10 @@ type FleetRollout struct {
 // FleetRolloutMachine is one machine of a rollout. Status is waiting,
 // running, done, skipped, rolled_back, failed, not_started or interrupted (its
 // update was under way when the Tenant that ran the rollout stopped); Stage is
-// its update's stage while it runs, and for an interrupted one what its update
-// has come to since; Reason says why it ended as it did (it may hold what the
-// machine said, quoted by the control).
+// its update's stage while it runs, and for an interrupted or a failed one
+// what its update has come to since, where the machine said so later; Reason
+// says why it ended as it did (it may hold what the machine said, quoted by
+// the control).
 type FleetRolloutMachine struct {
 	ID, Name, Status, Stage, Reason string
 }
@@ -332,10 +333,10 @@ func (m FleetRolloutMachine) Words() string {
 		return "running"
 	case "not_started":
 		return "not started"
-	case "interrupted":
+	case "interrupted", "failed":
 		switch m.Stage {
 		case "done", "rolled_back":
-			return "interrupted, then " + strings.ReplaceAll(m.Stage, "_", " ")
+			return m.Status + ", then " + strings.ReplaceAll(m.Stage, "_", " ")
 		}
 	}
 	return strings.ReplaceAll(m.Status, "_", " ")
@@ -344,7 +345,7 @@ func (m FleetRolloutMachine) Words() string {
 // Pill is the class of the machine's status pill.
 func (m FleetRolloutMachine) Pill() string {
 	status := m.Status
-	if status == "interrupted" && (m.Stage == "done" || m.Stage == "rolled_back") {
+	if (status == "interrupted" || status == "failed") && (m.Stage == "done" || m.Stage == "rolled_back") {
 		status = m.Stage
 	}
 	switch status {

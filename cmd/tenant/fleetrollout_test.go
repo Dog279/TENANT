@@ -345,6 +345,14 @@ func TestRolloutKeptAndRestored(t *testing.T) {
 	if s, _ := r.State(); statuses(s) != statuses(mid) || mid.Over() || mid.Version != "v2.0.0" || mid.Limit != 1 {
 		t.Fatalf("kept %+v, the rollout is at %s", mid, statuses(s))
 	}
+	// A rollout that is running is this process's own, whatever is read
+	// (it took the fleet again, and a file says a later one).
+	if r.restore(fleetRolloutState{Started: time.Now().Add(time.Hour), Machines: rolloutMachines("z")}, time.Now()) {
+		t.Error("a saved rollout was taken over one that is running")
+	}
+	if s, _ := r.State(); statuses(s) != statuses(mid) {
+		t.Errorf("a saved rollout replaced one that is running: %s", statuses(s))
+	}
 
 	// The Tenant that starts next, a minute after that was saved.
 	at := time.Now().Add(-time.Minute)
@@ -372,12 +380,25 @@ func TestRolloutKeptAndRestored(t *testing.T) {
 	if got := rolloutCutWords(s); !strings.Contains(got, "Of its 3 machines, 1 had ended, 1 never started, being updated: name-b.") {
 		t.Errorf("the operator is told: %s", got)
 	}
-	// What this process has is not replaced by a second read.
-	if next.restore(fleetRolloutState{Started: time.Now(), Machines: rolloutMachines("z")}, at) {
+	// A second read (this process took the fleet again) changes nothing when
+	// it is the same rollout, or an earlier one...
+	older := mid
+	older.Started, older.Machines = mid.Started.Add(-time.Hour), rolloutMachines("z")
+	if next.restore(mid, time.Now()) || next.restore(older, at) {
 		t.Error("a second restore says it took a rollout that was cut short")
 	}
-	if again, _ := next.State(); statuses(again) != statuses(s) {
+	if again, _ := next.State(); statuses(again) != statuses(s) || !again.Finished.Equal(at) {
 		t.Errorf("a second restore replaced the rollout: %s", statuses(again))
+	}
+	// ...and takes a later one, which another Tenant ran in between.
+	twice := &fleetRollout{updates: f}
+	twice.restore(mid, at)
+	newer := fleetRolloutState{Started: mid.Started.Add(time.Hour), Limit: 2, Machines: []fleetRolloutMachine{{ID: "z", Name: "name-z", Status: fleetRollWaiting}}}
+	if !twice.restore(newer, at.Add(2*time.Hour)) {
+		t.Error("a later rollout that was saved in the middle was not reported as cut short")
+	}
+	if got, _ := twice.State(); statuses(got) != "z=not_started" || got.Limit != 2 {
+		t.Errorf("a later saved rollout did not replace an ended one: %+v", got)
 	}
 
 	// One the operator had stopped, with a machine still in flight, keeps its

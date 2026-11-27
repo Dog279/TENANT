@@ -45,7 +45,8 @@ func TestFleetUpdatesSavedAndRestored(t *testing.T) {
 	u.silent(put("quiet", fleetUpdApplying), "the machine has not said within 7m0s whether it runs 2.0.0 or rolled back")
 	put("fetching", fleetUpdFetching)
 	put("sending", fleetUpdSending)
-	put("applying", fleetUpdApplying)
+	earlier := time.Now().Add(-24 * time.Hour).UTC().Truncate(time.Second)
+	u.aim(put("applying", fleetUpdApplying), fleet.MachineStatus{Update: &fleet.UpdateReport{To: "2.0.0", State: fleet.UpdateRolledBack, At: earlier}}, "2.0.0")
 	u.keepRollout(fleetRolloutState{Started: began, Limit: 2, Version: "v2.0.0", Machines: []fleetRolloutMachine{
 		{ID: "done", Name: "web1", Status: fleetUpdDone, Reason: "back on the new version 2.0.0"},
 		{ID: "applying", Name: "web2", Status: fleetRollRunning},
@@ -69,18 +70,19 @@ func TestFleetUpdatesSavedAndRestored(t *testing.T) {
 	}
 	for _, c := range []struct {
 		id, stage, last string
-		unheard, cut    bool
+		unheard, cut    bool // cut: this Tenant's stop ended it
+		mayYetSay       bool // Cut: the machine's later word corrects it, and it is not "away"
 	}{
-		{"done", fleetUpdDone, "back on the new version 2.0.0", false, false},
-		{"back", fleetUpdRolledBack, `rolled back to "1.0.0": "it broke"`, false, false},
-		{"quiet", fleetUpdFailed, "has not said within", true, false},
-		{"fetching", fleetUpdFailed, "before anything was sent to the machine: nothing changed there", false, true},
-		{"sending", fleetUpdFailed, "while the archive was on its way", false, true},
-		{"applying", fleetUpdFailed, "while the machine was applying the update", true, true},
+		{"done", fleetUpdDone, "back on the new version 2.0.0", false, false, false},
+		{"back", fleetUpdRolledBack, `rolled back to "1.0.0": "it broke"`, false, false, false},
+		{"quiet", fleetUpdFailed, "has not said within", true, false, false},
+		{"fetching", fleetUpdFailed, "before anything was sent to the machine: nothing changed there", false, true, false},
+		{"sending", fleetUpdFailed, "Had the machine all of it, how it went is recorded when it links again", false, true, true},
+		{"applying", fleetUpdFailed, "while the machine was applying the update", true, true, false},
 	} {
 		was, _ := u.State(c.id)
 		st, ok := next.State(c.id)
-		if !ok || st.Stage != c.stage || st.Unheard != c.unheard || !st.Over() || !strings.Contains(lastLine(st.Lines), c.last) ||
+		if !ok || st.Stage != c.stage || st.Unheard != c.unheard || st.Cut != c.mayYetSay || !st.Over() || !strings.Contains(lastLine(st.Lines), c.last) ||
 			st.From != "1.0.0" || st.To != "2.0.0" || !st.Started.Equal(began) || st.Machine != c.id {
 			t.Errorf("%s read back: %+v", c.id, st)
 		}
@@ -102,15 +104,30 @@ func TestFleetUpdatesSavedAndRestored(t *testing.T) {
 	if again, _ := next.State("applying"); len(again.Lines) != len(before.Lines) {
 		t.Errorf("a second restore spoke again: %q", again.Lines)
 	}
-	// An update this process ran since is the newer word: restore keeps it.
+	// The time on the word a machine already had about this version is kept
+	// too: without it a restarted master could not tell that word from a new one.
+	if st, _ := next.State("applying"); !st.Earlier.Equal(earlier) {
+		t.Errorf("the earlier word's time read back as %s, want %s", st.Earlier, earlier)
+	}
+	// A process that takes the fleet again reads the file again (another
+	// Tenant may have held the fleet in between). What it has itself stays
+	// while it runs, and when it is the same record or a later one; a saved
+	// record that started later replaces one of its own that has ended.
 	later := newFleetUpdates(dir)
-	mine := &fleetUpdateState{Machine: "done", Stage: fleetUpdSending, Started: time.Now()}
-	later.runs["done"] = mine
+	later.runs["done"] = &fleetUpdateState{Machine: "done", Stage: fleetUpdSending, Started: began.Add(-time.Hour)}
+	later.runs["back"] = &fleetUpdateState{Machine: "back", Stage: fleetUpdDone, To: "3.0.0", Started: began.Add(time.Hour), Finished: began.Add(2 * time.Hour)}
+	later.runs["quiet"] = &fleetUpdateState{Machine: "quiet", Stage: fleetUpdDone, To: "0.9.0", Started: began.Add(-time.Hour), Finished: began.Add(-time.Minute)}
 	if _, _, err := later.restore(); err != nil {
 		t.Fatal(err)
 	}
 	if st, _ := later.State("done"); st.Stage != fleetUpdSending || st.Over() {
 		t.Errorf("restore replaced an update this process is running: %+v", st)
+	}
+	if st, _ := later.State("back"); st.To != "3.0.0" || st.Stage != fleetUpdDone {
+		t.Errorf("restore replaced a later update of this process's with an earlier one: %+v", st)
+	}
+	if st, _ := later.State("quiet"); st.To != "2.0.0" || !st.Unheard {
+		t.Errorf("restore kept an ended update of this process's over a later one that was saved: %+v", st)
 	}
 }
 
@@ -428,5 +445,177 @@ func TestRolloutAcrossAMasterRestart(t *testing.T) {
 	}
 	if sent("b") != sentB || sent("c") == 0 {
 		t.Errorf("the new rollout: b has %d pieces (had %d), c has %d", sent("b"), sentB, sent("c"))
+	}
+}
+
+// A machine keeps its word about the last update until the next one starts
+// its trial run, which is after it has taken the archive and let its running
+// calls finish. So on a second try at a version that rolled back before, a
+// link the machine makes in between says what became of the FIRST try. That
+// word is not this update's: not for the master that is waiting (the machine
+// redials while its calls finish), and not for one that restarted meanwhile.
+// Found in review; the update rig's machine here says exactly what a real
+// child's file would hold at each moment.
+func TestFleetUpdateAnEarlierTrysWordIsNotThisOnes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("updates a machine over a real link")
+	}
+	r := newUpdateRig(t)
+	yesterdayAt := time.Now().Add(-24 * time.Hour).UTC().Truncate(time.Second)
+	yesterday := func() *fleet.UpdateReport {
+		return &fleet.UpdateReport{From: "1.0.0", To: "2.0.0", State: fleet.UpdateRolledBack, Reason: "yesterday's reason", At: yesterdayAt}
+	}
+	today := func(state, reason string) func() *fleet.UpdateReport {
+		return func() *fleet.UpdateReport {
+			return &fleet.UpdateReport{From: "1.0.0", To: "2.0.0", State: state, Reason: reason, At: time.Now().UTC().Truncate(time.Second)}
+		}
+	}
+	var mu sync.Mutex
+	var took time.Time // when the machine had the whole archive
+	k, restart := r.kid("web1", func(p fleet.Update, again func(func() *fleet.UpdateReport, string)) (fleet.UpdateAck, error) {
+		ack := honest(p)
+		if ack.Applying {
+			mu.Lock()
+			took = time.Now()
+			mu.Unlock()
+			again(yesterday, "1.0.0") // it links again while its calls finish, with the only word it has
+		}
+		return ack, nil
+	})
+	state := func() fleetUpdateState {
+		st, _ := r.updates.State(k.id)
+		return st
+	}
+	relinked := func() bool { // on a link made after it took the archive
+		mu.Lock()
+		defer mu.Unlock()
+		link, ok := machineStatus(r.mgr, k.id)
+		return ok && link.Online && !took.IsZero() && link.Since.After(took)
+	}
+
+	// The master is waiting. The machine starts with yesterday's word.
+	restart(yesterday, "1.0.0")
+	if err := r.updates.Start(r.mgr, k.id, fleetUpdateOpts{version: "v2.0.0"}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the machine links again after it took the archive", relinked)
+	time.Sleep(10 * fleetUpdatePoll) // the wait loop has looked at that link several times
+	if st := state(); st.Over() || st.Stage != fleetUpdApplying || !st.Earlier.Equal(yesterdayAt) {
+		t.Fatalf("yesterday's word ended today's update, or its time was not kept: %+v", st)
+	}
+	restart(today(fleet.UpdateTrial, ""), "1.0.0") // its trial run, then the new version
+	restart(today(fleet.UpdateDone, ""), "2.0.0")
+	eventually(t, "today's update ends", func() bool { return state().Over() })
+	if st := state(); st.Stage != fleetUpdDone || lastLine(st.Lines) != "back on the new version 2.0.0" {
+		t.Errorf("today's update, with the master waiting: %+v", st)
+	}
+
+	// The master restarted while the machine applied (restore ends the record
+	// so). The record is as Start and aim left it: yesterday's word's time in it.
+	quiet := func(cut bool) {
+		s := &fleetUpdateState{Machine: k.id, From: "1.0.0", To: "2.0.0", Stage: fleetUpdApplying, Started: time.Now()}
+		r.updates.mu.Lock()
+		r.updates.runs[k.id] = s
+		r.updates.mu.Unlock()
+		r.updates.aim(s, fleet.MachineStatus{Update: yesterday()}, "2.0.0")
+		if cut {
+			r.updates.mu.Lock()
+			s.Cut = true
+			r.updates.mu.Unlock()
+			r.updates.say(s, fleetUpdFailed, "this Tenant stopped while the archive was on its way to the machine")
+			return
+		}
+		r.updates.silent(s, "this Tenant stopped while the machine was applying the update")
+	}
+	quiet(false)
+	restart(yesterday, "1.0.0")
+	r.updates.heard(r.mgr, k.id)
+	if st := state(); !st.Unheard || st.Stage != fleetUpdFailed || len(st.Lines) != 1 {
+		t.Fatalf("yesterday's word settled today's update on the restarted master: %+v", st)
+	}
+	restart(today(fleet.UpdateDone, ""), "2.0.0")
+	r.updates.heard(r.mgr, k.id)
+	if st := state(); st.Unheard || st.Stage != fleetUpdDone || lastLine(st.Lines) != "the machine linked again: back on the new version 2.0.0" {
+		t.Errorf("the machine runs 2.0.0 and its record says: %+v", st)
+	}
+	// Today's own rollback is today's word.
+	quiet(false)
+	restart(yesterday, "1.0.0")
+	r.updates.heard(r.mgr, k.id)
+	restart(today(fleet.UpdateRolledBack, "today's reason"), "1.0.0")
+	r.updates.heard(r.mgr, k.id)
+	if st := state(); st.Unheard || st.Stage != fleetUpdRolledBack || lastLine(st.Lines) != `the machine linked again: rolled back to "1.0.0": "today's reason"` {
+		t.Errorf("today's rollback, heard later: %+v", st)
+	}
+	// A word about another version is no earlier word of this one.
+	other := &fleetUpdateState{Machine: "x"}
+	r.updates.aim(other, fleet.MachineStatus{Update: &fleet.UpdateReport{To: "1.5.0", State: fleet.UpdateDone, At: yesterdayAt}}, "2.0.0")
+	if other.To != "2.0.0" || !other.Earlier.IsZero() || !wordOn("2.0.0", time.Time{}, yesterday()) || wordOn("2.0.0", yesterdayAt, yesterday()) || wordOn("2.0.0", time.Time{}, nil) {
+		t.Errorf("aim took a word about another version for an earlier try, or wordOn is off: %+v", other)
+	}
+
+	// Cut while the archive was on its way: the record says nothing changed,
+	// most likely. It is not "away", yesterday's word does not touch it, and
+	// if the machine had all of it after all, its word corrects the record.
+	quiet(true)
+	restart(yesterday, "1.0.0")
+	r.updates.heard(r.mgr, k.id)
+	if st := state(); !st.Cut || st.Unheard || st.Stage != fleetUpdFailed || len(st.Lines) != 1 {
+		t.Fatalf("a record cut while sending, after yesterday's word: %+v", st)
+	}
+	if v := dashUpdate(state(), &fleet.MachineStatus{}); v.Away != "" {
+		t.Errorf("a machine that most likely took nothing is said not to have redialled: %q", v.Away)
+	}
+	restart(today(fleet.UpdateDone, ""), "2.0.0")
+	r.updates.heard(r.mgr, k.id)
+	if st := state(); st.Cut || st.Stage != fleetUpdDone || lastLine(st.Lines) != "the machine linked again: back on the new version 2.0.0" {
+		t.Errorf("a record cut while sending, for a machine that had it all: %+v", st)
+	}
+}
+
+// updateRecords stands in for the updates a rollout's rows are read from.
+type updateRecords map[string]fleetUpdateState
+
+func (u updateRecords) State(id string) (fleetUpdateState, bool) { s, ok := u[id]; return s, ok }
+
+// The rollout card and the Updates card do not disagree: a machine that
+// failed in a rollout by saying nothing in time, or that a restart
+// interrupted, shows what its update came to once the machine said. An update
+// sent to the machine after the rollout is not that rollout's.
+func TestDashRolloutShowsWhatBecameOfAnUpdate(t *testing.T) {
+	began := time.Now().Add(-time.Hour)
+	ended := began.Add(10 * time.Minute)
+	ro := fleetRolloutState{Started: began, Finished: ended, Limit: 1, Stopped: "stopped at web1", Machines: []fleetRolloutMachine{
+		{ID: "quiet", Name: "web1", Status: fleetUpdFailed, Reason: "the machine has not said within 7m0s"},
+		{ID: "broke", Name: "web2", Status: fleetUpdFailed, Reason: "the machine went offline during the transfer"},
+		{ID: "cut", Name: "web3", Status: fleetRollInterrupted, Reason: "its update was under way when this Tenant stopped"},
+		{ID: "since", Name: "web4", Status: fleetUpdFailed, Reason: "the machine has not said within 7m0s"},
+		{ID: "back", Name: "web5", Status: fleetUpdRolledBack, Reason: "rolled back"},
+		{ID: "none", Name: "web6", Status: fleetUpdFailed, Reason: "kept"},
+	}}
+	in := began.Add(time.Minute)
+	rows := dashRollout(ro, updateRecords{
+		"quiet": {Stage: fleetUpdDone, Started: in, Lines: []string{"sent", "the machine linked again: back on the new version 2.0.0"}},
+		"broke": {Stage: fleetUpdFailed, Started: in, Lines: []string{"another line"}},
+		"cut":   {Stage: fleetUpdRolledBack, Started: in, Lines: []string{`the machine linked again: rolled back to "1.0.0": "why"`}},
+		"since": {Stage: fleetUpdDone, Started: ended.Add(time.Minute), Lines: []string{"back on the new version 2.0.0"}}, // sent again, after the rollout
+		"back":  {Stage: fleetUpdDone, Started: ended.Add(time.Minute), Lines: []string{"back on the new version 2.0.0"}},
+	}).Machines
+	for i, want := range []struct{ words, pill, reason string }{
+		{"failed, then done", "on-tag", "the machine linked again: back on the new version 2.0.0"},
+		{"failed", "act-errtag", "the machine went offline during the transfer"},
+		{"interrupted, then rolled back", "act-errtag", `the machine linked again: rolled back to "1.0.0": "why"`},
+		{"failed", "act-errtag", "the machine has not said within 7m0s"},
+		{"rolled back", "act-errtag", "rolled back"},
+		{"failed", "act-errtag", "kept"},
+	} {
+		if got := rows[i]; got.Words() != want.words || got.Pill() != want.pill || got.Reason != want.reason {
+			t.Errorf("%s: %q (%s) %q, want %q (%s) %q", got.Name, got.Words(), got.Pill(), got.Reason, want.words, want.pill, want.reason)
+		}
+	}
+	// While a rollout runs it has no end yet: a failed machine's later word shows.
+	ro.Finished = time.Time{}
+	if got := dashRollout(ro, updateRecords{"quiet": {Stage: fleetUpdDone, Started: in, Lines: []string{"done since"}}}).Machines[0]; got.Words() != "failed, then done" || got.Reason != "done since" {
+		t.Errorf("in a running rollout: %q %q", got.Words(), got.Reason)
 	}
 }

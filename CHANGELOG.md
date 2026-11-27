@@ -15,7 +15,10 @@ Releases page.
   already runs the version. A machine that was applying an update when the master went away
   finishes or rolls back by itself, and what it says on its next link is recorded ("the machine
   linked again: back on the new version …", or rolled back and why). The same now goes for an
-  update whose machine went quiet past the 7 minutes the master waits. A saved file that does
+  update whose machine went quiet past the 7 minutes the master waits. A word the machine still
+  has from an earlier try at the same version is not taken for the new try's: on a second try
+  at a version that rolled back, a machine that linked again while its running calls finished
+  was reported as rolled back, with the first try's reason. A saved file that does
   not read does not stop the master: it is logged and replaced at the next update.
 - **New on the Fleet page: an Updates card (TEN-552).** One row for each machine: the version it
   reports, the last update this Tenant sent it and when, and how it went: done, rolled back with

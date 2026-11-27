@@ -655,27 +655,39 @@ gone, to a "latest" that may have moved since.
 | It was | The record says | On the machine |
 |---|---|---|
 | fetching the release | failed: this Tenant stopped before anything was sent | nothing changed |
-| sending the archive | failed: this Tenant stopped while the archive was on its way | nothing changed: a machine applies an update only once all of it has arrived and checked. An update sent again goes on from what arrived |
+| sending the archive | failed: this Tenant stopped while the archive was on its way | most likely nothing changed: a machine applies an update only once all of it has arrived and checked, and an update sent again goes on from what arrived. If the machine did have all of it (it checks and unpacks the archive for some seconds before it answers the last piece), it goes on by itself, and its word on its next link corrects the record |
 | being applied by the machine | failed, and waiting for the machine's word | the machine goes on by itself: it comes back on the new version, or puts the old one back |
 
 In the last case nobody was waiting when the machine finished, so the master reads what the
 machine says on its **next link**: "the machine linked again: back on the new version 1.4.0",
 or "the machine linked again: rolled back to "1.3.2": "<why>"". The same goes for an update
 whose machine went quiet past the 7 minutes the master waits: its word is recorded whenever it
-links again, hours later if need be. Until then, while it has no link, the page says **has not
-redialled since** and the time: when its link ended, or, when that was before this Tenant
-started, when the update was last written down. `GET /api/fleet` gives the same time as
+links again, hours later if need be, and a rollout that stopped at that machine then shows it
+as "failed, then done" (or "then rolled back"). Until then, while it has no link, the page says
+**has not redialled since** and the time: when its link ended, or, when that was before this
+Tenant started, when the update was last written down. `GET /api/fleet` gives the same time as
 `not_redialled_since` in the machine's `update`.
+
+**Whose word it is.** A machine keeps its word about its last update until the next one starts
+its trial run, which is after it has taken the archive and let its running calls finish. A
+machine that links in between (its link dropped, or the master restarted) still says what
+became of the update before. When that one was to the same version, a second try at a version
+that rolled back, the master tells the two apart by the time on the word, which is the
+machine's own clock both times: it notes the time on the word the machine has when an update
+starts, and takes only a later one as that update's. So yesterday's "rolled back" is never
+recorded as today's. A machine whose clock was set back past its earlier word in between has
+its new word passed over; it is then known by the version it reports.
 
 The machines themselves need nothing: each redials by itself (the wait doubles from one second
 to a ceiling of one minute) and is online as soon as its link is made.
 
 Not covered: calls to a machine that is still applying an update when the master comes back
 are not kept back, as they are while one master watches the whole update (above); one made
-before the machine has redialled fails as offline. And one narrow case is recorded wrongly: a
-master that stops in the instant between a machine's answer to the last piece and writing
-"applying" records "nothing changed" for a machine that goes on to update. The version the
-machine reports is right all the same, and an update sent again answers "already runs".
+before the machine has redialled fails as offline.
+
+Two Tenants on one data folder (serve and the terminal app) share the file. Each reads it
+whenever it takes the fleet, and keeps what it has itself unless the saved record started
+later, so a Tenant that takes the fleet back sees what the other did in between.
 
 ### Where to look: the Updates card (TEN-552)
 

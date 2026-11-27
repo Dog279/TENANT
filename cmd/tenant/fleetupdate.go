@@ -95,7 +95,13 @@ var versionArg = regexp.MustCompile(`^v?[0-9]{1,9}(\.[0-9]{1,9}){1,3}(-[0-9A-Za-
 // what the operator is told, in order. Unheard: it ended with nobody having
 // the machine's word on how it went (the machine went quiet, or this Tenant
 // stopped while the machine was applying it); what the machine says on a
-// later link settles it (heard). The names are the saved file's.
+// later link settles it (heard). Cut: this Tenant stopped while the archive
+// was on its way; most likely nothing changed on the machine, and if it had
+// all of it after all, its later word corrects the record the same way.
+// Earlier: the time, by the machine's own clock, on the word it already had
+// about this version when the update started (an earlier try at it); only a
+// word after that one is about this update (wordOn). The names are the saved
+// file's.
 type fleetUpdateState struct {
 	Machine  string    `json:"machine"`
 	From     string    `json:"from,omitempty"`
@@ -105,6 +111,32 @@ type fleetUpdateState struct {
 	Started  time.Time `json:"started"`
 	Finished time.Time `json:"finished,omitzero"`
 	Unheard  bool      `json:"unheard,omitempty"`
+	Cut      bool      `json:"cut,omitempty"`
+	Earlier  time.Time `json:"earlier_word,omitzero"`
+}
+
+// wordOn reports whether r is a machine's word on the update that sends it
+// version to. A machine keeps its word about the last update until the next
+// one starts its trial run, which is after it has taken the archive and let
+// its running calls finish: until then a link it makes says what became of
+// the update before. When that one was to the same version (a second try),
+// only the time on the word tells them apart. Both times are the machine's
+// own, so no two computers' clocks are compared; a machine whose clock was
+// set back past its earlier word in between has its new word taken for the
+// old one, and is then known by the version it runs.
+func wordOn(to string, earlier time.Time, r *fleet.UpdateReport) bool {
+	return r != nil && r.To == to && (earlier.IsZero() || r.At.After(earlier))
+}
+
+// aim records the version an update sends, and the time on the word the
+// machine already has about that version, if it has one (wordOn).
+func (u *fleetUpdates) aim(s *fleetUpdateState, st fleet.MachineStatus, to string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	s.To = to
+	if st.Update != nil && st.Update.To == to {
+		s.Earlier = st.Update.At
+	}
 }
 
 // Over reports whether the update has ended, one way or another.
@@ -180,16 +212,21 @@ func (u *fleetUpdates) keepRollout(st fleetRolloutState) {
 // An update that was under way has no process waiting on it any more, and is
 // not sent again from here. Its record is ended with what is known:
 //
-//   - fetching, or sending: nothing changed on the machine, which applies an
-//     update only once all of it has arrived and checked.
+//   - fetching: nothing was sent, and nothing changed on the machine.
+//   - sending: most likely nothing changed, since a machine applies an update
+//     only once all of it has arrived and checked. But "applying" is written
+//     here after the machine's answer to the last piece, and before that
+//     answer the machine hashes the archive, unpacks it and runs the new
+//     binary once: for those seconds the record says "sending" for a machine
+//     that goes on to update. So the record is Cut, and the machine's word on
+//     a later link corrects it (heard).
 //   - applying: the machine had all of it. How that went is the machine's to
 //     say, on its next link (heard); until then the record is Unheard.
 //
-// ponytail: "applying" is written after the machine's answer to the last
-// piece. A Tenant that stops between the two leaves "sending" for a machine
-// that goes on to apply it: the record then says nothing changed, and the
-// version the machine reports says otherwise. An update sent again answers
-// "already runs". Write the stage before the last piece if this ever matters.
+// It may run again when this process takes the fleet a second time: a record
+// read then replaces this process's own only where the saved one started
+// later and this process's has ended (another Tenant held the fleet in
+// between and updated the machine).
 func (u *fleetUpdates) restore() (*fleetRolloutState, time.Time, error) {
 	if u.dataDir == "" {
 		return nil, time.Time{}, nil
@@ -208,8 +245,11 @@ func (u *fleetUpdates) restore() (*fleetRolloutState, time.Time, error) {
 	var cut []*fleetUpdateState
 	u.mu.Lock()
 	for id, s := range doc.Machines {
-		if s == nil || u.runs[id] != nil { // this process's own is the newer one
+		if s == nil {
 			continue
+		}
+		if cur := u.runs[id]; cur != nil && (!cur.Over() || !s.Started.After(cur.Started)) {
+			continue // this process's own is running, or is this one, or is newer
 		}
 		s.Machine = id
 		u.runs[id] = s
@@ -224,7 +264,10 @@ func (u *fleetUpdates) restore() (*fleetRolloutState, time.Time, error) {
 		case fleetUpdApplying:
 			u.silent(s, "this Tenant stopped while the machine was applying the update: how it went is recorded when the machine links again")
 		case fleetUpdSending:
-			u.say(s, fleetUpdFailed, "this Tenant stopped while the archive was on its way to the machine: nothing changed there, and an update sent again goes on from what arrived")
+			u.mu.Lock()
+			s.Cut = true
+			u.mu.Unlock()
+			u.say(s, fleetUpdFailed, "this Tenant stopped while the archive was on its way to the machine: most likely nothing changed there, and an update sent again goes on from what arrived. Had the machine all of it, how it went is recorded when it links again")
 		default:
 			u.say(s, fleetUpdFailed, "this Tenant stopped before anything was sent to the machine: nothing changed there")
 		}
@@ -242,17 +285,20 @@ func (u *fleetUpdates) silent(s *fleetUpdateState, line string) {
 }
 
 // heard is told that machine has a link. Where its last update ended with
-// nobody having its word (Unheard), what it says now is that word: it runs
-// the version it was sent, or it says it rolled back and why. A machine that
-// is linked on what it had and says nothing of this update may yet be
-// finishing its calls before it applies it, and the record waits on.
+// nobody having its word (Unheard, or Cut), what it says now is that word: it
+// runs the version it was sent, or it says it rolled back and why. A machine
+// that is linked on what it had and has no word of this update may yet be
+// finishing its calls before it applies it, and the record waits on: what it
+// says then is its word on the update before, which is not taken for this
+// one's (wordOn).
 func (u *fleetUpdates) heard(mgr *fleet.Manager, machine string) {
 	u.mu.Lock()
 	s := u.runs[machine]
-	open := s != nil && s.Unheard && s.Over()
-	to := ""
+	open := s != nil && (s.Unheard || s.Cut) && s.Over()
+	var to string
+	var earlier time.Time
 	if open {
-		to = s.To
+		to, earlier = s.To, s.Earlier
 	}
 	u.mu.Unlock()
 	if !open {
@@ -264,9 +310,9 @@ func (u *fleetUpdates) heard(mgr *fleet.Manager, machine string) {
 	}
 	var stage, line string
 	switch r := st.Update; {
-	case r != nil && r.To == to && r.State == fleet.UpdateRolledBack:
+	case wordOn(to, earlier, r) && r.State == fleet.UpdateRolledBack:
 		stage, line = fleetUpdRolledBack, "rolled back to "+fleetQuote(firstNonEmpty(st.Reported.Version, r.From))+": "+fleetSaid(r.Reason)
-	case r != nil && r.To == to && r.State == fleet.UpdateTrial:
+	case wordOn(to, earlier, r) && r.State == fleet.UpdateTrial:
 		return // its trial run: the link after it says
 	case st.Reported.Version == to:
 		stage, line = fleetUpdDone, "back on the new version "+to
@@ -274,11 +320,11 @@ func (u *fleetUpdates) heard(mgr *fleet.Manager, machine string) {
 		return
 	}
 	u.mu.Lock()
-	if u.runs[machine] != s || !s.Unheard { // a new update, or another link got here first
+	if u.runs[machine] != s || !s.Unheard && !s.Cut { // a new update, or another link got here first
 		u.mu.Unlock()
 		return
 	}
-	s.Unheard, s.Finished = false, time.Time{}
+	s.Unheard, s.Cut, s.Finished = false, false, time.Time{}
 	u.mu.Unlock()
 	u.say(s, stage, "the machine linked again: "+line)
 }
@@ -441,9 +487,7 @@ func (u *fleetUpdates) run(mgr *fleet.Manager, st fleet.MachineStatus, o fleetUp
 		return
 	}
 	newV := selfupdate.VersionOf(rel.Tag)
-	u.mu.Lock()
-	s.To = newV
-	u.mu.Unlock()
+	u.aim(s, st, newV)
 	switch c, ok := selfupdate.Compare(newV, st.Reported.Version); {
 	case ok && c == 0:
 		fail(fleetUpdDone, "already runs "+newV+", by its own account: nothing was sent")
@@ -499,9 +543,7 @@ func (u *fleetUpdates) runBuild(ctx context.Context, mgr *fleet.Manager, st flee
 		fail(fleetUpdRefused, fleetQuote(name)+" is not a build's archive by its name: "+buildNamed+". Nothing was sent")
 		return
 	}
-	u.mu.Lock()
-	s.To = newV
-	u.mu.Unlock()
+	u.aim(s, st, newV)
 	switch has := st.Arch; {
 	case goos != st.Reported.OS || has != "" && arch != has:
 		if has == "" {
@@ -576,8 +618,10 @@ func (u *fleetUpdates) send(ctx context.Context, mgr *fleet.Manager, st fleet.Ma
 		}
 		now, ok := machineStatus(mgr, st.ID)
 		// Only a hello on a link made after the archive was taken speaks of
-		// this update.
-		if ok && now.Online && now.Since.After(applied) && now.Update != nil && now.Update.To == newV {
+		// this update, and of those only one whose word is not the one the
+		// machine already had: it may link again while its running calls
+		// finish, before it has a word of this update (wordOn).
+		if ok && now.Online && now.Since.After(applied) && wordOn(newV, s.Earlier, now.Update) {
 			r := now.Update
 			switch r.State {
 			case fleet.UpdateTrial:

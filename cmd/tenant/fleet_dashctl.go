@@ -517,9 +517,10 @@ func (d dashFleet) StopRollout() bool {
 
 // dashRollout is the rollout as the page shows it: a running machine with
 // its update's stage (read from the updates the rollout runs), one whose
-// update a restart interrupted with what that update's record says now, each
-// name through fleetName. A reason is the update's own line, which already
-// quotes what the machine said.
+// update a restart interrupted with what that update's record says now, one
+// that failed with what the machine said of that update later, each name
+// through fleetName. A reason is the update's own line, which already quotes
+// what the machine said.
 func dashRollout(st fleetRolloutState, upd interface {
 	State(machine string) (fleetUpdateState, bool)
 }) *dashboard.FleetRollout {
@@ -528,13 +529,18 @@ func dashRollout(st fleetRolloutState, upd interface {
 	for _, m := range st.Machines {
 		row := dashboard.FleetRolloutMachine{ID: m.ID, Name: fleetName(m.Name), Status: m.Status, Reason: m.Reason}
 		if upd != nil {
-			switch u, ok := upd.State(m.ID); {
+			// The update is this rollout's, not one sent to the machine since.
+			u, ok := upd.State(m.ID)
+			ok = ok && !u.Started.Before(st.Started) && (st.Finished.IsZero() || !u.Started.After(st.Finished))
+			settled := u.Stage == fleetUpdDone || u.Stage == fleetUpdRolledBack
+			switch {
 			case !ok:
 			case m.Status == fleetRollRunning:
 				row.Stage = u.Stage
-			case m.Status == fleetRollInterrupted && !u.Started.Before(st.Started):
+			case m.Status == fleetRollInterrupted, m.Status == fleetUpdFailed && settled:
 				// What became of it since: its update's record, which the
-				// machine's word on a later link completes.
+				// machine's word on a later link completes. A machine that
+				// failed by saying nothing in time may have said since.
 				row.Stage, row.Reason = u.Stage, lastLine(u.Lines)
 			}
 		}
