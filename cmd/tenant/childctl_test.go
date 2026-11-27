@@ -405,9 +405,13 @@ func TestChildInstallRefusals(t *testing.T) {
 		args []string
 		want string
 	}{
-		"a ceiling that is none":       {[]string{"install", "--dir", filepath.Join(t.TempDir(), "c"), "--ceiling", "root"}, "full, no-exec or read-only"},
-		"--system with a directory":    {[]string{"install", "--system", "--dir", filepath.Join(t.TempDir(), "c")}, "does not take --dir"},
-		"--system without elevation":   {[]string{"install", "--system"}, "needs an elevated terminal"},
+		"a ceiling that is none":     {[]string{"install", "--dir", filepath.Join(t.TempDir(), "c"), "--ceiling", "root"}, "full, no-exec or read-only"},
+		"--system with a directory":  {[]string{"install", "--system", "--dir", filepath.Join(t.TempDir(), "c")}, "does not take --dir"},
+		"--system without elevation": {[]string{"install", "--system"}, "needs an elevated terminal"},
+		// A child is the machine's own: the bare command is the same install,
+		// and says how a machine nobody may administer gets one all the same.
+		"without elevation":            {[]string{"install"}, "tenant child install needs an elevated terminal"},
+		"without elevation, the way":   {[]string{"install"}, "tenant child install --dir <directory>"},
 		"a sandbox this build has not": {[]string{"install", "--dir", filepath.Join(t.TempDir(), "c"), "--sandbox", "chroot"}, `--sandbox "chroot"`},
 		"an argument to another verb":  {[]string{"pause", "now"}, "unexpected argument"},
 		"no verb":                      {nil, "usage: tenant child"},

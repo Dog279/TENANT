@@ -122,35 +122,58 @@ not this version.
 ## 2. Enroll a machine
 
 On the master, at the command line, in the terminal app (`/fleet enroll web1`), or on the
-dashboard's Fleet page (**Add machine**: a name, and whether it runs as you or from boot):
+dashboard's Fleet page (**Add machine**: a name):
 
 ```
 tenant fleet enroll web1            # prints a one-time code (15 minutes; --ttl), and the lines to paste
 ```
 
 It prints the code alone on standard output, then (on standard error) when it expires, the
-addresses it carries, and one line for each kind of machine. For a machine with nothing on it,
-the line fetches the install script from the latest release, checks the download against the
-release's checksums, and goes straight on to `tenant child install`:
+addresses it carries, and one line for each kind of machine. **A child is the machine's own**: a
+service that runs as root (Linux, macOS) or SYSTEM (Windows) from boot. So every line is for an
+elevated terminal. For a machine with nothing on it, the line fetches the install script from
+the latest release, checks the download against the release's checksums, puts the binary where
+only an administrator can replace it (`/usr/local/bin`, `%ProgramFiles%\Tenant`), and goes
+straight on to `tenant child install`:
 
 ```
-# Linux, macOS: the child runs as you, from logon
-curl -fsSL https://github.com/OWNER/REPO/releases/latest/download/install.sh | TENANT_CHILD=user TENANT_ENROLL_CODE='<code>' sh
-# Linux, macOS: a service that runs as root from boot (sudo asks for your password)
-curl -fsSL .../install.sh | TENANT_CHILD=system TENANT_ENROLL_CODE='<code>' sudo --preserve-env=TENANT_CHILD,TENANT_ENROLL_CODE sh
-# Windows PowerShell: as you; for SYSTEM from boot, 'system' in a PowerShell run as administrator
-$env:TENANT_CHILD='user'; $env:TENANT_ENROLL_CODE='<code>'; irm https://github.com/OWNER/REPO/releases/latest/download/install.ps1 | iex
+# Linux, macOS (sudo asks for your password)
+curl -fsSL https://github.com/OWNER/REPO/releases/latest/download/install.sh | TENANT_CHILD=system TENANT_ENROLL_CODE='<code>' sudo --preserve-env=TENANT_CHILD,TENANT_ENROLL_CODE sh
+# Windows, in a PowerShell run as administrator
+$env:TENANT_CHILD='system'; $env:TENANT_ENROLL_CODE='<code>'; irm https://github.com/OWNER/REPO/releases/latest/download/install.ps1 | iex
 ```
 
-For a machine that has Tenant already:
+For a machine that has Tenant already, in a root shell or a PowerShell run as administrator:
 
 ```
 printf '%s\n' '<code>' | tenant child install            # Linux, macOS
 '<code>' | tenant child install                          # PowerShell
 ```
 
-Add `--system` (in a root shell, or a PowerShell run as administrator) for a service that runs
-as root or SYSTEM from boot; without it the child runs as your account from logon.
+The lines `tenant fleet enroll` prints end in `--system`, which older versions need and this one
+accepts. Without elevation `tenant child install` refuses (exit 2) before the code is spent.
+
+Whoever adds a machine to a fleet owns or administers it, and a child that runs as one account
+reaches only what that account may, and runs only while that account is logged on (on Linux,
+unless lingering is turned on for it). As root or SYSTEM the child is there from boot, and what
+its master can do on the machine is limited by the ceiling and the master's approvals, not by an
+account. What follows:
+
+- Every command the master runs there runs as root or SYSTEM, in that account's environment: not
+  a user's PATH, shell profile, keychain or signed-in tools. Files it writes are root's or
+  SYSTEM's.
+- **Linux: the child's browser does not start.** Chrome refuses to run as root with its own
+  sandbox on, and Tenant turns that sandbox off only inside a container, when
+  `browser_no_sandbox` says so. The other tools are not affected.
+
+**A machine nobody may administer** can still run a child as one account:
+`tenant child install --dir <directory>` keeps the child's files in that directory and installs
+a logon task, launch agent or user unit for the account that typed it. No line the master
+prints does this. A child that an older Tenant installed for an account keeps running, and
+`tenant child status`, `pause`, `resume`, `rehome` and `uninstall` still find it. To make it the
+machine's own: `tenant child uninstall`, then enroll again from an elevated terminal (a new
+enrollment is a new key).
+
 `--ceiling full|no-exec|read-only` sets what the machine lets its master do (below). The code is
 read from standard input or `$TENANT_ENROLL_CODE`, never from an argument: no line puts it on a
 command line the process list shows. A build of Tenant that names no release repository cannot
@@ -644,7 +667,7 @@ tenant fleet enroll web1                 # prints a one-time code
 
 # on the machine: stop its child first (its service, or the `tenant child run` holding it)
 TENANT_ENROLL_CODE='<code>' tenant child rehome        # or: printf '%s\n' '<code>' | tenant child rehome
-#   add --system (from an elevated shell) for the machine's own child
+#   from a root shell or a PowerShell run as administrator: the child is the machine's own
 # start its child again. With fleet.confirm: digits on the new master, then there:
 tenant fleet confirm web1                # the six digits rehome printed
 ```

@@ -406,26 +406,22 @@ func (d dashFleet) Recopy(id, from string) error {
 }
 
 // Enroll makes a code for a new machine, as `tenant fleet enroll` does, with
-// the lines to paste for the way it runs (enrollPaste). A name the fleet does
-// not take is the page's own plain words.
-func (d dashFleet) Enroll(name string, boot bool, by string) (dashboard.FleetEnrollment, error) {
+// the lines to paste on it (enrollPaste). A name the fleet does not take is
+// the page's own plain words.
+func (d dashFleet) Enroll(name, by string) (dashboard.FleetEnrollment, error) {
 	if _, err := fleetIdentity(d.ops.cfgDir); err != nil {
 		return dashboard.FleetEnrollment{}, dashboard.PlainError("No code was made: this Tenant has no fleet yet. Set it up on this page first, or run tenant fleet init in a terminal on the computer running Tenant.")
 	}
 	if addrs, err := d.ops.store.Addresses(); err == nil && len(addrs) == 0 {
 		return dashboard.FleetEnrollment{}, dashboard.PlainError("No code was made: the fleet has no address for a machine to dial. Add one in a terminal: tenant fleet address add HOST:PORT")
 	}
-	runs := "as the user"
-	if boot {
-		runs = "from boot"
-	}
-	e, err := d.ops.issueCode(name, 0, "", by+"; for a child that runs "+runs)
+	e, err := d.ops.issueCode(name, 0, "", by)
 	if err != nil {
 		return dashboard.FleetEnrollment{}, err
 	}
-	out := dashboard.FleetEnrollment{Name: fleetName(e.Name), Code: e.Code, Expires: dashTime(e.Expires), Boot: boot,
+	out := dashboard.FleetEnrollment{Name: fleetName(e.Name), Code: e.Code, Expires: dashTime(e.Expires),
 		Addresses: e.Addresses, Warning: addressWarning(e.Addresses), Digits: e.Digits}
-	lines, note := enrollPaste(e.Code, boot)
+	lines, note := enrollPaste(e.Code)
 	for _, l := range lines {
 		out.Lines = append(out.Lines, dashboard.FleetPasteLine{For: l.For, Line: l.Line})
 	}

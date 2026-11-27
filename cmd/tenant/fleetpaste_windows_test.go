@@ -35,8 +35,8 @@ function tenant { $in = @($input) -join ''; Write-Output ("args={0} stdin={1}" -
 	script := filepath.Join(t.TempDir(), "paste.ps1")
 	n := 0
 	for _, code := range pasteCodes {
-		for _, system := range []bool{false, true} {
-			lines, _ := enrollPaste(code, system)
+		for _, system := range []bool{true} { // a child is always the machine's own
+			lines, _ := enrollPaste(code)
 			for _, l := range lines {
 				if !strings.HasPrefix(l.For, "Windows") {
 					continue
@@ -70,7 +70,7 @@ function tenant { $in = @($input) -join ''; Write-Output ("args={0} stdin={1}" -
 			}
 		}
 	}
-	if n != 2*2*len(pasteCodes) {
-		t.Errorf("%d lines run, want %d", n, 2*2*len(pasteCodes))
+	if n != 2*len(pasteCodes) {
+		t.Errorf("%d lines run, want %d", n, 2*len(pasteCodes))
 	}
 }

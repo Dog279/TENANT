@@ -5,6 +5,20 @@ Releases page.
 
 ## Unreleased
 
+- **Changed: a fleet child is always the machine's own service (TEN-558).** `tenant child install` now
+  installs what `--system` did: a service that runs as root or SYSTEM from boot, with the child's
+  files in the machine's own location. It needs an elevated terminal (a root shell or sudo, a
+  PowerShell run as administrator) and refuses without one, before the code is spent.
+  `tenant fleet enroll`, `/fleet enroll` and the dashboard's **Add machine** print one set of
+  lines, all for an elevated terminal; the dashboard no longer asks "as you or from boot".
+  `--system` is still accepted, and an older master's `TENANT_CHILD=user` line installs the same
+  service. Children that an earlier version installed for an account keep running.
+  - A child that runs as one account is still possible, for a machine nobody may administer:
+    `tenant child install --dir <directory>`.
+  - Every command a master runs on a child now runs as root or SYSTEM, in that account's
+    environment, and the files it writes are that account's.
+  - **Linux:** a child that runs as root cannot start its browser: Chrome refuses to run as root
+    with its sandbox on, and Tenant turns that sandbox off only inside a container.
 - **New: send a fleet machine a build of your own (TEN-552, second part).**
   `go run ./scripts/devbuild [system/processor ...]` builds Tenant from a checkout and packs each
   target as the archive a release would carry, under a development version of its own

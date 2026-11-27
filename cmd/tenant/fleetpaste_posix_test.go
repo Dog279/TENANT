@@ -37,8 +37,8 @@ exec "$@"`,
 		}
 	}
 	for _, code := range pasteCodes {
-		for _, system := range []bool{false, true} {
-			lines, _ := enrollPaste(code, system)
+		for _, system := range []bool{true} { // a child is always the machine's own
+			lines, _ := enrollPaste(code)
 			for _, l := range lines {
 				if !strings.HasPrefix(l.For, "Linux") {
 					continue

@@ -17,15 +17,15 @@
 # To make this machine a child of a fleet in the same paste, set TENANT_CHILD:
 # the script goes straight on to `tenant child install`.
 #
-#   $env:TENANT_CHILD = 'user'; $env:TENANT_ENROLL_CODE = '<code>'; irm .../install.ps1 | iex
+#   $env:TENANT_CHILD = 'system'; $env:TENANT_ENROLL_CODE = '<code>'; irm .../install.ps1 | iex
 #
-# (`tenant fleet enroll` prints this line with the code in, for 'user' and
-# for 'system'.)
+# (`tenant fleet enroll` prints this line with the code in.)
 #
-#   TENANT_CHILD        user: the child runs as this account, from logon. system: as
-#                       SYSTEM from boot (run this from an elevated PowerShell;
-#                       tenant.exe then goes to %ProgramFiles%\Tenant, where only
-#                       administrators can replace it)
+#   TENANT_CHILD        system: the child is a service that runs as SYSTEM from
+#                       boot (run this from an elevated PowerShell; tenant.exe
+#                       then goes to %ProgramFiles%\Tenant, where only
+#                       administrators can replace it). An older master's line
+#                       says user, and gets the same
 #   TENANT_ENROLL_CODE  the one-time code `tenant fleet enroll <name>` printed on the
 #                       master. Left unset, it is asked for. It is never passed as an
 #                       argument, where the process list shows it.
@@ -36,11 +36,12 @@ $ProgressPreference = 'SilentlyContinue'
 
 $Repo = if ($env:TENANT_REPO) { $env:TENANT_REPO } else { '__REPO__' }
 $Child = $env:TENANT_CHILD
-if ($Child -and $Child -ne 'user' -and $Child -ne 'system') { throw "install.ps1: TENANT_CHILD is user or system, not $Child" }
-if ($Child -eq 'system') {
+if ($Child -and $Child -ne 'user' -and $Child -ne 'system') { throw "install.ps1: TENANT_CHILD is system, not $Child" }
+if ($Child) {
+  $Child = 'system'
   $Me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
   if (-not $Me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    throw 'install.ps1: TENANT_CHILD=system installs a service that runs as SYSTEM: run this from an elevated PowerShell'
+    throw 'install.ps1: a child is a service that runs as SYSTEM from boot: run this from a PowerShell run as administrator'
   }
 }
 $Dir = Join-Path $env:LOCALAPPDATA 'Programs\tenant'

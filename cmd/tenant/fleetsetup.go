@@ -110,42 +110,35 @@ func installScripts() string {
 	return "https://github.com/" + r + "/releases/latest/download/"
 }
 
-// enrollPaste is the lines a new machine is given to join with code: as the
-// user's own child from logon, or, with system, as a service that runs as
-// root or SYSTEM from boot. Each is one line, and the code is in it as a
-// variable's value or as standard input, never as an argument: the process
-// list and the child's command line never show it. A machine with nothing on
-// it gets install.sh or install.ps1, which go on to `tenant child install`;
-// a machine that has Tenant gets that command alone. note says, in one
-// sentence, why the first two are missing, "" when they are not.
-func enrollPaste(code string, system bool) (lines []pasteLine, note string) {
+// enrollPaste is the lines a new machine is given to join with code, as the
+// machine's own child: a service that runs as root or SYSTEM from boot, so
+// every line is for an elevated terminal. Each is one line, and the code is
+// in it as a variable's value or as standard input, never as an argument: the
+// process list and the child's command line never show it. A machine with
+// nothing on it gets install.sh or install.ps1, which go on to `tenant child
+// install`; a machine that has Tenant gets that command alone. note says, in
+// one sentence, why the first two are missing, "" when they are not.
+//
+// The lines still say TENANT_CHILD=system and --system, which this version's
+// scripts and command no longer need: a master on a development build prints
+// them for the latest release's scripts, which may be older than it.
+func enrollPaste(code string) (lines []pasteLine, note string) {
 	if len(code) > 8<<10 || !codeShape.MatchString(code) {
 		return nil, "This is not an enrollment code, so there is nothing to paste."
 	}
 	q := "'" + code + "'"
 	if base := installScripts(); base == "" {
 		note = "This build of Tenant names no release repository, so it cannot print the line that installs Tenant too: install it on the new machine first, then paste a line below."
-	} else if system {
+	} else {
 		lines = append(lines,
 			pasteLine{"Linux, macOS, nothing installed (sudo asks for your password)",
 				"curl -fsSL " + base + "install.sh | TENANT_CHILD=system TENANT_ENROLL_CODE=" + q + " sudo --preserve-env=TENANT_CHILD,TENANT_ENROLL_CODE sh"},
 			pasteLine{"Windows, nothing installed (PowerShell run as administrator)",
 				"$env:TENANT_CHILD='system'; $env:TENANT_ENROLL_CODE=" + q + "; irm " + base + "install.ps1 | iex"})
-	} else {
-		lines = append(lines,
-			pasteLine{"Linux, macOS, nothing installed",
-				"curl -fsSL " + base + "install.sh | TENANT_CHILD=user TENANT_ENROLL_CODE=" + q + " sh"},
-			pasteLine{"Windows, nothing installed (PowerShell)",
-				"$env:TENANT_CHILD='user'; $env:TENANT_ENROLL_CODE=" + q + "; irm " + base + "install.ps1 | iex"})
-	}
-	if system {
-		return append(lines,
-			pasteLine{"Linux, macOS, Tenant installed (in a root shell)", "printf '%s\\n' " + q + " | tenant child install --system"},
-			pasteLine{"Windows, Tenant installed (PowerShell run as administrator)", q + " | tenant child install --system"}), note
 	}
 	return append(lines,
-		pasteLine{"Linux, macOS, Tenant installed", "printf '%s\\n' " + q + " | tenant child install"},
-		pasteLine{"Windows, Tenant installed (PowerShell)", q + " | tenant child install"}), note
+		pasteLine{"Linux, macOS, Tenant installed (in a root shell)", "printf '%s\\n' " + q + " | tenant child install --system"},
+		pasteLine{"Windows, Tenant installed (PowerShell run as administrator)", q + " | tenant child install --system"}), note
 }
 
 // addressWarning is the plain warning for a code whose every IP address is
@@ -187,19 +180,13 @@ func enrollText(e enrolled) string {
 	if w := addressWarning(e.Addresses); w != "" {
 		b.WriteString(w + "\n")
 	}
-	for _, system := range []bool{false, true} {
-		lines, note := enrollPaste(e.Code, system)
-		if system {
-			b.WriteString("\nOr, as a service that runs as root or SYSTEM from boot:\n")
-		} else {
-			b.WriteString("\nOn the new machine, paste one line. The child runs as your account, from logon:\n")
-		}
-		if note != "" && !system {
-			b.WriteString("  " + note + "\n")
-		}
-		for _, l := range lines {
-			fmt.Fprintf(&b, "  %s:\n    %s\n", l.For, l.Line)
-		}
+	lines, note := enrollPaste(e.Code)
+	b.WriteString("\nOn the new machine, paste one line in an elevated terminal. The child is a service that runs as root or SYSTEM, from boot:\n")
+	if note != "" {
+		b.WriteString("  " + note + "\n")
+	}
+	for _, l := range lines {
+		fmt.Fprintf(&b, "  %s:\n    %s\n", l.For, l.Line)
 	}
 	if e.Digits {
 		fmt.Fprintf(&b, "\nIt prints six digits and waits. Then, here:  tenant fleet confirm %s", fleetName(e.Name))

@@ -93,11 +93,11 @@ type FleetControl interface {
 	// did.
 	Recover(machine, was string, identity []byte) (string, error)
 	// Enroll makes the one-time code that adds a machine as name (`tenant
-	// fleet enroll`), with the lines to paste on it: boot for a child that
-	// runs as root or SYSTEM from boot, else as the user. by says who asked,
+	// fleet enroll`), with the lines to paste on it: a child is the machine's
+	// own service, which runs as root or SYSTEM from boot. by says who asked,
 	// for the Security record, which never holds the code. The dashboard calls
 	// it from one place, for a signed-in browser (handleFleetAdd).
-	Enroll(name string, boot bool, by string) (FleetEnrollment, error)
+	Enroll(name, by string) (FleetEnrollment, error)
 
 	// The fleet's defaults, its groups, changes to many machines and the
 	// rollout (TEN-546). The dashboard calls each from a signed-in browser
@@ -192,8 +192,7 @@ type FleetBulkResult struct {
 // not in a flash, a URL, the page's state or a log.
 type FleetEnrollment struct {
 	Name, Code string
-	Expires    string // when the code stops working, as the page shows a time
-	Boot       bool
+	Expires    string   // when the code stops working, as the page shows a time
 	Addresses  []string // what the code tells the machine to dial
 	// Digits: the machine will wait for its six digits to be typed
 	// (fleet.confirm: digits). False: the code confirms it (TEN-553).
@@ -914,7 +913,7 @@ func (s *Server) handleFleetInit(w http.ResponseWriter, r *http.Request) {
 // takes 63 characters at most (the same check `tenant fleet enroll` makes).
 const maxFleetName = 63
 
-// handleFleetAdd is POST /fleet/add (name, runs=user|boot): Add machine. It
+// handleFleetAdd is POST /fleet/add (name): Add machine. It
 // makes the one-time code for a new machine and answers with the lines to
 // paste on it, in this response and nowhere else: never a redirect, so the
 // code is in no URL, no flash and no browser history entry, and it is not
@@ -937,16 +936,12 @@ func (s *Server) handleFleetAdd(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fleetAddSignIn, http.StatusForbidden)
 		return
 	}
-	name, runs := strings.TrimSpace(r.FormValue("name")), r.FormValue("runs")
-	switch {
-	case name == "" || len(name) > maxFleetName:
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" || len(name) > maxFleetName {
 		s.fleetDone(w, r, "", "", fleetAddName)
 		return
-	case runs != "user" && runs != "boot":
-		s.fleetDone(w, r, "", "", "Choose whether it runs as you or from boot. No code was made.")
-		return
 	}
-	e, err := s.fleet.Enroll(name, runs == "boot", "dashboard session "+sessionTag(session)+" from "+r.RemoteAddr)
+	e, err := s.fleet.Enroll(name, "dashboard session "+sessionTag(session)+" from "+r.RemoteAddr)
 	if err != nil {
 		s.fleetDone(w, r, "", "", s.flashFor(r.Context(), "fleet add", err, fleetAddName))
 		return

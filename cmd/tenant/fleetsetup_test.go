@@ -27,21 +27,13 @@ var pasteCodes = []string{
 func TestEnrollPaste(t *testing.T) {
 	t.Setenv("TENANT_UPDATE_REPO", "acme/tenant")
 	const code = "tntfleet1_abc-_Z9"
-	user, note := enrollPaste(code, false)
+	// A child is the machine's own, from boot: every line is for an elevated
+	// terminal, and none installs one that runs as the account that pastes it.
+	boot, note := enrollPaste(code)
 	if note != "" {
 		t.Errorf("a note with a repository: %q", note)
 	}
 	want := []pasteLine{
-		{"Linux, macOS, nothing installed", "curl -fsSL https://github.com/acme/tenant/releases/latest/download/install.sh | TENANT_CHILD=user TENANT_ENROLL_CODE='tntfleet1_abc-_Z9' sh"},
-		{"Windows, nothing installed (PowerShell)", "$env:TENANT_CHILD='user'; $env:TENANT_ENROLL_CODE='tntfleet1_abc-_Z9'; irm https://github.com/acme/tenant/releases/latest/download/install.ps1 | iex"},
-		{"Linux, macOS, Tenant installed", "printf '%s\\n' 'tntfleet1_abc-_Z9' | tenant child install"},
-		{"Windows, Tenant installed (PowerShell)", "'tntfleet1_abc-_Z9' | tenant child install"},
-	}
-	if !slices.Equal(user, want) {
-		t.Errorf("as the user:\n got %q\nwant %q", user, want)
-	}
-	boot, _ := enrollPaste(code, true)
-	want = []pasteLine{
 		{"Linux, macOS, nothing installed (sudo asks for your password)", "curl -fsSL https://github.com/acme/tenant/releases/latest/download/install.sh | TENANT_CHILD=system TENANT_ENROLL_CODE='tntfleet1_abc-_Z9' sudo --preserve-env=TENANT_CHILD,TENANT_ENROLL_CODE sh"},
 		{"Windows, nothing installed (PowerShell run as administrator)", "$env:TENANT_CHILD='system'; $env:TENANT_ENROLL_CODE='tntfleet1_abc-_Z9'; irm https://github.com/acme/tenant/releases/latest/download/install.ps1 | iex"},
 		{"Linux, macOS, Tenant installed (in a root shell)", "printf '%s\\n' 'tntfleet1_abc-_Z9' | tenant child install --system"},
@@ -50,8 +42,8 @@ func TestEnrollPaste(t *testing.T) {
 	if !slices.Equal(boot, want) {
 		t.Errorf("from boot:\n got %q\nwant %q", boot, want)
 	}
-	for _, l := range append(user, boot...) {
-		if strings.ContainsAny(l.Line, "\r\n") || strings.Count(l.Line, code) != 1 {
+	for _, l := range boot {
+		if strings.ContainsAny(l.Line, "\r\n") || strings.Count(l.Line, code) != 1 || strings.Contains(l.Line, "user") {
 			t.Errorf("%q is not one line with the code once", l.Line)
 		}
 		// Before the code: a variable being set, or printf/nothing feeding a pipe.
@@ -69,14 +61,14 @@ func TestEnrollPasteWithoutARepository(t *testing.T) {
 	for _, repo := range []string{"", "acme", "acme/tenant/x", "acme/tenant; rm -rf ~", "acme/te'nant", "../tenant", "acme/..", "-acme/tenant", "acme/ten ant"} {
 		t.Setenv("TENANT_UPDATE_REPO", repo)
 		// "" leaves version.Repo, which a test build leaves empty.
-		lines, note := enrollPaste(pasteCodes[0], false)
+		lines, note := enrollPaste(pasteCodes[0])
 		if !strings.Contains(note, "names no release repository") || len(lines) != 2 || !strings.Contains(lines[0].Line, "tenant child install") {
 			t.Errorf("repository %q: %q, %q", repo, note, lines)
 		}
 	}
 	t.Setenv("TENANT_UPDATE_REPO", "acme/tenant")
 	for _, bad := range []string{"", "tnt1_abc", "tntfleet1_", "tntfleet1_a'b", "tntfleet1_a b", "tntfleet1_a\nb", "tntfleet1_a$b", "tntfleet1_" + strings.Repeat("a", 9000)} {
-		if lines, note := enrollPaste(bad, true); lines != nil || note == "" {
+		if lines, note := enrollPaste(bad); lines != nil || note == "" {
 			t.Errorf("%q gave %q", bad, lines)
 		}
 	}
@@ -165,17 +157,21 @@ func TestFleetEnrollPrintsEveryLine(t *testing.T) {
 	l.must("init", "--listen", "127.0.0.1:0", "--address", "10.0.0.1:9777")
 	var code string
 	stderr := captureStderr(t, func() { code = strings.TrimSpace(l.must("enroll", "web1")) })
-	for _, system := range []bool{false, true} {
-		lines, _ := enrollPaste(code, system)
-		for _, ln := range lines {
-			if !strings.Contains(stderr, "    "+ln.Line+"\n") {
-				t.Errorf("the command does not print %q:\n%s", ln.Line, stderr)
-			}
+	lines, _ := enrollPaste(code)
+	for _, ln := range lines {
+		if !strings.Contains(stderr, "    "+ln.Line+"\n") {
+			t.Errorf("the command does not print %q:\n%s", ln.Line, stderr)
 		}
 	}
-	for _, want := range []string{"expires in 15m0s (at ", "The machine dials 10.0.0.1:9777", "cannot dial these", "as root or SYSTEM from boot", "tenant fleet confirm web1"} {
+	for _, want := range []string{"expires in 15m0s (at ", "The machine dials 10.0.0.1:9777", "cannot dial these", "in an elevated terminal", "runs as root or SYSTEM, from boot", "tenant fleet confirm web1"} {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("the command does not say %q:\n%s", want, stderr)
+		}
+	}
+	// A child is the machine's own: nothing offers one that runs as an account.
+	for _, not := range []string{"from logon", "TENANT_CHILD=user", "TENANT_CHILD='user'"} {
+		if strings.Contains(stderr, not) {
+			t.Errorf("the command still says %q:\n%s", not, stderr)
 		}
 	}
 
@@ -185,7 +181,7 @@ func TestFleetEnrollPrintsEveryLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	tcode, rest, _ := strings.Cut(got, "\n\n")
-	lines, _ := enrollPaste(tcode, true)
+	lines, _ = enrollPaste(tcode)
 	if !codeShape.MatchString(tcode) || tcode == code || !strings.Contains(rest, lines[0].Line) || !strings.Contains(rest, "/fleet confirm web2") || strings.Contains(rest, "tenant fleet confirm") {
 		t.Errorf("/fleet enroll:\n%s", got)
 	}
@@ -245,7 +241,7 @@ func TestOnlyTheOperatorMakesACode(t *testing.T) {
 				if call, ok := n.(*ast.CallExpr); ok {
 					if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
 						switch s := sel.Sel.Name; {
-						case s == "CreateEnrollment", s == "issueCode", s == "Enroll" && len(call.Args) == 3 && !strings.HasPrefix(rel, "internal/fleet/"),
+						case s == "CreateEnrollment", s == "issueCode", s == "Enroll" && len(call.Args) == 2 && !strings.HasPrefix(rel, "internal/fleet/"),
 							s == "Enroll" && len(call.Args) == 1 && strings.HasPrefix(rel, "internal/tui/"):
 							calls[s] = append(calls[s], site{rel, name})
 						}
@@ -269,7 +265,7 @@ func TestOnlyTheOperatorMakesACode(t *testing.T) {
 	if want := []site{{"cmd/tenant/fleet_dashctl.go", "dashFleet.Enroll"}, {"cmd/tenant/fleetctl.go", "fleetEnrollCmd"}, {"cmd/tenant/fleettuictl.go", "fleetTUIControl.Enroll"}}; !slices.Equal(sorted(calls["issueCode"]), want) {
 		t.Errorf("a code is made from %v, want only the command line, the terminal and the dashboard's Fleet page: %v", calls["issueCode"], want)
 	}
-	// FleetControl.Enroll (three arguments) in the dashboard, and the
+	// FleetControl.Enroll (two arguments) in the dashboard, and the
 	// terminal's (one) in /fleet.
 	var dash, tui []site
 	for _, s := range calls["Enroll"] {

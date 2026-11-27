@@ -21,15 +21,15 @@ func TestFleetDashEnrollRefusals(t *testing.T) {
 	l := newFleetLab(t)
 	d := newDashFleet(l.c, l.saved(), &l.stgMu)
 	var pe dashboard.PlainError
-	if _, err := d.Enroll("web1", false, "s"); !errors.As(err, &pe) || !strings.Contains(err.Error(), "tenant fleet init") {
+	if _, err := d.Enroll("web1", "s"); !errors.As(err, &pe) || !strings.Contains(err.Error(), "tenant fleet init") {
 		t.Errorf("no fleet: %v", err)
 	}
 	l.must("init", "--listen", "127.0.0.1:0", "--address", "10.0.0.1:9777")
-	if _, err := d.Enroll("web 1", true, "s"); err == nil || errors.As(err, &pe) {
+	if _, err := d.Enroll("web 1", "s"); err == nil || errors.As(err, &pe) {
 		t.Errorf("a name that is not one: %v", err)
 	}
 	l.must("address", "remove", "10.0.0.1:9777")
-	if _, err := d.Enroll("web1", false, "s"); !errors.As(err, &pe) || !strings.Contains(err.Error(), "tenant fleet address add") {
+	if _, err := d.Enroll("web1", "s"); !errors.As(err, &pe) || !strings.Contains(err.Error(), "tenant fleet address add") {
 		t.Errorf("no address: %v", err)
 	}
 }
@@ -42,7 +42,7 @@ func TestFleetDashEnrollRefusals(t *testing.T) {
 func TestFleetDashAddMachine(t *testing.T) {
 	t.Setenv("TENANT_UPDATE_REPO", "acme/tenant")
 	d := newFleetDash(t, settings{})
-	form := url.Values{"name": {"web7"}, "runs": {"user"}}
+	form := url.Values{"name": {"web7"}}
 
 	// Refusals first: the API key, alone or with the page's Origin.
 	for _, set := range []func(*http.Request){
@@ -68,7 +68,7 @@ func TestFleetDashAddMachine(t *testing.T) {
 	if code == "" {
 		t.Fatalf("no code in the answer:\n%s", a.body)
 	}
-	lines, _ := enrollPaste(code, false)
+	lines, _ := enrollPaste(code)
 	for _, l := range lines {
 		if !strings.Contains(a.body, pageText(l.Line)) {
 			t.Errorf("the answer lacks %q", l.Line)
@@ -78,7 +78,7 @@ func TestFleetDashAddMachine(t *testing.T) {
 		t.Error("the answer has no warning about addresses only this site can dial")
 	}
 	recs := d.records(catalog.FleetMachineChanged)
-	if !hasRecord(recs, "operator@dashboard", "name=web7", "change=code issued", "asked by dashboard session ", "for a child that runs as the user") {
+	if !hasRecord(recs, "operator@dashboard", "name=web7", "change=code issued", "asked by dashboard session ") {
 		t.Errorf("no Security record of the code: %q", recs)
 	}
 	d.ev.mu.Lock()
