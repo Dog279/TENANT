@@ -246,7 +246,8 @@ func TestUpdateFlow(t *testing.T) {
 			out: "Update 1.0.0 -> 9.9.9? A backup goes to", swapped: true, prev: true, backup: true, restarts: []bool{false}},
 		{name: "declined at the prompt", running: "1.0.0", hub: "9.9.9", stdin: "\n", code: 2, errText: "not confirmed"},
 		{name: "no service: the operator restarts", running: "1.0.0", opts: updateOpts{yes: true, now: true}, noService: true,
-			out: "restart Tenant to finish the update", swapped: true, prev: true, backup: true},
+			out:     "updated 1.0.0 -> 9.9.9; restart Tenant to finish the update. Still running 1.0.0:\n  pid 4312\nScheduled tasks that start this binary",
+			swapped: true, prev: true, backup: true},
 		{name: "checksum mismatch", running: "1.0.0", hub: "9.9.9", opts: updateOpts{yes: true},
 			prep: func(_ *testing.T, f *fakeRelease) { f.badSums = true }, code: 1, errText: "sha256 mismatch"},
 		{name: "smoke failure", running: "1.0.0", hub: "9.9.9", opts: updateOpts{yes: true},
@@ -274,6 +275,15 @@ func TestUpdateFlow(t *testing.T) {
 			u := in.env(f, tc.stdin)
 			if tc.noService {
 				u.restart = nil
+				wasRunning, wasStarters := runningTenant, startersOf
+				t.Cleanup(func() { runningTenant, startersOf = wasRunning, wasStarters })
+				runningTenant = func(exe string) []string {
+					if b, _ := os.ReadFile(exe); string(b) != "old binary" {
+						t.Error("what runs the old binary was asked after the swap, when that file has another name")
+					}
+					return []string{"pid 4312"}
+				}
+				startersOf = func(context.Context, string) []string { return []string{`\TenantServe  serve --hidden`} }
 			}
 			err := runUpdate(context.Background(), u, tc.opts)
 			if exitCodeOf(err) != tc.code {

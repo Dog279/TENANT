@@ -51,8 +51,32 @@ func TestMain(m *testing.M) {
 	default:
 		anchorIfAsked() // Windows: this binary run as a victim's console anchor
 		code := m.Run()
-		cleanupMachine()
-		os.Exit(code)
+		// After the tests each step says so first, and neither can wait for
+		// ever: a CI run sat 22 minutes after PASS, and its log could not say
+		// in which (TEN-557).
+		fmt.Fprintln(os.Stderr, "procprotect tests: cleaning up")
+		if !within(time.Minute, cleanupMachine) {
+			fmt.Fprintln(os.Stderr, "procprotect tests: cleaning up did not finish in a minute; what the tests wrote outside their own processes may still be there")
+			code = 1
+		}
+		fmt.Fprintln(os.Stderr, "procprotect tests: exiting")
+		exit(code)
+	}
+}
+
+// within runs f and says whether it returned in d. An f that did not is left
+// running.
+func within(d time.Duration, f func()) bool {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f()
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
 	}
 }
 
@@ -149,6 +173,14 @@ func attackMain() {
 // with the test.
 func startVictim(t *testing.T, kind string, env ...string) victimInfo {
 	t.Helper()
+	v, _, _ := startVictimCmd(t, kind, env...)
+	return v
+}
+
+// startVictimCmd is startVictim, and gives the victim's command and its
+// input too: a victim whose input closes returns from its main.
+func startVictimCmd(t *testing.T, kind string, env ...string) (victimInfo, *exec.Cmd, io.Closer) {
+	t.Helper()
 	c := exec.Command(os.Args[0])
 	c.Env = append(os.Environ(), envHelper+"=victim", envKind+"="+kind, envMarker+"=ten535-"+kind+"-"+t.Name())
 	c.Env = append(c.Env, env...)
@@ -180,7 +212,32 @@ func startVictim(t *testing.T, kind string, env ...string) victimInfo {
 	if err := json.Unmarshal([]byte(line), &v); err != nil {
 		t.Fatalf("the %s victim said %q: %v", kind, line, err)
 	}
-	return v
+	return v, c, stdin
+}
+
+// TestAProtectedProcessExitsByItself: Protect changes who may open the
+// process, and nothing about how it ends. A victim whose input closes returns
+// from its main, and the system's own exit must then finish: on Windows that
+// is ExitProcess, which waits for locks every thread shares and runs every
+// library's detach code. The other tests end their victims from outside, and
+// this test binary ends itself without that code (exit), so a protected
+// process that could not exit would show here and nowhere else.
+func TestAProtectedProcessExitsByItself(t *testing.T) {
+	if Disabled {
+		t.Skip("built with -tags debugattach: the controls are compiled out")
+	}
+	v, c, stdin := startVictimCmd(t, "protected")
+	if m := v.Report.Missing(); len(m) > 0 {
+		t.Fatalf("the protected victim reports controls not in force: %+v", m)
+	}
+	stdin.Close()
+	var err error
+	if !within(30*time.Second, func() { err = c.Wait() }) {
+		t.Fatal("a protected process whose main returned had not exited 30s later")
+	}
+	if err != nil {
+		t.Errorf("a protected process whose main returned: %v, want exit status 0", err)
+	}
 }
 
 // attack runs every attempt against v from a second process.

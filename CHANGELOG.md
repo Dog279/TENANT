@@ -37,6 +37,31 @@ Releases page.
   seconds for the embedder to say its dimension, and every wiki embedding request has a limit
   (3 minutes for a note, 30 seconds for a search), after which the tool says the embedder did
   not answer.
+  - **"embeddings OK" now means an embedding came back.** The launch line used to come from
+    the embedder's model list, which a stuck embedder still answers. Tenant now asks for one
+    small embedding at start and says `embeddings OK` with how long it took, `embeddings SLOW`
+    when that was more than 5 seconds, or `EMBEDDINGS NOT ANSWERING` after 30 seconds. Start-up
+    does not wait for it. `tenant doctor`'s embedding checks have the same 30-second limit; it
+    used to wait for ever.
+  - **New alert: `embedder-silent`.** While it runs, Tenant asks again every five minutes. An
+    embedder that has given no embedding for five minutes is an error in the system log
+    (system 3110, again every 30 minutes while it lasts) and fires the new built-in alert rule,
+    so you hear of it in minutes and not at the next restart. System 1110 says when it answers
+    again. Asking keeps the embedding model loaded while Tenant runs. To turn the alert off:
+    `tenant logs alerts disable embedder-silent`.
+- **Fixed (Windows): `tenant update` failed at its backup while serve was running (TEN-556).**
+  A master holds the fleet's lock file for as long as it runs, Windows does not let another
+  program read a file that is locked, and the backup every update starts with stopped there:
+  `fleet.holder.lock: The process cannot access the file because another process has locked a
+  portion of the file`. `tenant backup create` beside a running master failed the same way. A
+  backup now leaves out empty lock files: they hold nothing, and Tenant makes them again.
+  - **An update that restarts nothing says what still runs the old version.** When Tenant was
+    not started by `tenant service` (a scheduled task or unit of your own, a terminal), the
+    update used to end with "restart Tenant to finish the update". It now lists the processes
+    that run the old binary and, on Windows, the scheduled tasks that start it, with the two
+    commands that restart a task. It still restarts none of them itself.
+  - **`tenant update` on a development build says what is running and what to type.** The
+    refusal now names the build and `tenant update --force [--version vX.Y.Z]`.
 - **A fleet machine joins with its one-time code alone (TEN-553).** Until now a machine that
   enrolled showed six digits and waited for a person to type them on the master (and, from
   another computer, to give the dashboard's sign-in key again). Now a code that is valid,

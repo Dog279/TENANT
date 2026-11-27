@@ -423,6 +423,16 @@ func planSources(cfg, data string, opts Options, encrypted bool) ([]source, []Sk
 				}
 				return nil
 			}
+			// An empty lock file holds nothing, and one a running Tenant holds
+			// cannot be read on Windows: the fleet's, under serve, failed the
+			// backup every update starts with (TEN-556). Whoever needs one
+			// makes it again. A lock file with something in it (a package
+			// manager's, in a work folder) is a file like any other.
+			if strings.HasSuffix(d.Name(), ".lock") {
+				if info, err := d.Info(); err == nil && info.Size() == 0 {
+					return nil
+				}
+			}
 			if reason, skip := builtinSkip(root, rel, d.Name()); skip {
 				if reason != "" {
 					skipped = append(skipped, Skipped{Path: entryPath, Reason: reason})

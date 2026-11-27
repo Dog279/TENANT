@@ -150,7 +150,10 @@ func healthCheck(ctx context.Context, c *commonFlags) []string {
 	case c.embedEndpoint == "":
 		lines = append(lines, "embeddings: in-process hash (no --embed-endpoint) — semantic recall degraded")
 	case reachable(ctx, c.embedEndpoint+"/v1/models"):
-		lines = append(lines, "embeddings OK: "+c.embedModel+" @ "+c.embedEndpoint)
+		// Up is not answering: an embedder stuck on a request still lists its
+		// models (TEN-555). "embeddings OK" is said by the embedder's watch,
+		// once a real embedding came back (embedwatch.go).
+		lines = append(lines, "embeddings: "+c.embedModel+" @ "+c.embedEndpoint+" is up; asking it for an embedding")
 	default:
 		lines = append(lines, "EMBEDDINGS UNREACHABLE: "+c.embedEndpoint+" — memory/wiki search degraded")
 	}

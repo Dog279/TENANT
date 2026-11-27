@@ -1244,6 +1244,7 @@ disables them:
 | `sandbox-unattended` | `provider:sandbox id:2001,2002 data.surface:cron-*`: a refusal, or in a dry run an unconfined run, on a cron surface, where nobody could be asked (TEN-347) |
 | `audit-failures` | `tag:audit.failure`, 5 within 10 minutes |
 | `logbook-full` | `provider:logbook id:2004 data.percent>=95` |
+| `embedder-silent` | `provider:system id:3110`: the embedder has given no embedding for five minutes, so memory recall and wiki search are failing (TEN-555). Tenant asks it for one every five minutes while it runs |
 | `critical` | `level:critical` |
 
 `logs.alerts` in `config.json` is read at every evaluation, so an edit

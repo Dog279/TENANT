@@ -70,6 +70,28 @@ func cleanupMachine() {
 	_, _, _ = windows.NewLazySystemDLL("wer.dll").NewProc("WerRemoveExcludedApplication").Call(uintptr(unsafe.Pointer(name)), 0)
 }
 
+// exit ends the test process the way Task Manager would, not through
+// ExitProcess: that first waits for locks every thread of the process shares
+// (the loader's, the heap's) and then runs every library's detach code, and
+// these tests do things to their own process that a program does not. A CI
+// run sat 22 minutes there after PASS (TEN-557). Nothing is lost: a Go
+// program's output is written by now, and the profiles are (testing's
+// m.Run). That a protected process exits the ordinary way is a test of its
+// own, TestAProtectedProcessExitsByItself.
+func exit(code int) {
+	_ = windows.TerminateProcess(windows.CurrentProcess(), uint32(code))
+	os.Exit(code) // only if that was refused
+}
+
+// neverRuns is how the tests start a thread they mean to end with
+// TerminateThread: suspended, and never resumed. A thread that runs starts
+// inside ntdll, holding the loader's lock and taking memory from the process
+// heap, and one ended in that moment leaves both locked for good: the process
+// can then start no thread, load no library, and not exit (TEN-557; about
+// 10 ms after CreateThread that moment is over on an idle machine, and not
+// always on a busy one). A thread that never ran holds nothing.
+const neverRuns = windows.CREATE_SUSPENDED
+
 // victimReady makes the Go runtime create more threads, after Protect: each
 // goroutine below keeps an operating-system thread to itself for good.
 func victimReady() {
@@ -868,7 +890,7 @@ func TestNowReadsTheStateAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	sa := windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}
-	th, _, cerr := kernel32.NewProc("CreateThread").Call(uintptr(unsafe.Pointer(&sa)), 0, kernel32.NewProc("Sleep").Addr(), uintptr(windows.INFINITE), 0, 0)
+	th, _, cerr := kernel32.NewProc("CreateThread").Call(uintptr(unsafe.Pointer(&sa)), 0, kernel32.NewProc("Sleep").Addr(), uintptr(windows.INFINITE), neverRuns, 0)
 	if th == 0 {
 		t.Fatal(cerr)
 	}

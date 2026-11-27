@@ -133,6 +133,8 @@ func TestBuiltinRules(t *testing.T) {
 		{"sandbox-unattended", []event.Event{sandbox("cron-shell")}, []event.Event{sandbox("discord")}},
 		{"audit-failures", slices.Repeat([]event.Event{denied}, 5), slices.Repeat([]event.Event{denied}, 4)},
 		{"logbook-full", []event.Event{full(96)}, []event.Event{full(80)}},
+		{"embedder-silent", []event.Event{{Provider: "system", ID: 3110, Level: event.Error, Msg: "The embedder has not answered for 5m30s"}},
+			[]event.Event{{Provider: "system", ID: 1110, Level: event.Info, Msg: "The embedder answers again"}}},
 		{"critical", []event.Event{{Provider: "discord", ID: 3001, Level: event.Critical, Msg: "boom"}},
 			[]event.Event{{Provider: "discord", ID: 3001, Level: event.Error, Msg: "boom"}}},
 	} {
@@ -327,7 +329,7 @@ func TestCompile(t *testing.T) {
 			t.Errorf("critical merged into %+v", r.Spec)
 		}
 	}
-	if want := []string{"unexpected-exit", "sandbox-unattended", "logbook-full", "critical", "mine"}; !slices.Equal(names, want) {
+	if want := []string{"unexpected-exit", "sandbox-unattended", "logbook-full", "embedder-silent", "critical", "mine"}; !slices.Equal(names, want) {
 		t.Errorf("rules %v, want %v", names, want)
 	}
 	if len(bad) != 2 || bad["mine"] == nil || bad["broken"] == nil {

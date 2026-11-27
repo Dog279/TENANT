@@ -57,9 +57,9 @@ func victimBefore() {
 		}
 	}
 	// Threads Windows starts and Go knows nothing of: each sleeps for ever.
-	sleeper := func() windows.Handle {
+	sleeper := func(how uintptr) windows.Handle {
 		h, _, err := kernel32.NewProc("CreateThread").Call(0, 64<<10, kernel32.NewProc("Sleep").Addr(), uintptr(windows.INFINITE),
-			0x10000 /* STACK_SIZE_PARAM_IS_A_RESERVATION */, 0)
+			0x10000|how /* STACK_SIZE_PARAM_IS_A_RESERVATION, and how it starts */, 0)
 		if h == 0 {
 			panic(err)
 		}
@@ -67,7 +67,7 @@ func victimBefore() {
 	}
 	if n, _ := strconv.Atoi(os.Getenv(envThreads)); n > 0 {
 		for range n {
-			windows.CloseHandle(sleeper())
+			windows.CloseHandle(sleeper(0))
 		}
 	}
 	if os.Getenv(envEndWalked) == "1" {
@@ -75,7 +75,7 @@ func victimBefore() {
 		// program with a handle from before Protect ends a thread the moment
 		// Protect has handled it, so that a count of the threads handled
 		// agrees with the system's while another thread is hidden.
-		h := sleeper() // full access, from before Protect, as that program's was
+		h := sleeper(neverRuns) // full access, from before Protect, as that program's was
 		go func() {
 			defer windows.CloseHandle(h)
 			for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); {

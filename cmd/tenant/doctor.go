@@ -696,7 +696,16 @@ func checkEmbedEndpoint(ctx context.Context, e *doctorEnv) checkResult {
 		return checkResult{Status: statusFail, Detail: "embedder role unresolved: " + err.Error(),
 			Fix: "set --embed-endpoint/--embed-model, or --backend echo"}
 	}
-	v, err := emb.Embed(ctx, []string{"doctor probe"})
+	// With a limit: an embedder that takes the connection and never answers
+	// held doctor here for good (TEN-555).
+	pctx, cancel := context.WithTimeout(ctx, embedWatchTimeout)
+	defer cancel()
+	v, err := emb.Embed(pctx, []string{"doctor probe"})
+	if errors.Is(pctx.Err(), context.DeadlineExceeded) {
+		return checkResult{Status: statusFail,
+			Detail: "the embedder took the connection and returned no embedding in " + embedWatchTimeout.String(),
+			Fix:    "restart the embedding server (Ollama: restart it, then check `ollama ps`)"}
+	}
 	if err != nil || len(v) != 1 || len(v[0]) == 0 {
 		return checkResult{Status: statusFail,
 			Detail: fmt.Sprintf("embedder produced no vector: %v", err),
@@ -713,7 +722,9 @@ func checkEmbedDim(ctx context.Context, e *doctorEnv) checkResult {
 	if err != nil {
 		return checkResult{Status: statusSkip, Detail: "embedder unresolved (see embedding endpoint check)"}
 	}
-	v, err := emb.Embed(ctx, []string{"dim probe"})
+	pctx, cancel := context.WithTimeout(ctx, embedWatchTimeout)
+	defer cancel()
+	v, err := emb.Embed(pctx, []string{"dim probe"})
 	if err != nil || len(v) != 1 {
 		return checkResult{Status: statusSkip, Detail: "could not get live embedder dim"}
 	}

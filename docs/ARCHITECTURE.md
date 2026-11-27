@@ -24,14 +24,14 @@ includes comments and blank lines. “Plugin capability packages” counts immed
 with `go run ./scripts/docfacts -write docs/ARCHITECTURE.md`; CI checks this
 block for drift.
 
-<!-- docfacts:generated:start; date=2026-11-26; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
+<!-- docfacts:generated:start; date=2026-11-27; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
 | Go packages | 108 |
-| Go files | 1,630 |
-| Test files | 829 |
-| Production Go LOC | 216,126 |
-| Test Go LOC | 188,685 |
+| Go files | 1,638 |
+| Test files | 833 |
+| Production Go LOC | 216,537 |
+| Test Go LOC | 189,132 |
 | Go modules | 1 |
 | Plugin capability packages | 15 |
 | Version | `0.0.1` |
@@ -1675,6 +1675,12 @@ the feed with their status ("generation OK …", "EMBEDDINGS UNREACHABLE
 … degraded"). So a first run self-installs and a misconfigured
 endpoint is obvious in-UI, not a cryptic crash. (This is also why a
 down embedder no longer kills launch — see §5.12c wiki resilience.)
+An embedder that is up says only "is up; asking it for an embedding"
+there: "embeddings OK" (or SLOW, or NOT ANSWERING after 30 s) comes
+from the embedder's watch (`embedwatch.go`, TEN-555), which asks for a
+real embedding beside start-up and again every five minutes, and
+writes system 3110 (the `embedder-silent` alert) when none has come
+back for five.
 
 **Background self-improvement in the feed:** the TUI also runs the
 distillation scheduler in-process (default on, `--distill-every 5m` —
