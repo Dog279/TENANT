@@ -7,7 +7,12 @@ package main
 // and confirmed; the page is the real dashboard over real HTTP.
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -162,4 +167,130 @@ func fleetRolloutOf(t *testing.T) *fleetRollout {
 		t.Fatal("no rollout")
 	}
 	return ro
+}
+
+// A master that starts again takes up what the one before it saved
+// (TEN-552). This is the real hub (startFleetHub) started a second time on
+// the same dirs and port, and the real dashboard over it:
+//
+//   - a saved file that does not read does not stop it: it holds the fleet,
+//     and shows no rollout;
+//   - a rollout it finds in the middle is closed where it stood, the operator
+//     is told, and the Fleet page says which machine was being updated, which
+//     never started, and that the one that took its update has not redialled;
+//   - when that machine links again (a real child, saying what its own
+//     child-update.json holds), its word is on the page.
+func TestFleetDashRolloutAfterAMasterRestart(t *testing.T) {
+	d := newFleetDash(t, settings{})
+	a := d.l.enroll("web1", fleet.Reported{})
+	d.l.confirm("web1", a)
+	b := d.l.enroll("web2", fleet.Reported{})
+	d.l.confirm("web2", b)
+	d.l.sync()
+	// The master starts again on the port it had, so that a machine finds it.
+	addr := d.mgr.Addr().String()
+	if err := persistLaunchConfig(d.l.cfg, nil, func(lc *launchConfig) { lc.Fleet.Listen = addr }); err != nil {
+		t.Fatal(err)
+	}
+	restart := func(saved string) {
+		t.Helper()
+		d.l.stop()
+		if err := os.MkdirAll(d.l.data, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d.l.data, fleetSavedName), []byte(saved), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		d.l.stop = startFleetHub(context.Background(), d.l.c, "serve", d.l.broker, d.l.tell, slog.Default())
+		eventually(t, "the master holds the fleet again", func() bool { return fleetManager() != nil })
+	}
+
+	restart(`{"saved":"2026-11-26T10:00:00Z","machines":{"` + a.id + `":{"machine":"` + a.id + `","sta`)
+	if _, ok := fleetRolloutOf(t).State(); ok {
+		t.Error("a rollout came out of a file that does not read")
+	}
+	if page := d.page("/fleet"); strings.Contains(page, "Rollout <span") || !strings.Contains(page, `<td class="dim" colspan="3">none sent from this Tenant</td>`) {
+		t.Error("the page after a saved file that does not read: a rollout, or no Updates card")
+	}
+
+	began, saved := time.Now().Add(-10*time.Minute), time.Now().Add(-5*time.Minute)
+	doc, err := json.Marshal(fleetSaved{Saved: saved,
+		Machines: map[string]*fleetUpdateState{a.id: {Machine: a.id, From: "1.2.3", To: "9.9.9", Stage: fleetUpdApplying, Started: began, Lines: []string{"sent 0.1 MB"}}},
+		Rollout: &fleetRolloutState{Started: began, Limit: 1, Version: "v9.9.9", Machines: []fleetRolloutMachine{
+			{ID: a.id, Name: "web1", Status: fleetRollRunning}, {ID: b.id, Name: "web2", Status: fleetRollWaiting}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restart(string(doc))
+	s, ok := fleetRolloutOf(t).State()
+	if !ok || !s.Over() || s.Stopped != fleetRolloutCut || statuses(s) != a.id+"=interrupted "+b.id+"=not_started" {
+		t.Fatalf("the rollout after the restart: %s, stopped %q", statuses(s), s.Stopped)
+	}
+	if told := strings.Join(d.l.told(), "\n"); !strings.Contains(told, "fleet: the rollout started "+fleetTime(began)+" was cut short when this Tenant stopped, and is not taken up again. Of its 2 machines, 0 had ended, 1 never started, being updated: web1.") {
+		t.Errorf("the operator was told:\n%s", told)
+	}
+	ctl := newDashFleet(d.l.c, d.l.stg, &d.l.stgMu)
+	away := "has not redialled since " + fleetTime(saved)
+	page := d.page("/fleet")
+	for _, want := range []string{"The rollout was cut short when this Tenant stopped.",
+		`<a class="linkbtn" href="/fleet/` + a.id + `">web1</a> <span class="risk">interrupted</span> <span class="dim">this Tenant stopped while the machine was applying the update`,
+		`<span class="tag">not started</span> <span class="dim">not started: the rollout was cut short when this Tenant stopped</span>`,
+		`<td>to 9.9.9</td>`, `<span class="act-errtag">failed</span> <strong>` + away + `</strong>`,
+		`<td class="dim" colspan="3">none sent from this Tenant</td>`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the Fleet page after the restart is missing %q", want)
+		}
+	}
+	if strings.Contains(page, "Stop the rollout") {
+		t.Error("a rollout a restart cut short can be stopped")
+	}
+	if one := d.page("/fleet/" + a.id); !strings.Contains(one, "This machine took the update and "+away+".") {
+		t.Errorf("the machine's own page does not say it %s", away)
+	}
+	var api struct {
+		Machines []struct {
+			ID     string `json:"id"`
+			Update *struct {
+				Stage string `json:"stage"`
+				Away  string `json:"not_redialled_since"`
+			} `json:"update"`
+		} `json:"machines"`
+	}
+	if ans := d.send("GET", "/api/fleet", nil, d.browser); json.Unmarshal([]byte(ans.body), &api) != nil || len(api.Machines) != 2 {
+		t.Fatalf("/api/fleet: %d %s", ans.code, ans.body)
+	}
+	for _, m := range api.Machines {
+		if m.ID == a.id && (m.Update == nil || m.Update.Stage != fleetUpdFailed || m.Update.Away != fleetTime(saved)) {
+			t.Errorf("/api/fleet for web1: %+v", m.Update)
+		}
+		if m.ID == b.id && m.Update != nil {
+			t.Errorf("/api/fleet gives web2 an update: %+v", m.Update)
+		}
+	}
+
+	// web1 links again: its child says what its own record holds.
+	if err := fleet.WriteChildUpdate(a.dir, fleet.ChildUpdate{UpdateReport: fleet.UpdateReport{From: "1.2.3", To: "9.9.9", State: fleet.UpdateRolledBack,
+		Reason: "the new version did not reach the master within 1m0s", At: time.Now()}}); err != nil {
+		t.Fatal(err)
+	}
+	startChild(t, a.dir)
+	eventually(t, "web1's word on its next link is recorded", func() bool {
+		return ctl.View().Rollout.Machines[0].Stage == fleetUpdRolledBack
+	})
+	page = d.page("/fleet")
+	for _, want := range []string{`<span class="act-errtag">interrupted, then rolled back</span> <span class="dim">the machine linked again: rolled back to`,
+		`&#34;the new version did not reach the master within 1m0s&#34;`, `<span class="act-errtag">rolled back</span> <span class="dim">the machine linked again`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the Fleet page once web1 is back is missing %q", want)
+		}
+	}
+	if strings.Contains(page, "has not redialled") {
+		t.Error("the page still says web1 has not redialled")
+	}
+	// The rollout a restart closed does not stand in the way of the next.
+	fleetRolloutOf(t).updates = newFakeUpdates(t, fleetRolloutLimit, map[string]fakeRun{a.id: {end: fleetUpdDone}, b.id: {end: fleetUpdDone}})
+	if err := ctl.StartRollout([]string{a.id, b.id}, "v9.9.9", "", false, 1); err != nil {
+		t.Fatalf("a new rollout after the restart: %v", err)
+	}
+	waitRollout(t, fleetRolloutOf(t))
 }

@@ -490,6 +490,7 @@ details.tool[open] summary{border-bottom:1px solid var(--line2)}
 .fl-table td:not(:first-child),.fl-facts td:not(:first-child){white-space:normal;overflow-wrap:anywhere}
 .fl-table td:first-child{min-width:110px}
 .fl-facts th{width:1%;padding-right:18px}
+.fl-upd th:last-child{width:auto}
 .fl-said{font-family:ui-monospace,monospace;font-size:12px;color:var(--fg)}
 .fl-paste{flex:1;min-width:0;overflow-wrap:anywhere;user-select:all;font-size:12px}
 /* TEN-546: the list's boxes (the whole name cell opens the machine; its box

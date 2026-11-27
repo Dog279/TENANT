@@ -640,8 +640,8 @@ func TestFleetDashShowsWhatAMachineSaysAsItsWords(t *testing.T) {
 		list, one := fleetPages(t, m, link)
 		q := pageText(fleetQuote(evil)) // its words, in quotes, as the page's bytes
 		name := pageText(fleetName(evil))
-		if cell := `<td class="fl-said">` + q + `</td>`; strings.Count(list, cell) != 3 { // its system, its user, its version
-			t.Errorf("the list for %q has exactly %q %d times, want 3:\n%s", evil, cell, strings.Count(list, cell), list)
+		if cell := `<td class="fl-said">` + q + `</td>`; strings.Count(list, cell) != 4 { // its system, its user, its version, and its version again in the Updates card
+			t.Errorf("the list for %q has exactly %q %d times, want 4:\n%s", evil, cell, strings.Count(list, cell), list)
 		}
 		if want := `<a class="linkbtn" href="/fleet/` + id + `">` + name + `</a><div class="dim nm">` + id + `</div>`; !strings.Contains(list, want) {
 			t.Errorf("the list for %q is missing exactly %q", evil, want)

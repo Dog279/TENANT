@@ -361,9 +361,15 @@ func (h *fleetHub) tick(ctx context.Context) {
 		h.failed(ctx, err)
 		return
 	}
+	// Before this process can be asked for an update of its own: what the
+	// Tenant that held the fleet before it left.
+	h.restore()
 	h.mu.Lock()
 	h.mgr, h.run = mgr, want
 	h.mu.Unlock()
+	// A machine whose link came up before mgr was set was not looked at
+	// (connected).
+	h.updates.heardAll(mgr)
 	h.comp = lifecycle.Track(ctx, "fleet listener", lifecycle.Server, "system", lifecycle.Running, nil)
 	_, h.act = event.Start(ctx, fleet.Listening, "addr", mgr.Addr().String(), "role", h.role)
 	say := "listening on " + mgr.Addr().String()
@@ -483,10 +489,34 @@ func (h *fleetHub) memoryTick() {
 // connected is told by the manager of each machine whose link is up.
 func (h *fleetHub) connected(id string) {
 	h.mu.Lock()
-	mem := h.mem
+	mem, mgr := h.mem, h.mgr
 	h.mu.Unlock()
 	if mem != nil {
 		mem.kick(id)
+	}
+	if mgr != nil {
+		h.updates.heard(mgr, id) // its word on an update nobody was waiting on
+	}
+}
+
+// restore brings back what an earlier Tenant on this data dir saved of the
+// fleet's updates and its rollout (fleetUpdates.restore), each time this
+// process takes the fleet: another Tenant may have held it since this one
+// last did. What this process has itself stays, unless what was saved is
+// later. A rollout that Tenant was in the middle of is closed where it
+// stood, and the operator is told where that was.
+func (h *fleetHub) restore() {
+	ro, at, err := h.updates.restore()
+	if err != nil {
+		sysUnavailable.Log(context.Background(), "component", "the record of fleet updates", "effect", "the last rollout and each machine's last update are not shown", "err", err)
+		return
+	}
+	if ro == nil {
+		return
+	}
+	if h.rollout.restore(*ro, at) {
+		st, _ := h.rollout.State()
+		h.tell("fleet: " + rolloutCutWords(st) + ".")
 	}
 }
 

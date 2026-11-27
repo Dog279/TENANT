@@ -311,3 +311,137 @@ func TestRolloutStateIsACopy(t *testing.T) {
 		t.Errorf("the copy reached the rollout: %+v", again)
 	}
 }
+
+// The rollout is handed to keep after each change, and the Tenant that starts
+// next closes one it finds in the middle where it stood: nothing is started
+// from it, and it says which machines were done, which were being updated
+// and which never started.
+func TestRolloutKeptAndRestored(t *testing.T) {
+	r, f := rolloutRig(t, 1, map[string]fakeRun{"a": {end: fleetUpdDone}, "b": {end: fleetUpdDone, hold: true}, "c": {end: fleetUpdDone}})
+	var mu sync.Mutex
+	var kept []fleetRolloutState
+	r.keep = func(s fleetRolloutState) {
+		mu.Lock()
+		defer mu.Unlock()
+		kept = append(kept, s)
+	}
+	last := func() fleetRolloutState {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(kept) == 0 {
+			return fleetRolloutState{}
+		}
+		return kept[len(kept)-1]
+	}
+	if err := r.Start(nil, rolloutMachines("a", "b", "c"), fleetUpdateOpts{version: "v2.0.0"}, 1); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); statuses(last()) != "a=done b=running c=waiting"; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("what was kept never said a done and b running: %s", statuses(last()))
+		}
+	}
+	mid := last()
+	if s, _ := r.State(); statuses(s) != statuses(mid) || mid.Over() || mid.Version != "v2.0.0" || mid.Limit != 1 {
+		t.Fatalf("kept %+v, the rollout is at %s", mid, statuses(s))
+	}
+	// A rollout that is running is this process's own, whatever is read
+	// (it took the fleet again, and a file says a later one).
+	if r.restore(fleetRolloutState{Started: time.Now().Add(time.Hour), Machines: rolloutMachines("z")}, time.Now()) {
+		t.Error("a saved rollout was taken over one that is running")
+	}
+	if s, _ := r.State(); statuses(s) != statuses(mid) {
+		t.Errorf("a saved rollout replaced one that is running: %s", statuses(s))
+	}
+
+	// The Tenant that starts next, a minute after that was saved.
+	at := time.Now().Add(-time.Minute)
+	started := len(f.started())
+	next := &fleetRollout{updates: f}
+	var closed []fleetRolloutState
+	next.keep = func(s fleetRolloutState) { closed = append(closed, s) }
+	if !next.restore(mid, at) {
+		t.Error("a rollout with a machine running and one waiting was not reported as cut short")
+	}
+	s, ok := next.State()
+	if !ok || !s.Over() || !s.Finished.Equal(at) || s.Stopped != "cut short when this Tenant stopped" || statuses(s) != "a=done b=interrupted c=not_started" {
+		t.Fatalf("restored: %s, stopped %q, over %v, ended %s", statuses(s), s.Stopped, s.Over(), s.Finished)
+	}
+	if s.Machines[0].Reason != "a ended done" || s.Machines[1].Reason != "its update was under way when this Tenant stopped" ||
+		s.Machines[2].Reason != "not started: the rollout was cut short when this Tenant stopped" {
+		t.Errorf("reasons: %q", s.Machines)
+	}
+	if len(closed) != 1 || statuses(closed[0]) != statuses(s) || !closed[0].Over() {
+		t.Errorf("the closed rollout was not kept: %+v", closed)
+	}
+	if next.Stop() || len(f.started()) != started {
+		t.Error("a restored rollout is running, or started a machine")
+	}
+	if got := rolloutCutWords(s); !strings.Contains(got, "Of its 3 machines, 1 had ended, 1 never started, being updated: name-b. The dashboard's Fleet page shows each one. Before a new rollout, give those a few minutes to link again and say how their update went. A new rollout sends nothing") {
+		t.Errorf("the operator is told: %s", got)
+	}
+	// A second read (this process took the fleet again) changes nothing when
+	// it is the same rollout, or an earlier one...
+	older := mid
+	older.Started, older.Machines = mid.Started.Add(-time.Hour), rolloutMachines("z")
+	if next.restore(mid, time.Now()) || next.restore(older, at) {
+		t.Error("a second restore says it took a rollout that was cut short")
+	}
+	if again, _ := next.State(); statuses(again) != statuses(s) || !again.Finished.Equal(at) {
+		t.Errorf("a second restore replaced the rollout: %s", statuses(again))
+	}
+	// ...and takes a later one, which another Tenant ran in between.
+	twice := &fleetRollout{updates: f}
+	twice.restore(mid, at)
+	newer := fleetRolloutState{Started: mid.Started.Add(time.Hour), Limit: 2, Machines: []fleetRolloutMachine{{ID: "z", Name: "name-z", Status: fleetRollWaiting}}}
+	if !twice.restore(newer, at.Add(2*time.Hour)) {
+		t.Error("a later rollout that was saved in the middle was not reported as cut short")
+	}
+	if got, _ := twice.State(); statuses(got) != "z=not_started" || got.Limit != 2 {
+		t.Errorf("a later saved rollout did not replace an ended one: %+v", got)
+	}
+
+	// One the operator had stopped, with a machine still in flight, keeps its
+	// reason; a file with no time of its own ends now.
+	stopped := mid
+	stopped.Machines = append([]fleetRolloutMachine(nil), mid.Machines...)
+	stopped.Stopped = "stopped by the operator"
+	byHand := &fleetRollout{updates: f}
+	byHand.restore(stopped, time.Time{})
+	if s, _ := byHand.State(); s.Stopped != "stopped by the operator" || statuses(s) != "a=done b=interrupted c=not_started" ||
+		s.Machines[2].Reason != "not started: the rollout was stopped by the operator" || time.Since(s.Finished) > time.Minute {
+		t.Errorf("a stopped rollout, restored: %+v", s)
+	}
+	if got := rolloutCutWords(fleetRolloutState{Machines: []fleetRolloutMachine{{ID: "a", Status: fleetUpdDone}, {ID: "b", Status: fleetRollNotStarted}}}); !strings.Contains(got, "1 had ended, 1 never started, none was being updated. The dashboard's Fleet page shows each one. A new rollout sends nothing") {
+		t.Errorf("with none in flight: %s", got)
+	}
+
+	// One that had ended reads back as it ended, and a new one starts after it.
+	f.release("b")
+	done := waitRollout(t, r)
+	if statuses(last()) != "a=done b=done c=done" || !last().Finished.Equal(done.Finished) {
+		t.Errorf("the end was not kept: %s", statuses(last()))
+	}
+	ended := &fleetRollout{updates: f}
+	if cut := ended.restore(done, at); cut {
+		t.Error("a rollout that had ended was reported as cut short")
+	}
+	if s, _ := ended.State(); statuses(s) != "a=done b=done c=done" || s.Stopped != "" || !s.Finished.Equal(done.Finished) {
+		t.Errorf("an ended rollout, restored: %+v", s)
+	}
+	// Every machine had ended and only the rollout's own end was not written
+	// yet: it ended, and was not cut short.
+	almost := done
+	almost.Finished = time.Time{}
+	last1 := &fleetRollout{updates: f}
+	if cut := last1.restore(almost, at); cut {
+		t.Error("a rollout whose machines had all ended was reported as cut short")
+	}
+	if s, _ := last1.State(); !s.Over() || s.Stopped != "" || !s.Finished.Equal(at) {
+		t.Errorf("a rollout whose machines had all ended, restored: %+v", s)
+	}
+	if err := next.Start(nil, rolloutMachines("c"), fleetUpdateOpts{}, 1); err != nil {
+		t.Errorf("a new rollout after a restored one: %v", err)
+	}
+	waitRollout(t, next)
+}

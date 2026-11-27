@@ -5,6 +5,26 @@ Releases page.
 
 ## Unreleased
 
+- **A restart of the master no longer forgets a fleet rollout, or how each machine's last update
+  went (TEN-552, fourth part).** The Tenant that holds the fleet now writes the rollout and each
+  machine's last update to `fleet-updates.json` in its data folder at every step, and reads it
+  back when it starts. A rollout that was running is not taken up again: it is closed where it
+  stood, the operator is told, and the dashboard's Fleet page shows which machines were done,
+  which were being updated ("interrupted") and which never started. Nothing is sent to a
+  machine because of the restart; a new rollout over the same machines sends nothing to one that
+  already runs the version. A machine that was applying an update when the master went away
+  finishes or rolls back by itself, and what it says on its next link is recorded ("the machine
+  linked again: back on the new version …", or rolled back and why). The same now goes for an
+  update whose machine went quiet past the 7 minutes the master waits. A word the machine still
+  has from an earlier try at the same version is not taken for the new try's: on a second try
+  at a version that rolled back, a machine that linked again while its running calls finished
+  was reported as rolled back, with the first try's reason. A saved file that does
+  not read does not stop the master: it is logged and replaced at the next update.
+- **New on the Fleet page: an Updates card (TEN-552).** One row for each machine: the version it
+  reports, the last update this Tenant sent it and when, and how it went: done, rolled back with
+  the machine's reason, failed with the reason, or "has not redialled since" a time for a
+  machine that took an update and has not come back. A machine's own page says the last too, and
+  `GET /api/fleet` gives it as `not_redialled_since` in the machine's `update`.
 - **New: send a fleet machine a build of your own (TEN-552, second part).**
   `go run ./scripts/devbuild [system/processor ...]` builds Tenant from a checkout and packs each
   target as the archive a release would carry, under a development version of its own

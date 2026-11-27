@@ -593,6 +593,10 @@ func TestFleetUpdateRealProcesses(t *testing.T) {
 		if alpha.proc.exited() {
 			t.Fatalf("the machine's child ended with its master\n%s", alpha.proc.said())
 		}
+		var arrived int64
+		if fi, err := os.Stat(part); err == nil {
+			arrived = fi.Size()
+		}
 		if got := e2eMarkOf(t, f.bin); got != "2.0.0" {
 			t.Errorf("the installed binary is marked %q after a broken transfer", got)
 		}
@@ -604,6 +608,15 @@ func TestFleetUpdateRealProcesses(t *testing.T) {
 		m.serve()
 		f.wire.to(m.fleet)
 		alpha.state("connected to the master")
+		// TEN-552: the master that came back has the update it was killed in
+		// the middle of, ended where it stood, and sends nothing by itself.
+		if u := f.lastUpdate(t, alpha.id); u == nil || u.Running || u.Stage != fleetUpdFailed || len(u.Lines) == 0 ||
+			!strings.Contains(u.Lines[len(u.Lines)-1], "this Tenant stopped while the archive was on its way to the machine") {
+			t.Errorf("the restarted master's record of the update it was killed in: %+v", u)
+		}
+		if fi, err := os.Stat(part); err != nil || fi.Size() != arrived {
+			t.Errorf("the machine held %d bytes when its master was killed, and holds something else now that it is back (%v)", arrived, err)
+		}
 		out, exit := f.update("alpha", "--version", "v3.0.0")
 		if exit != 0 || !strings.Contains(out, "from an earlier try") || !strings.Contains(out, "back on the new version 3.0.0") {
 			t.Errorf("the update again: exit %d\n%s", exit, out)
@@ -811,6 +824,84 @@ func TestFleetUpdateRealProcesses(t *testing.T) {
 			t.Errorf("delta reports %s", got)
 		}
 	})
+
+	// TEN-552: the master is killed once the machine holds the whole archive
+	// and is applying it, so nobody waits for the machine's word. The master
+	// that starts next says so, sends nothing, and records what the machine
+	// says on its next link. Which that is depends on how soon the master is
+	// back: within the new version's fifteen seconds its trial run reaches
+	// it and the machine comes back updated; later, the machine puts back
+	// what it had. Either is the machine's own word, and the record has to
+	// agree with the version the machine runs. It is the last step: alpha
+	// ends on one of two versions.
+	step("the master is killed while the machine applies an update, and has its word once both are back", func(t *testing.T) {
+		was := e2eMarkOf(t, f.bin)
+		f.rel.publish("v7.0.0", e2eBuild(t, filepath.Join(builds, "7.0.0"), "7.0.0", ""))
+		cli := h.start("fleet update", e2eSpec{Argv: []string{"fleet", "update", "alpha", "--version", "v7.0.0", "--hub", m.dash, "--config", m.cfg, "--data", m.data}})
+		for deadline := time.Now().Add(e2eWait); ; time.Sleep(10 * time.Millisecond) {
+			if doc, _, ok := savedDoc(m.data); ok && doc.Machines[alpha.id] != nil && doc.Machines[alpha.id].Stage == fleetUpdApplying && doc.Machines[alpha.id].To == "7.0.0" {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the master never saved that alpha is applying\n%s", cli.said())
+			}
+		}
+		m.proc.kill()
+		cli.ended("the command line gives up on a master that is gone")
+		m.serve()
+		f.wire.to(m.fleet)
+		var u *hubUpdate
+		for deadline := time.Now().Add(e2eWait); ; time.Sleep(100 * time.Millisecond) {
+			if u = f.lastUpdate(t, alpha.id); u != nil && (u.Stage == fleetUpdDone || u.Stage == fleetUpdRolledBack) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the restarted master never recorded how alpha's update went: %+v\n%s", u, alpha.proc.said())
+			}
+		}
+		t.Logf("the restarted master's record:\n%s", strings.Join(u.Lines, "\n"))
+		said := strings.Join(u.Lines, "\n")
+		if u.Running || !strings.Contains(said, "this Tenant stopped while the machine was applying the update") || !strings.HasPrefix(u.Lines[len(u.Lines)-1], "the machine linked again: ") {
+			t.Errorf("the record: %+v", u)
+		}
+		runs := "7.0.0"
+		if u.Stage == fleetUpdRolledBack {
+			runs = was
+		}
+		alpha.state("connected to the master")
+		if got := e2eMarkOf(t, f.bin); got != runs {
+			t.Errorf("the record says %s and the installed binary is marked %q, want %q", u.Stage, got, runs)
+		}
+		for deadline := time.Now().Add(e2eWait); f.reported(t, alpha.id) != fleetQuote(runs); time.Sleep(100 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("the record says %s and the master shows alpha on %s, want %q", u.Stage, f.reported(t, alpha.id), runs)
+			}
+		}
+		// Asked again, the master sends only what the machine does not have.
+		out, exit := f.update("alpha", "--version", "v7.0.0")
+		if u.Stage == fleetUpdDone && (exit != 0 || !strings.Contains(out, "already runs 7.0.0")) {
+			t.Errorf("the update again, to a machine that has it: exit %d\n%s", exit, out)
+		}
+		if u.Stage == fleetUpdRolledBack && (exit != 0 || !strings.Contains(out, "back on the new version 7.0.0")) {
+			t.Errorf("the update again, to a machine that rolled back: exit %d\n%s", exit, out)
+		}
+	})
+}
+
+// lastUpdate is the machine's last update as the master's API shows it; nil
+// when it has none.
+func (f *e2eUpdateFleet) lastUpdate(t *testing.T, id string) *hubUpdate {
+	t.Helper()
+	var v apiFleet
+	if code, body := f.m.api(http.MethodGet, "/api/fleet", nil, &v); code != http.StatusOK {
+		t.Fatalf("/api/fleet: %d %s", code, body)
+	}
+	for _, m := range v.Machines {
+		if m.ID == id {
+			return m.Update
+		}
+	}
+	return nil
 }
 
 // e2eProjectKey is the throwaway project key the v6 releases are signed
