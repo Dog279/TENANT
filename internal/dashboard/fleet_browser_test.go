@@ -99,7 +99,6 @@ func TestFleetPageInChrome(t *testing.T) {
 		visit(srv.URL+"/fleet"),
 		chromedp.WaitVisible(add+` input[name=name]`, chromedp.ByQuery),
 		chromedp.SendKeys(add+` input[name=name]`, "web9", chromedp.ByQuery),
-		chromedp.Click(add+` input[name=runs][value=boot]`, chromedp.ByQuery),
 		chromedp.Click(add+` button[type=submit]`, chromedp.ByQuery),
 		toastSays("ok", "shown this once"),
 		chromedp.WaitVisible(`#fleet-body code.fl-paste`, chromedp.ByQuery),
@@ -116,7 +115,7 @@ func TestFleetPageInChrome(t *testing.T) {
 	for _, b := range bad {
 		t.Errorf("Add machine's answer at 390px: %s", b)
 	}
-	if got := f.called(); len(got) != 5 || !strings.HasPrefix(got[4], "enroll|web9|true|dashboard session ") {
+	if got := f.called(); len(got) != 5 || !strings.HasPrefix(got[4], "enroll|web9|dashboard session ") {
 		t.Errorf("the control got %q", got)
 	}
 }

@@ -93,25 +93,22 @@ func sealSystemChild(paths ...string) error {
 	return nil
 }
 
-// childExeSafe refuses a binary in a place ordinary accounts write to: the
-// service would run whatever was put there, as SYSTEM.
-// ponytail: judged by where the file is (a user's profile, the temp
-// folders). Read the file's and the folder's access lists instead if
-// installs outside Program Files become common.
+// childExeSafe refuses a binary anywhere but under Program Files: the service
+// would run whatever was put in its place, as SYSTEM, and Program Files is
+// the one place Windows itself closes to accounts that are not
+// administrators. A folder made elsewhere on the system drive (C:\Tenant,
+// C:\tools) takes the drive's own access list, which lets every signed-in
+// account change the files in it.
+// ponytail: judged by where the file is. Read the access lists of the file
+// and of every folder above it instead, when an install that was closed by
+// hand somewhere else has to be allowed.
 func childExeSafe(exe string) error {
-	under := func(dir string) bool {
-		dir = strings.TrimRight(dir, `\/`)
-		return dir != "" && strings.HasPrefix(strings.ToLower(exe), strings.ToLower(dir)+`\`)
-	}
-	drive := os.Getenv("SystemDrive")
-	if drive == "" {
-		drive = "C:"
-	}
-	for _, dir := range []string{drive + `\Users`, os.Getenv("USERPROFILE"), os.Getenv("PUBLIC"), os.TempDir()} {
-		if under(dir) {
-			return fmt.Errorf("%s is under %s, which accounts that are not administrators write to, and a --system child runs this binary as SYSTEM at every boot; "+
-				`install it under %%ProgramFiles%%\Tenant and run it from there`, exe, dir)
+	for _, v := range []string{"ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"} {
+		dir := strings.TrimRight(os.Getenv(v), `\/`)
+		if dir != "" && strings.HasPrefix(strings.ToLower(exe), strings.ToLower(dir)+`\`) {
+			return nil
 		}
 	}
-	return nil
+	return fmt.Errorf("%s is not under %%ProgramFiles%%, and the child runs this binary as SYSTEM at every boot: anywhere else, an account that is not an administrator may be able to replace it; "+
+		`install it under %%ProgramFiles%%\Tenant and run it from there`, exe)
 }

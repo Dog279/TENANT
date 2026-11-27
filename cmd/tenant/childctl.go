@@ -5,7 +5,7 @@ package main
 // agent loop, no dashboard and no memory: it holds one link to its master
 // (internal/fleet) and serves this machine's tools over it (childmux.go).
 //
-//	tenant child install [--system] [--ceiling C] [--sandbox B]
+//	tenant child install [--dir D] [--ceiling C] [--sandbox B]
 //	tenant child rehome         trust another master (one rebuilt from nothing)
 //	tenant child updates [release|master]  whose word an update is taken on
 //	tenant child status | pause | resume | audit | uninstall
@@ -13,12 +13,18 @@ package main
 //
 // Exit codes: 0 done; 1 an error; 2 refused before anything was changed
 // (the enrollment code given as an argument, a machine that is already
-// enrolled, --system without elevation); 3 from status, when the machine is
+// enrolled, an install without elevation); 3 from status, when the machine is
 // not connected to its master.
 //
-// A child keeps everything of its own in one directory: this account's
-// (<config dir>/child), or with --system the machine's (fleet.SystemDir).
-// What its tools work with goes beside it, in <dir>-data.
+// A child is the machine's own: `tenant child install` installs a service
+// that runs as root or SYSTEM from boot, with everything of the child's in
+// the machine's directory (fleet.SystemDir). Whoever installs a child owns or
+// administers the machine, and a child that runs as one account stops when
+// that account logs off and reaches only what that account may. The other
+// kind is still there for a machine nobody may administer, and for tests:
+// `tenant child install --dir D` keeps the child in D and runs it as the
+// account that typed it, from logon. What a child's tools work with goes
+// beside its directory, in <dir>-data.
 
 import (
 	"bufio"
@@ -50,7 +56,7 @@ import (
 	"tenant/internal/version"
 )
 
-const childUsage = "usage: tenant child install [--system] [--ceiling full|no-exec|read-only] [--updates release|master] | rehome | updates [release|master] | status | pause | resume | audit | uninstall"
+const childUsage = "usage: tenant child install [--dir D] [--ceiling full|no-exec|read-only] [--updates release|master] | rehome | updates [release|master] | status | pause | resume | audit | uninstall"
 
 // childCodeEnv is the environment variable `tenant child install` reads the
 // enrollment code from when it is set, before standard input.
@@ -59,7 +65,16 @@ const childCodeEnv = "TENANT_ENROLL_CODE"
 // Seams. Tests keep a child away from this machine's own system directory
 // and its own system log, and shorten the watch.
 var (
-	childSystemDir       = fleet.SystemDir
+	childSystemDir = fleet.SystemDir
+	// childOwnDir is this account's own child directory: where an install
+	// put a child before a child was the machine's own (TEN-558).
+	childOwnDir = func() (string, error) {
+		cfg, err := soul.DefaultDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve config dir: %w", err)
+		}
+		return filepath.Join(cfg, "child"), nil
+	}
 	openChildOSLog       = fleet.OpenOSLog
 	registerChildOSLog   = fleet.RegisterOSLog
 	unregisterChildOSLog = fleet.UnregisterOSLog
@@ -74,8 +89,8 @@ func cmdChild(ctx context.Context, args []string) error {
 	}
 	verb, args := args[0], args[1:]
 	fs := flag.NewFlagSet("child "+verb, flag.ContinueOnError)
-	dirFlag := fs.String("dir", "", "the child's directory (default: this account's, or with --system the machine's)")
-	system := fs.Bool("system", false, "install: run as root or SYSTEM from boot, with the child's files in the machine's own location (needs an elevated terminal)")
+	dirFlag := fs.String("dir", "", "the child's directory (default: the machine's own). install: a child in a directory you name runs as your account, from logon")
+	system := fs.Bool("system", false, "the machine's own child, which runs as root or SYSTEM from boot. install: what it does without this flag, which older instructions still pass")
 	ceiling := fs.String("ceiling", string(fleet.CeilingFull), "install: what this machine lets its master do: full, no-exec or read-only")
 	sandboxName := fs.String("sandbox", "host", "install: the sandbox backend this machine runs commands through")
 	updates := fs.String("updates", string(fleet.UpdatesRelease), "install: whose word an update from the master is taken on: release (its signature, verified here) or master (the hash the master names)")
@@ -98,7 +113,18 @@ func cmdChild(ctx context.Context, args []string) error {
 	if *system && *dirFlag != "" {
 		return exitError{2, "--system keeps the child's files in " + childSystemDir() + "; it does not take --dir"}
 	}
-	dir, err := childDir(verb, *dirFlag, *system)
+	// An install is the machine's own unless a directory is named.
+	sys := *system || verb == "install" && *dirFlag == ""
+	// A child in a directory someone names runs as the account that installs
+	// it, with none of the checks a root service gets (who can replace its
+	// binary, who can write its directory). Root has no use for one. On
+	// Windows an elevated terminal is still the same account, and its logon
+	// task runs without the administrator's token.
+	if verb == "install" && !sys && runtime.GOOS != "windows" && childElevated() {
+		return exitError{2, "from a root shell a child is the machine's own: `tenant child install` without --dir. " +
+			"One in a directory you name runs as the account that installs it, and as root nothing would have checked its binary or its directory"}
+	}
+	dir, err := childDir(*dirFlag, sys)
 	if err != nil {
 		return err
 	}
@@ -113,7 +139,7 @@ func cmdChild(ctx context.Context, args []string) error {
 	}
 	switch verb {
 	case "install":
-		return childInstall(ctx, os.Stdin, os.Stdout, dir, childInstallOpts{system: *system, ceiling: *ceiling, sandbox: *sandboxName, updates: *updates})
+		return childInstall(ctx, os.Stdin, os.Stdout, dir, childInstallOpts{system: sys, ceiling: *ceiling, sandbox: *sandboxName, updates: *updates})
 	case "run":
 		log := newLogger()
 		if !*trial && !*kept { // an update's own runs end when the child that started them closes their input
@@ -152,23 +178,22 @@ func cmdChild(ctx context.Context, args []string) error {
 	return fmt.Errorf("unknown child command %q\n%s", verb, childUsage)
 }
 
-// childDir is the directory a command acts on: the one named, the machine's
-// with --system, else this account's. Without either flag a command other
-// than install acts on the machine's child when this account has none of
-// its own, as `tenant service status` finds a --system service.
-func childDir(verb, named string, system bool) (string, error) {
+// childDir is the directory a command acts on: the one named, else the
+// machine's for an install or with --system (system). A command other than
+// install, given neither, acts on this account's own child where there is
+// one (an older Tenant installed those), else on the machine's.
+func childDir(named string, system bool) (string, error) {
 	switch {
 	case named != "":
 		return filepath.Abs(expandPath(named))
 	case system:
 		return childSystemDir(), nil
 	}
-	cfg, err := soul.DefaultDir()
+	own, err := childOwnDir()
 	if err != nil {
-		return "", fmt.Errorf("resolve config dir: %w", err)
+		return "", err
 	}
-	own := filepath.Join(cfg, "child")
-	if verb != "install" && !exists(fleet.ChildPath(own)) && exists(fleet.ChildPath(childSystemDir())) {
+	if !exists(fleet.ChildPath(own)) && exists(fleet.ChildPath(childSystemDir())) {
 		return childSystemDir(), nil
 	}
 	return own, nil
@@ -216,12 +241,23 @@ func childInstall(ctx context.Context, in io.Reader, out io.Writer, dir string, 
 		return exitError{2, fmt.Sprintf("--sandbox %q: %v", o.sandbox, err)}
 	}
 	if o.system && !childElevated() {
-		return exitError{2, "tenant child install --system needs an elevated terminal: the service it installs runs as " + childAccount(true) +
-			", and its key is written where only that account reads it"}
+		return exitError{2, "tenant child install needs an elevated terminal (" + childElevate() + "): the service it installs runs as " + childAccount(true) +
+			" from boot, and its key is written where only that account reads it. " +
+			"A machine nobody may administer can run a child as this account instead, in a directory you name: tenant child install --dir <directory>"}
 	}
 	if exists(fleet.ChildPath(dir)) || exists(fleet.ChildIdentityPath(dir)) {
 		return exitError{2, "this machine is already enrolled (" + dir + "): `tenant child status` shows where it stands. " +
 			"To enroll it again, `tenant child uninstall` first: a new enrollment is a new key"}
+	}
+	// A child an earlier Tenant installed for this account is still this
+	// machine's child: a second one beside it would be a second machine to
+	// the master, and the commands without a flag would go on acting on the
+	// old one. (Under sudo this sees the account sudo leaves as home.)
+	if o.system {
+		if own, err := childOwnDir(); err == nil && filepath.Clean(own) != filepath.Clean(dir) && exists(fleet.ChildPath(own)) {
+			return exitError{2, "this account already has a child of its own (" + own + "), from before a child was the machine's own. " +
+				"`tenant child uninstall` removes it; then enroll again from here. Installed beside it, this machine would be two machines to its master"}
+		}
 	}
 	exe, err := os.Executable()
 	if err == nil {
@@ -325,6 +361,14 @@ func readEnrollCode(in io.Reader, out io.Writer) (string, error) {
 			" (`tenant fleet enroll <name>` on the master prints one)"}
 	}
 	return code, nil
+}
+
+// childElevate says how a terminal is elevated on this system.
+func childElevate() string {
+	if runtime.GOOS == "windows" {
+		return "a PowerShell run as administrator"
+	}
+	return "a root shell, or sudo"
 }
 
 // childAccount names the account a child runs as: what the master's confirm

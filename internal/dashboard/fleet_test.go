@@ -187,10 +187,10 @@ func (f *fakeFleet) Update(id, version, arch, _ string, allowOlder bool) error {
 // fakeEnrollCode is the code the fake makes: the shape of a real one.
 const fakeEnrollCode = "tntfleet1_eyJuIjoid2ViMSJ9-_Zz09"
 
-func (f *fakeFleet) Enroll(name string, boot bool, by string) (FleetEnrollment, error) {
+func (f *fakeFleet) Enroll(name, by string) (FleetEnrollment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, strings.Join([]string{"enroll", name, fmt.Sprint(boot), by}, "|"))
+	f.calls = append(f.calls, strings.Join([]string{"enroll", name, by}, "|"))
 	switch {
 	case f.err != nil:
 		return FleetEnrollment{}, f.err
@@ -198,12 +198,12 @@ func (f *fakeFleet) Enroll(name string, boot bool, by string) (FleetEnrollment, 
 		return FleetEnrollment{}, fmt.Errorf("fleet: %q is not a machine name", name)
 	}
 	q := "'" + fakeEnrollCode + "'"
-	return FleetEnrollment{Name: name, Code: fakeEnrollCode, Expires: "2026-11-19 10:15", Boot: boot,
+	return FleetEnrollment{Name: name, Code: fakeEnrollCode, Expires: "2026-11-19 10:15",
 		Addresses: []string{"192.168.1.5:9777", "10.0.0.2:9777"},
 		Warning:   "warning: every IP address this code carries is private, link-local or loopback: a machine at another site cannot dial these.",
 		Lines: []FleetPasteLine{
-			{"Linux, macOS, nothing installed", "curl -fsSL https://github.com/o/r/releases/latest/download/install.sh | TENANT_CHILD=user TENANT_ENROLL_CODE=" + q + " sh"},
-			{"Windows, Tenant installed (PowerShell)", q + " | tenant child install"},
+			{"Linux, macOS, nothing installed (sudo asks for your password)", "curl -fsSL https://github.com/o/r/releases/latest/download/install.sh | TENANT_CHILD=system TENANT_ENROLL_CODE=" + q + " sudo --preserve-env=TENANT_CHILD,TENANT_ENROLL_CODE sh"},
+			{"Windows, Tenant under Program Files (PowerShell run as administrator)", q + " | tenant child install --system"},
 		}}, nil
 }
 

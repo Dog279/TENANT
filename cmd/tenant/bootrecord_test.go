@@ -47,6 +47,9 @@ func TestMain(m *testing.M) {
 	// (withBuiltinExec, execprofiles_test.go).
 	builtinExec = func() (string, string) { return "host", "" }
 	runCmd = noServiceManager // service_test.go: no test reaches this machine's own
+	// Nor a child this machine's account may really have: a test that wants
+	// one says where it is (ownChildAt, childctl_test.go).
+	childOwnDir = func() (string, error) { return filepath.Join(os.TempDir(), "tenant-tests-no-own-child"), nil }
 	os.Exit(m.Run())
 }
 

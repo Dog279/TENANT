@@ -20,16 +20,17 @@
 # To make this machine a child of a fleet in the same paste, set TENANT_CHILD:
 # the script goes straight on to `tenant child install`.
 #
-#   curl -fsSL .../install.sh | TENANT_CHILD=user TENANT_ENROLL_CODE='<code>' sh
 #   curl -fsSL .../install.sh | TENANT_CHILD=system TENANT_ENROLL_CODE='<code>' sudo --preserve-env=TENANT_CHILD,TENANT_ENROLL_CODE sh
 #
 # (`sudo VAR=value sh` would put the code on sudo's command line, which the
 # process list shows; set before sudo and preserved, it stays in the
-# environment. `tenant fleet enroll` prints these lines with the code in.)
+# environment. `tenant fleet enroll` prints this line with the code in.)
 #
-#   TENANT_CHILD        user: the child runs as this account. system: as root from
+#   TENANT_CHILD        system: the child is a service that runs as root from
 #                       boot (run the script as root; the binary then goes to
-#                       /usr/local/bin, where only root can replace it)
+#                       /usr/local/bin, where only root can replace it). A
+#                       development build of an older master says user, and
+#                       gets the same
 #   TENANT_ENROLL_CODE  the one-time code `tenant fleet enroll <name>` printed on the
 #                       master. Left unset, it is asked for on the terminal. It is
 #                       never passed as an argument, where the process list shows it.
@@ -40,12 +41,13 @@ die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 REPO="${TENANT_REPO:-__REPO__}"
 CHILD="${TENANT_CHILD:-}"
 case "$CHILD" in
-  "" | user) DIR="${TENANT_INSTALL_DIR:-$HOME/.local/bin}" ;;
-  system)
-    [ "$(id -u)" = 0 ] || die "TENANT_CHILD=system installs a service that runs as root: run this script as root"
+  "") DIR="${TENANT_INSTALL_DIR:-$HOME/.local/bin}" ;;
+  system | user)
+    [ "$(id -u)" = 0 ] || die "a child is a service that runs as root from boot: run this script as root (put 'sudo --preserve-env=TENANT_CHILD,TENANT_ENROLL_CODE' before the last 'sh')"
+    CHILD=system
     DIR="${TENANT_INSTALL_DIR:-/usr/local/bin}"
     ;;
-  *) die "TENANT_CHILD is user or system, not $CHILD" ;;
+  *) die "TENANT_CHILD is system, not $CHILD" ;;
 esac
 
 # macOS: the installed binary carries the hardened-runtime flag, which makes

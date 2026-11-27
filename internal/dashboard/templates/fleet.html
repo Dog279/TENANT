@@ -138,11 +138,9 @@
   <div class="card-head">Add machine</div>
   <form method="POST" action="/fleet/add" class="cronactions" data-on:submit__prevent__throttle.1s="@post('/fleet/add', {contentType:'form', retryMaxCount:0})">
     <input type="text" name="name" class="cinput" maxlength="63" placeholder="a name, e.g. web1" aria-label="A name for the new machine" required>
-    <label class="dim"><input type="radio" name="runs" value="user" checked> runs as you, from logon</label>
-    <label class="dim"><input type="radio" name="runs" value="boot"> runs as root or SYSTEM, from boot</label>
     <button type="submit" class="btn sm">Make a code</button>
   </form>
-  <div class="dim mt">This makes a one-time code and the line to paste on the new machine. {{if .View.ConfirmDigits}}The code joins nothing by itself: the machine shows six digits and waits here until they are typed on the computer running Tenant{{if .View.RemoteConfirm}}, or in a signed-in browser elsewhere with the sign-in key again (remote confirmation is on){{end}}.{{else}}The code is all the machine needs: it joins as soon as the line is pasted there, and you are told here. Paste it only on that machine.{{end}}</div>
+  <div class="dim mt">This makes a one-time code and the line to paste on the new machine, in an elevated terminal: the child is a service that runs as root or SYSTEM, from boot. {{if .View.ConfirmDigits}}The code joins nothing by itself: the machine shows six digits and waits here until they are typed on the computer running Tenant{{if .View.RemoteConfirm}}, or in a signed-in browser elsewhere with the sign-in key again (remote confirmation is on){{end}}.{{else}}The code is all the machine needs: it joins as soon as the line is pasted there, and you are told here. Paste it only on that machine.{{end}}</div>
 </div>
 {{template "fl-defaults" .}}
 {{template "fl-groups" .}}
@@ -295,7 +293,7 @@
      own text, so the code is never in an attribute or an expression. */}}
 {{define "fleet-added"}}
 <div class="card" role="status">
-  <div class="card-head">Paste one line on {{.Name}} <span class="dim">· {{if .Boot}}it runs as root or SYSTEM, from boot{{else}}it runs as the account that pastes it, from logon{{end}}</span></div>
+  <div class="card-head">Paste one line on {{.Name}} <span class="dim">· in an elevated terminal: it runs as root or SYSTEM, from boot</span></div>
   <p>The code in it works once, until {{.Expires}}. This page shows it this once.</p>
   {{with .Note}}<div class="banner info">{{.}}</div>{{end}}
   {{range .Lines}}

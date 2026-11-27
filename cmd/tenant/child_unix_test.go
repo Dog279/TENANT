@@ -145,3 +145,14 @@ func TestChildExeSafeUnix(t *testing.T) {
 		t.Errorf("the code was spent by the refusal: %v", err)
 	}
 }
+
+// From a root shell a child is the machine's own: one in a directory someone
+// names would run as root with neither its binary nor its directory checked.
+func TestChildInstallDirAsRootIsRefused(t *testing.T) {
+	fakeElevated(t, true)
+	dir := filepath.Join(t.TempDir(), "c")
+	err := cmdChild(context.Background(), []string{"install", "--dir", dir})
+	if exitCode(err) != 2 || !strings.Contains(err.Error(), "from a root shell") || exists(dir) {
+		t.Fatalf("install --dir as root: %v (exit %d), directory made: %v", err, exitCode(err), exists(dir))
+	}
+}

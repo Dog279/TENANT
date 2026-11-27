@@ -997,3 +997,28 @@ func FuzzChildUpdatePieces(f *testing.F) {
 		}
 	})
 }
+
+// What an update unpacked is removed even when the file is still held for a
+// moment, as a binary that has just run is on Windows (first seen on CI's
+// Windows runner: the copy of a refused binary was still beside the installed
+// one when the refusal came back). On other systems an open file is no
+// obstacle, and this passes at the first try.
+func TestRemoveStageWaitsForAFileStillHeld(t *testing.T) {
+	exe := filepath.Join(t.TempDir(), "tenant")
+	stage := childStageDir(exe)
+	if err := os.MkdirAll(stage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.Create(filepath.Join(stage, "tenant-new"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		held.Close()
+	}()
+	removeStage(exe)
+	if _, err := os.Stat(stage); err == nil {
+		t.Error("what was unpacked is still there after the file was let go")
+	}
+}

@@ -30,8 +30,8 @@ block for drift.
 | Go packages | 108 |
 | Go files | 1,639 |
 | Test files | 834 |
-| Production Go LOC | 217,003 |
-| Test Go LOC | 190,341 |
+| Production Go LOC | 217,033 |
+| Test Go LOC | 190,416 |
 | Go modules | 1 |
 | Plugin capability packages | 15 |
 | Version | `0.0.1` |

@@ -42,13 +42,13 @@ func (c *capture) everything() string {
 // A code for a new machine is made by a signed-in browser sending the page's
 // own form, and by nothing else: not signed out, not with the API key, not
 // from another page. A refusal never reaches the fleet; one the page turns
-// away itself is in the Security log. A form that names no usable machine or
-// no way to run makes nothing.
+// away itself is in the Security log. A form that names no usable machine
+// makes nothing.
 func TestFleetAddRefusals(t *testing.T) {
 	c := installCapture(t)
 	f := fleetFake(3)
 	h := fleetServer(f).served()
-	good := url.Values{"name": {"web9"}, "runs": {"user"}}
+	good := url.Values{"name": {"web9"}}
 	for _, tc := range []struct {
 		name   string
 		form   url.Values
@@ -102,12 +102,9 @@ func TestFleetAddRefusals(t *testing.T) {
 		form url.Values
 		want string
 	}{
-		{"no name", url.Values{"runs": {"user"}}, fleetAddName},
-		{"a blank name", url.Values{"name": {"   "}, "runs": {"user"}}, fleetAddName},
-		{"a name longer than any the fleet takes", url.Values{"name": {strings.Repeat("a", 64)}, "runs": {"user"}}, fleetAddName},
-		{"no way to run", url.Values{"name": {"web9"}}, "Choose whether it runs as you or from boot."},
-		{"another way to run", url.Values{"name": {"web9"}, "runs": {"root"}}, "Choose whether it runs as you or from boot."},
-		{"a way to run in other letters", url.Values{"name": {"web9"}, "runs": {"BOOT"}}, "Choose whether it runs as you or from boot."},
+		{"no name", url.Values{}, fleetAddName},
+		{"a blank name", url.Values{"name": {"   "}}, fleetAddName},
+		{"a name longer than any the fleet takes", url.Values{"name": {strings.Repeat("a", 64)}}, fleetAddName},
 	} {
 		rec := sendForm(h, http.MethodPost, "/fleet/add", tc.form, here)
 		page, msg, errMsg := fleetFlash(rec)
@@ -120,14 +117,14 @@ func TestFleetAddRefusals(t *testing.T) {
 	}
 
 	// A body past the dashboard's form limit is not read at all.
-	if rec := sendForm(h, http.MethodPost, "/fleet/add", url.Values{"name": {strings.Repeat("a", 1<<20)}, "runs": {"boot"}}, here); rec.Code < 400 || len(enrollCalls(f)) != 0 {
+	if rec := sendForm(h, http.MethodPost, "/fleet/add", url.Values{"name": {strings.Repeat("a", 1<<20)}}, here); rec.Code < 400 || len(enrollCalls(f)) != 0 {
 		t.Errorf("a megabyte of name: %d, calls %q", rec.Code, enrollCalls(f))
 	}
 
 	// A name the fleet refuses (the same check `tenant fleet enroll` makes)
 	// is the page's plain words, and the fleet's raw words stay in the log.
 	for _, name := range []string{"web 1", "taken"} {
-		rec := sendForm(h, http.MethodPost, "/fleet/add", url.Values{"name": {name}, "runs": {"user"}}, here)
+		rec := sendForm(h, http.MethodPost, "/fleet/add", url.Values{"name": {name}}, here)
 		if _, _, errMsg := fleetFlash(rec); rec.Code != http.StatusSeeOther || errMsg != fleetAddName {
 			t.Errorf("%q: %d, err %q", name, rec.Code, errMsg)
 		}
@@ -159,20 +156,20 @@ func TestFleetAddShowsTheCodeOnce(t *testing.T) {
 		signedIn(r)
 	}
 	datastar := and(here, header("Datastar-Request", "true"))
-	tag := regexp.MustCompile(`^enroll\|web9\|(true|false)\|dashboard session [0-9a-f]{8} from (127\.0\.0\.1|100\.64\.0\.7):50000$`)
+	tag := regexp.MustCompile(`^enroll\|web9\|dashboard session [0-9a-f]{8} from (127\.0\.0\.1|100\.64\.0\.7):50000$`)
 	for _, tc := range []struct {
 		name string
-		runs string
+		form url.Values
 		set  func(*http.Request)
 		sse  bool
 	}{
-		{"a plain post, as the user", "user", here, false},
-		{"a plain post, from boot", "boot", here, false},
-		{"the page's own Datastar post", "user", datastar, true},
-		{"a browser on the tailnet", "boot", tailnet, false},
+		{"a plain post", url.Values{"name": {" web9 "}}, here, false},
+		{"a page from before a child was always the machine's own, which still says how it runs", url.Values{"name": {" web9 "}, "runs": {"user"}}, here, false},
+		{"the page's own Datastar post", url.Values{"name": {" web9 "}}, datastar, true},
+		{"a browser on the tailnet", url.Values{"name": {" web9 "}}, tailnet, false},
 	} {
 		f.calls = nil
-		rec := sendForm(h, http.MethodPost, "/fleet/add", url.Values{"name": {" web9 "}, "runs": {tc.runs}}, tc.set)
+		rec := sendForm(h, http.MethodPost, "/fleet/add", tc.form, tc.set)
 		body := rec.Body.String()
 		if rec.Code != http.StatusOK || rec.Header().Get("Location") != "" {
 			t.Fatalf("%s: %d to %q:\n%s", tc.name, rec.Code, rec.Header().Get("Location"), body)
@@ -185,7 +182,7 @@ func TestFleetAddShowsTheCodeOnce(t *testing.T) {
 		if tc.sse != strings.Contains(rec.Header().Get("Content-Type"), "text/event-stream") {
 			t.Errorf("%s: answered as %q", tc.name, rec.Header().Get("Content-Type"))
 		}
-		for _, want := range []string{fakeEnrollCode, "TENANT_ENROLL_CODE=&#39;" + fakeEnrollCode + "&#39; sh", "works once, until 2026-11-19 10:15",
+		for _, want := range []string{fakeEnrollCode, "TENANT_ENROLL_CODE=&#39;" + fakeEnrollCode + "&#39; sudo", "it runs as root or SYSTEM, from boot", "works once, until 2026-11-19 10:15",
 			"192.168.1.5:9777", "a machine at another site cannot dial these", "Copy", "el.previousElementSibling.textContent"} {
 			if !strings.Contains(body, want) {
 				t.Errorf("%s: the answer lacks %q:\n%s", tc.name, want, body)
@@ -200,7 +197,7 @@ func TestFleetAddShowsTheCodeOnce(t *testing.T) {
 			}
 		}
 		calls := enrollCalls(f)
-		if len(calls) != 1 || !tag.MatchString(calls[0]) || strings.Contains(calls[0], testSession) || strings.HasPrefix(calls[0], "enroll|web9|"+map[string]string{"user": "true", "boot": "false"}[tc.runs]) {
+		if len(calls) != 1 || !tag.MatchString(calls[0]) || strings.Contains(calls[0], testSession) {
 			t.Errorf("%s: the fleet was asked %q", tc.name, calls)
 		}
 		// A reload shows the page, not the code.
@@ -214,15 +211,19 @@ func TestFleetAddShowsTheCodeOnce(t *testing.T) {
 }
 
 // The Fleet page offers Add machine on a fleet that can be listed, and the
-// form posts the two fields the route takes.
+// form posts the one field the route takes: a child is always the machine's
+// own, so there is no way to run to choose.
 func TestFleetPageOffersAddMachine(t *testing.T) {
 	h := fleetServer(fleetFake(3)).served()
 	rec := sendForm(h, http.MethodGet, "/fleet", nil, here)
 	body := rec.Body.String()
-	for _, want := range []string{`action="/fleet/add"`, `name="name"`, `maxlength="63"`, `name="runs" value="user" checked`, `name="runs" value="boot"`} {
+	for _, want := range []string{`action="/fleet/add"`, `name="name"`, `maxlength="63"`, "runs as root or SYSTEM, from boot"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the Fleet page lacks %q", want)
 		}
+	}
+	if strings.Contains(body, `name="runs"`) {
+		t.Error("the page still asks how the child runs")
 	}
 	if strings.Contains(body, fakeEnrollCode) {
 		t.Error("the page shows a code nobody asked for")
@@ -280,12 +281,12 @@ func FuzzFleetAdd(f *testing.F) {
 			return
 		}
 		form, _ := url.ParseQuery(body)
-		name, runs := strings.TrimSpace(form.Get("name")), form.Get("runs")
+		name := strings.TrimSpace(form.Get("name"))
 		switch {
 		case cookie != testSession || !sameOrigin(origin):
 			t.Errorf("a code for cookie %q, origin %q, auth %q", cookie, origin, auth)
-		case name == "" || len(name) > maxFleetName || runs != "user" && runs != "boot":
-			t.Errorf("a code for name %q, runs %q", name, runs)
+		case name == "" || len(name) > maxFleetName:
+			t.Errorf("a code for name %q", name)
 		}
 	})
 }

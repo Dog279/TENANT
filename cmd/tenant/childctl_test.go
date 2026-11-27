@@ -405,9 +405,13 @@ func TestChildInstallRefusals(t *testing.T) {
 		args []string
 		want string
 	}{
-		"a ceiling that is none":       {[]string{"install", "--dir", filepath.Join(t.TempDir(), "c"), "--ceiling", "root"}, "full, no-exec or read-only"},
-		"--system with a directory":    {[]string{"install", "--system", "--dir", filepath.Join(t.TempDir(), "c")}, "does not take --dir"},
-		"--system without elevation":   {[]string{"install", "--system"}, "needs an elevated terminal"},
+		"a ceiling that is none":     {[]string{"install", "--dir", filepath.Join(t.TempDir(), "c"), "--ceiling", "root"}, "full, no-exec or read-only"},
+		"--system with a directory":  {[]string{"install", "--system", "--dir", filepath.Join(t.TempDir(), "c")}, "does not take --dir"},
+		"--system without elevation": {[]string{"install", "--system"}, "needs an elevated terminal"},
+		// A child is the machine's own: the bare command is the same install,
+		// and says how a machine nobody may administer gets one all the same.
+		"without elevation":            {[]string{"install"}, "tenant child install needs an elevated terminal"},
+		"without elevation, the way":   {[]string{"install"}, "tenant child install --dir <directory>"},
 		"a sandbox this build has not": {[]string{"install", "--dir", filepath.Join(t.TempDir(), "c"), "--sandbox", "chroot"}, `--sandbox "chroot"`},
 		"an argument to another verb":  {[]string{"pause", "now"}, "unexpected argument"},
 		"no verb":                      {nil, "usage: tenant child"},
@@ -1575,5 +1579,50 @@ func TestChildWithoutAConfigItCanRead(t *testing.T) {
 	}
 	if got := childDenyRoots("darwin"); !slices.Contains(got, "/dev") || childDenyRoots("windows") != nil {
 		t.Errorf("deny roots: darwin %v, windows %v", got, childDenyRoots("windows"))
+	}
+}
+
+// ownChildAt points this account's own child directory at dir for a test. No
+// test reads the one this machine's account may really have (TestMain).
+func ownChildAt(t *testing.T, dir string) {
+	t.Helper()
+	prev := childOwnDir
+	childOwnDir = func() (string, error) { return dir, nil }
+	t.Cleanup(func() { childOwnDir = prev })
+}
+
+// An install is refused while this account still has a child that an earlier
+// Tenant installed for it: beside it the machine would be two machines to its
+// master, and the commands without a flag would go on acting on the old one.
+// The refusal comes before the code is read.
+func TestChildInstallBesideAnOwnChild(t *testing.T) {
+	m := newFleetMaster(t)
+	own := filepath.Join(t.TempDir(), "own")
+	if err := os.MkdirAll(own, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fleet.ChildPath(own), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ownChildAt(t, own)
+	sysDir := filepath.Join(t.TempDir(), "machine", "child")
+	prevDir, prevExe := childSystemDir, checkChildExe
+	childSystemDir, checkChildExe = func() string { return sysDir }, func(string) error { return nil }
+	t.Cleanup(func() { childSystemDir, checkChildExe = prevDir, prevExe })
+	fakeElevated(t, true)
+
+	code := strings.NewReader(m.code("box") + "\n")
+	unread := code.Len()
+	var out bytes.Buffer
+	err := childInstall(context.Background(), code, &out, sysDir, childInstallOpts{system: true, ceiling: "full", sandbox: "host"})
+	if exitCode(err) != 2 || !strings.Contains(err.Error(), "already has a child of its own") || !strings.Contains(err.Error(), "tenant child uninstall") {
+		t.Fatalf("an install beside this account's own child: %v (exit %d)", err, exitCode(err))
+	}
+	if exists(sysDir) || code.Len() != unread {
+		t.Errorf("the refusal made %s (%v) or read the code (%d of %d bytes left)", sysDir, exists(sysDir), code.Len(), unread)
+	}
+	// A child in a directory someone names is not held back by it.
+	if dir, _, err := enrollWith(t, m.code("other"), childInstallOpts{ceiling: "full", sandbox: "host"}); err != nil || !exists(fleet.ChildPath(dir)) {
+		t.Errorf("a --dir install with an own child present: %v", err)
 	}
 }
