@@ -32,6 +32,16 @@ func TestProcessesOfFindsAnotherProcessOfTheSameBinary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantOtherNotSelf(t, startLiveHelper(t), processesOf(exe))
+	if got := processesOf(os.DevNull + "-no-such-binary"); len(got) != 0 {
+		t.Errorf("for a file that is not there: %q", got)
+	}
+}
+
+// startLiveHelper starts this test binary a second time and returns its pid
+// once it runs. It ends with the test.
+func startLiveHelper(t *testing.T) int {
+	t.Helper()
 	cmd := bootHelperCmd("live", t.TempDir())
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -51,20 +61,23 @@ func TestProcessesOfFindsAnotherProcessOfTheSameBinary(t *testing.T) {
 	if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || strings.TrimSpace(line) != "ready" {
 		t.Fatalf("the helper did not come up: %q %v", line, err)
 	}
-	got := processesOf(exe)
+	return cmd.Process.Pid
+}
+
+// wantOtherNotSelf: the listing names the other process and not this one.
+func wantOtherNotSelf(t *testing.T, other int, got []string) {
+	t.Helper()
+	names := func(p string, pid int) bool {
+		return p == fmt.Sprintf("pid %d", pid) || strings.HasPrefix(p, fmt.Sprintf("pid %d ", pid))
+	}
 	found := false
 	for _, p := range got {
-		if p == fmt.Sprintf("pid %d", cmd.Process.Pid) || strings.HasPrefix(p, fmt.Sprintf("pid %d ", cmd.Process.Pid)) {
-			found = true
-		}
-		if p == fmt.Sprintf("pid %d", os.Getpid()) || strings.HasPrefix(p, fmt.Sprintf("pid %d ", os.Getpid())) {
+		found = found || names(p, other)
+		if names(p, os.Getpid()) {
 			t.Errorf("it lists this process itself: %q", p)
 		}
 	}
 	if !found {
-		t.Errorf("processesOf(%s) = %q, want pid %d among them", exe, got, cmd.Process.Pid)
-	}
-	if got := processesOf(os.DevNull + "-no-such-binary"); len(got) != 0 {
-		t.Errorf("for a file that is not there: %q", got)
+		t.Errorf("got %q, want pid %d among them", got, other)
 	}
 }
