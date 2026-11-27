@@ -114,7 +114,7 @@ func TestFleetLogCoversAMachinesLife(t *testing.T) {
 	if e := one(fleet.Listening, event.OpStop, "role", "serve"); field(e, "duration") == "" {
 		t.Fatalf("the port closing: %+v", e.Data)
 	}
-	if said := fleetLog(ev); strings.Contains(said, ch.enrollCode) || strings.Contains(said, strings.TrimPrefix(ch.enrollCode, "tntfleet1_")) {
+	if said := fleetLog(ev); strings.Contains(said, ch.enrollCode) || strings.Contains(said, strings.TrimPrefix(ch.enrollCode, "tntfleet2_")) {
 		t.Fatalf("the fleet log holds an enrollment code:\n%s", said)
 	}
 }

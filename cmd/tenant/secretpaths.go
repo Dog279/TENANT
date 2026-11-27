@@ -57,7 +57,7 @@ func managedSecrets(cfgDir, dataDir string) ([]managedSecret, error) {
 		// A fleet child enrolled by this account keeps its key and its limits
 		// in <config>/child (TEN-531, childctl.go).
 		child := filepath.Join(cfgDir, "child")
-		for _, path := range []string{fleet.ChildPath(child), fleet.ChildIdentityPath(child), fleet.ChildStatusPath(child)} {
+		for _, path := range []string{fleet.ChildPath(child), fleet.ChildIdentityPath(child), fleet.ChildNextIdentityPath(child), fleet.ChildStatusPath(child)} {
 			add(cfgDir, path)
 		}
 		// Listed, not globbed: a config dir containing '[' would make the

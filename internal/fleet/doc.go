@@ -5,13 +5,21 @@
 //
 // # Identity and TLS
 //
-// Every machine has one key pair and one self-signed certificate
+// Every machine has one ML-DSA-87 key pair and one self-signed certificate
 // (MintIdentity, LoadIdentity), valid for server and client use for ten
 // years. Nothing is signed by an authority: each side pins the other's
-// certificate by its SHA-256 fingerprint. MasterTLS is the master's listener
-// configuration and ChildTLS the child's; both demand TLS 1.3 and a
-// certificate from the other side, and neither can be built without one, so
-// there is no plain-HTTP fleet connection to construct.
+// certificate by its SHA-384 fingerprint. MasterTLS is the master's listener
+// configuration and ChildTLS the child's; both demand a certificate from the
+// other side and the profile of internal/cnsa (TLS 1.3, AES-256-GCM,
+// ML-KEM-1024, ML-DSA-87), which each end checks in the handshake, and
+// neither can be built without a certificate, so there is no plain-HTTP
+// fleet connection to construct.
+//
+// A fleet made before that profile has ECDSA certificates pinned by SHA-256.
+// Its master keeps that identity beside its new one and serves it, under a
+// handshake rule of its own, to the machines that still pin it; over such a
+// legacy link a machine is said hello to, updated and moved to a new
+// identity, and nothing else (rekey.go).
 //
 // On the master a connection is checked against fleet.json during the
 // handshake. The handler then asks Store.Identify for the machine behind the
@@ -32,7 +40,10 @@
 //
 // CreateEnrollment prints a one-time code; Enroll, on the new machine, spends
 // it at the master's enroll endpoint (NewEnrollHandler), the only place a
-// certificate that is not pinned yet is accepted. The machine is then pending
+// certificate that is not pinned yet is accepted. The code holds the seed of
+// a one-time ML-DSA-87 key and is never sent: the machine signs, with that
+// key, the secret of the one connection it enrolls over and its own
+// certificate, and the master knows the key by the hash of its public half. The machine is then pending
 // until the operator types the six digits both sides derive from the two
 // fingerprints (ConfirmCode, Store.Confirm).
 //

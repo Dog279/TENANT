@@ -772,7 +772,8 @@ func childServe(ctx context.Context, dir string, log *slog.Logger, hello func() 
 		log.Warn("fleet child: no copy of this machine's memory can be kept", "err", err)
 		memory = nil
 	}
-	cfg := fleet.ClientConfig{Dir: dir, Tools: gate.Tools(mux), Version: version.Version, User: who, Hello: hello, Memory: memory, Log: log}
+	cfg := fleet.ClientConfig{Dir: dir, Tools: gate.Tools(mux), Version: version.Version, User: who, Hello: hello, Memory: memory, Log: log,
+		Rekeyed: audit.Rekey} // the one change of the pinned master that comes over the link is in the audit log first
 	var ready chan childStaged
 	if upd != nil {
 		cfg.Update, ready = upd.piece, upd.ready
@@ -1039,7 +1040,7 @@ func childUninstall(ctx context.Context, out io.Writer, dir string) error {
 	if child, err := fleet.LoadChild(fleet.ChildPath(dir)); err == nil {
 		name = " " + child.Name
 	}
-	for _, p := range []string{fleet.ChildPath(dir), fleet.ChildPath(dir) + ".lock", fleet.ChildIdentityPath(dir),
+	for _, p := range []string{fleet.ChildPath(dir), fleet.ChildPath(dir) + ".lock", fleet.ChildIdentityPath(dir), fleet.ChildNextIdentityPath(dir),
 		fleet.ChildStatusPath(dir), fleet.PausedPath(dir), fleet.ChildUpdatePath(dir)} {
 		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err

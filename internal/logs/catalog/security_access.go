@@ -126,7 +126,7 @@ var PeerUnpaired = Security.Event(4312, event.Info, "Peering", "Unpaired peer {p
 
 var FleetEnrollRefused = Security.Event(4321, event.Warning, "Fleet", "Fleet enrollment from {remote} refused: {reason}", "reason", "remote", "name", "machine", "certificate").
 	Keywords("audit.failure").
-	Doc("The fleet's enroll endpoint turned an attempt away. reason says why: rate_limited, bad_method, no_certificate, enrollment_off, store_unreadable, body_too_large, bad_request, unknown_code, expired_code, conflict (the name or the certificate is in use). name is the machine name on the code, when the code was recognised; certificate is the fingerprint the attempt presented.",
+	Doc("The fleet's enroll endpoint turned an attempt away. reason says why: rate_limited, bad_method, no_certificate, enrollment_off, store_unreadable, body_too_large, bad_request, unknown_code, bad_proof, expired_code, conflict (the name or the certificate is in use). name is the machine name on the code, when the code was recognised; certificate is the fingerprint the attempt presented.",
 		"A code that was mistyped or has expired, a machine enrolled twice, or something on the network probing the fleet port.",
 		"For a machine of yours, make a new code with tenant fleet enroll. Many from an address you don't know mean someone is guessing: keep the fleet port off public networks.")
 

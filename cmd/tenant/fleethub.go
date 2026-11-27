@@ -339,7 +339,16 @@ func (h *fleetHub) tick(ctx context.Context) {
 	if mgr != nil { // the bind address or the identity changed under a running listener
 		h.close()
 	}
-	id, err := fleet.LoadIdentity(path)
+	// A master from before the ML-DSA-87 profile gets its new identity here,
+	// and keeps the old one for the machines that still pin it.
+	id, legacy, err := fleet.LoadMasterIdentity(h.cfgDir)
+	if err == nil {
+		// The file as it is now: a new identity must not look like a change
+		// to the next tick, which would close every link again.
+		if fi, serr := os.Lstat(path); serr == nil {
+			want.identity = fi.ModTime().UnixNano()
+		}
+	}
 	if err == nil && fleetListenGuard != nil {
 		err = fleetListenGuard(listen)
 	}
@@ -347,7 +356,7 @@ func (h *fleetHub) tick(ctx context.Context) {
 		h.failed(ctx, err)
 		return
 	}
-	mgr, err = fleet.StartManager(fleet.ManagerConfig{Store: h.store, Identity: id, Addr: listen, Role: h.role,
+	mgr, err = fleet.StartManager(fleet.ManagerConfig{Store: h.store, Identity: id, Legacy: legacy, Addr: listen, Role: h.role,
 		Refused: h.refused, Alert: h.alert, Enrolled: h.enrolled, Connected: h.connected})
 	var held *fleet.HeldError
 	switch {
@@ -602,7 +611,9 @@ func (h *fleetHub) alert(r fleet.Refusal) {
 // fleetIdentity is the master's fleet identity in cfgDir. A Tenant that was
 // never made a master has none.
 func fleetIdentity(cfgDir string) (fleet.Identity, error) {
-	id, err := fleet.LoadIdentity(fleet.MasterIdentityPath(cfgDir))
+	// A master from before the ML-DSA-87 profile gets its new identity by
+	// whichever comes first, this or the listener (fleetHub.tick).
+	id, _, err := fleet.LoadMasterIdentity(cfgDir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return fleet.Identity{}, errors.New("this Tenant has no fleet yet: run `tenant fleet init`")
 	}

@@ -1,8 +1,10 @@
 package fleet
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/mldsa"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -80,7 +82,7 @@ func (m *master) serve(t *testing.T, cfg *tls.Config) *served {
 		fmt.Fprint(w, mach.ID)
 	})
 	if cfg == nil {
-		cfg = must(MasterTLS(m.id, m.store))(t)
+		cfg = must(MasterTLS(m.id, nil, m.store))(t)
 	}
 	srv := httptest.NewUnstartedServer(mux)
 	srv.TLS = cfg
@@ -117,19 +119,54 @@ func (m *master) link(t *testing.T, s *served, id Identity) (string, error) {
 	return string(b), err
 }
 
-// post sends a raw request to the enroll endpoint as id.
-func (m *master) post(t *testing.T, s *served, id Identity, method string, body []byte) int {
+// post sends a raw request to the enroll endpoint as id. body makes the
+// request's body from the connection it is sent over, so that it can carry
+// a proof for that connection (enrollBody); nil sends no body.
+func (m *master) post(t *testing.T, s *served, id Identity, method string, body func(*tls.ConnectionState) []byte) int {
 	t.Helper()
-	client := &http.Client{Timeout: 20 * time.Second, Transport: &http.Transport{
-		TLSClientConfig: must(childTLS(id, m.id.Fingerprint, enrollServerName))(t), DisableKeepAlives: true}}
-	req := must(http.NewRequest(method, "https://"+s.addr+EnrollPath, bytes.NewReader(body)))(t)
-	resp, err := client.Do(req)
+	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 20 * time.Second}, "tcp", s.addr, must(childTLS(id, m.id.Fingerprint, enrollServerName))(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(20 * time.Second))
+	var b []byte
+	if body != nil {
+		cs := conn.ConnectionState()
+		b = body(&cs)
+	}
+	req := must(http.NewRequest(method, "https://"+enrollServerName+EnrollPath, bytes.NewReader(b)))(t)
+	req.Close = true
+	// Written while the answer is read: a master that refuses a body too
+	// large answers before it has read all of it.
+	go func() { _ = req.Write(conn) }()
+	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return resp.StatusCode
+}
+
+// rawBody is a body that is the same on every connection.
+func rawBody(s string) func(*tls.ConnectionState) []byte {
+	return func(*tls.ConnectionState) []byte { return []byte(s) }
+}
+
+// enrollBody is the start of what Enroll posts for code over a connection,
+// as the machine whose certificate is signer's: the code's public key and its
+// proof for that connection and certificate, then rest, which carries on the
+// JSON object and closes it.
+func enrollBody(t *testing.T, code string, signer Identity, rest string) func(*tls.ConnectionState) []byte {
+	return func(cs *tls.ConnectionState) []byte {
+		t.Helper()
+		key := must(parseEnrollCode(code))(t).key()
+		msg := must(enrollMessage(cs, signer.Fingerprint))(t)
+		proof := must(key.Sign(nil, msg, &mldsa.Options{Context: enrollContext}))(t)
+		return fmt.Appendf(nil, `{"key":%q,"proof":%q%s`, base64.StdEncoding.EncodeToString(key.PublicKey().Bytes()),
+			base64.StdEncoding.EncodeToString(proof), rest)
+	}
 }
 
 func TestEnrollConfirmAndConnect(t *testing.T) {
@@ -139,7 +176,7 @@ func TestEnrollConfirmAndConnect(t *testing.T) {
 
 	// The code is one line that a peer invite parser turns away, and that
 	// says nothing in the clear.
-	if !strings.HasPrefix(code, "tntfleet1_") || strings.ContainsAny(code, " \n") {
+	if !strings.HasPrefix(code, "tntfleet2_") || strings.ContainsAny(code, " \n") {
 		t.Errorf("code = %q", code)
 	}
 	if _, err := peering.ParseInvite(code); err == nil {
@@ -211,7 +248,7 @@ func TestEnrollConfirmAndConnect(t *testing.T) {
 }
 
 func TestConfirmCode(t *testing.T) {
-	a, b, c := strings.Repeat("0a", 32), strings.Repeat("0b", 32), strings.Repeat("0c", 32)
+	a, b, c := strings.Repeat("0a", 48), strings.Repeat("0b", 48), strings.Repeat("0c", 48)
 	ab := ConfirmCode(a, b)
 	if len(ab) != 6 || strings.Trim(ab, "0123456789") != "" {
 		t.Errorf("ConfirmCode = %q, want six digits", ab)
@@ -248,7 +285,7 @@ func TestEnrollExpiredCode(t *testing.T) {
 	}
 
 	// A code past its end on the child's own clock is not even sent.
-	old := enrollCode{Name: "box", Addresses: []string{s.addr}, Fingerprint: m.id.Fingerprint, Secret: "c2VjcmV0", Expires: time.Now().Add(-time.Minute).Unix()}
+	old := enrollCode{Name: "box", Addresses: []string{s.addr}, Fingerprint: m.id.Fingerprint, Seed: fuzzSeed, Expires: time.Now().Add(-time.Minute).Unix()}
 	if _, _, err := Enroll(ctxFor(t), old.encode(), child, linuxBox); err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Errorf("Enroll with a code that expired here: %v", err)
 	}
@@ -359,9 +396,12 @@ func TestEnrollRateLimit(t *testing.T) {
 	s := m.serve(t, nil)
 	child := newIdentity(t)
 	guess := func() error {
-		secret := newSecret()
-		code := enrollCode{Name: "box", Addresses: []string{s.addr}, Fingerprint: m.id.Fingerprint, Secret: secret, Expires: time.Now().Add(time.Hour).Unix()}
-		_, _, err := Enroll(ctxFor(t), code.encode(), child, linuxBox)
+		seed, _, err := newEnrollKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		code := enrollCode{Name: "box", Addresses: []string{s.addr}, Fingerprint: m.id.Fingerprint, Seed: seed, Expires: time.Now().Add(time.Hour).Unix()}
+		_, _, err = Enroll(ctxFor(t), code.encode(), child, linuxBox)
 		return err
 	}
 	for i := range enrollAttempts {
@@ -457,34 +497,44 @@ func TestEnrollRequestRefusals(t *testing.T) {
 	s := m.serve(t, nil)
 	s.handler.limit.max = 1000
 	code := must(m.store.CreateEnrollment(m.id.Fingerprint, "box", 0, ""))(t)
-	secret := secretOf(t, code)
 	child := newIdentity(t)
-	valid := `{"secret":"` + secret + `","os":"linux","ceiling":"full"`
+	valid := func(rest string) func(*tls.ConnectionState) []byte {
+		return enrollBody(t, code, child, `,"os":"linux","ceiling":"full"`+rest)
+	}
+	// A valid request and a second value. (Two whole requests no longer fit
+	// in maxEnrollBody: a key and proof are about 10 KiB in base64.)
+	twice := func(cs *tls.ConnectionState) []byte {
+		return append(valid(`}`)(cs), `{"os":"linux","ceiling":"full"}`...)
+	}
+	// The code's key, signing for another machine's certificate.
+	forOther := enrollBody(t, code, newIdentity(t), `,"os":"linux","ceiling":"full"}`)
+	short := base64.StdEncoding.EncodeToString(make([]byte, 64))
 
 	for _, tc := range []struct {
 		name   string
 		method string
-		body   string
+		body   func(*tls.ConnectionState) []byte
 		status int
 		reason Reason
 	}{
-		{"a body over the limit", "POST", valid + `,"user":"` + strings.Repeat("a", maxEnrollBody) + `"}`, http.StatusRequestEntityTooLarge, RefusedTooLarge},
-		{"sixteen times the limit", "POST", strings.Repeat(" ", 16*maxEnrollBody), http.StatusRequestEntityTooLarge, RefusedTooLarge},
-		{"not JSON", "POST", "enroll me", http.StatusBadRequest, RefusedBadRequest},
-		{"an empty body", "POST", "", http.StatusBadRequest, RefusedBadRequest},
-		{"two values", "POST", valid + `}` + valid + `}`, http.StatusBadRequest, RefusedBadRequest},
-		{"no secret", "POST", `{"os":"linux","ceiling":"full"}`, http.StatusBadRequest, RefusedBadRequest},
-		{"a secret that is not one", "POST", `{"secret":"a b","os":"linux","ceiling":"full"}`, http.StatusBadRequest, RefusedBadRequest},
-		{"an unknown OS", "POST", `{"secret":"` + secret + `","os":"templeos","ceiling":"full"}`, http.StatusBadRequest, RefusedBadRequest},
-		{"an unknown ceiling", "POST", `{"secret":"` + secret + `","os":"linux","ceiling":"root"}`, http.StatusBadRequest, RefusedBadRequest},
-		{"escape codes in the user", "POST", valid + `,"user":"\u001b[31mroot"}`, http.StatusBadRequest, RefusedBadRequest},
-		{"a long version", "POST", valid + `,"version":"` + strings.Repeat("1", maxReportedLen+1) + `"}`, http.StatusBadRequest, RefusedBadRequest},
-		{"a GET", "GET", "", http.StatusMethodNotAllowed, RefusedMethod},
-		{"a PUT", "PUT", valid + `}`, http.StatusMethodNotAllowed, RefusedMethod},
+		{"a body over the limit", "POST", valid(`,"user":"` + strings.Repeat("a", maxEnrollBody) + `"}`), http.StatusRequestEntityTooLarge, RefusedTooLarge},
+		{"sixteen times the limit", "POST", rawBody(strings.Repeat(" ", 16*maxEnrollBody)), http.StatusRequestEntityTooLarge, RefusedTooLarge},
+		{"not JSON", "POST", rawBody("enroll me"), http.StatusBadRequest, RefusedBadRequest},
+		{"an empty body", "POST", rawBody(""), http.StatusBadRequest, RefusedBadRequest},
+		{"two values", "POST", twice, http.StatusBadRequest, RefusedBadRequest},
+		{"no key or proof", "POST", rawBody(`{"os":"linux","ceiling":"full"}`), http.StatusBadRequest, RefusedBadRequest},
+		{"a key and proof that are not one", "POST", rawBody(`{"key":"` + short + `","proof":"` + short + `","os":"linux","ceiling":"full"}`), http.StatusBadRequest, RefusedBadRequest},
+		{"an unknown OS", "POST", enrollBody(t, code, child, `,"os":"templeos","ceiling":"full"}`), http.StatusBadRequest, RefusedBadRequest},
+		{"an unknown ceiling", "POST", enrollBody(t, code, child, `,"os":"linux","ceiling":"root"}`), http.StatusBadRequest, RefusedBadRequest},
+		{"escape codes in the user", "POST", valid(`,"user":"\u001b[31mroot"}`), http.StatusBadRequest, RefusedBadRequest},
+		{"a long version", "POST", valid(`,"version":"` + strings.Repeat("1", maxReportedLen+1) + `"}`), http.StatusBadRequest, RefusedBadRequest},
+		{"a proof for another certificate", "POST", forOther, http.StatusForbidden, RefusedBadProof},
+		{"a GET", "GET", nil, http.StatusMethodNotAllowed, RefusedMethod},
+		{"a PUT", "PUT", valid(`}`), http.StatusMethodNotAllowed, RefusedMethod},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before, _ := s.audit()
-			if got := m.post(t, s, child, tc.method, []byte(tc.body)); got != tc.status {
+			if got := m.post(t, s, child, tc.method, tc.body); got != tc.status {
 				t.Errorf("status = %d, want %d", got, tc.status)
 			}
 			after, alerts := s.audit()
@@ -496,11 +546,26 @@ func TestEnrollRequestRefusals(t *testing.T) {
 			}
 		})
 	}
+	// A proof read off one connection is no proof on another: the first
+	// connection here sends nothing that enrolls, the second its proof.
+	var lifted []byte
+	if got := m.post(t, s, child, "POST", func(cs *tls.ConnectionState) []byte {
+		lifted = valid(`}`)(cs)
+		return []byte("{")
+	}); got != http.StatusBadRequest {
+		t.Errorf("status = %d", got)
+	}
+	if got := m.post(t, s, child, "POST", rawBody(string(lifted))); got != http.StatusForbidden {
+		t.Errorf("a proof from another connection: status %d", got)
+	}
+	if got := s.reasons(); len(got) < 2 || got[len(got)-1] != RefusedBadProof {
+		t.Errorf("audit = %v", got)
+	}
 	if list := must(m.store.Machines())(t); len(list) != 0 {
 		t.Fatalf("a refused request enrolled %+v", list)
 	}
 	// A key this master does not know is skipped, and the code still works.
-	if got := m.post(t, s, child, "POST", []byte(valid+`,"user":"svc","hostname":"later"}`)); got != http.StatusOK {
+	if got := m.post(t, s, child, "POST", valid(`,"user":"svc","hostname":"later"}`)); got != http.StatusOK {
 		t.Fatalf("a valid request with one more key: status %d", got)
 	}
 	mach := must(m.store.ByName("box"))(t)
@@ -516,7 +581,12 @@ func TestEnrollHandlerRefusesWithoutACertificate(t *testing.T) {
 	code := must(m.store.CreateEnrollment(m.id.Fingerprint, "box", 0, ""))(t)
 	var refused []Refusal
 	h := NewEnrollHandler(m.store, func(r Refusal) { refused = append(refused, r) }, nil)
-	body := `{"secret":"` + secretOf(t, code) + `","os":"linux","ceiling":"full","fingerprint":"` + strings.Repeat("ab", 32) + `"}`
+	// The code's own key, with a signature of the right size: only the
+	// missing certificate is wrong.
+	key := must(parseEnrollCode(code))(t).key()
+	sig := must(key.Sign(nil, []byte("x"), &mldsa.Options{Context: enrollContext}))(t)
+	body := `{"key":"` + base64.StdEncoding.EncodeToString(key.PublicKey().Bytes()) + `","proof":"` + base64.StdEncoding.EncodeToString(sig) +
+		`","os":"linux","ceiling":"full","fingerprint":"` + strings.Repeat("ab", 48) + `"}`
 
 	plain := httptest.NewRequest("POST", EnrollPath, strings.NewReader(body))
 	rec := httptest.NewRecorder()
@@ -566,7 +636,7 @@ func TestEnrollSwitchedOff(t *testing.T) {
 		t.Errorf("the handler was reached: %+v", refused)
 	}
 	// A machine already pinned reaches it and is told no.
-	if got := m.post(t, s, pinned, "POST", []byte(`{"secret":"`+secretOf(t, code)+`","os":"linux","ceiling":"full"}`)); got != http.StatusServiceUnavailable {
+	if got := m.post(t, s, pinned, "POST", enrollBody(t, code, pinned, `,"os":"linux","ceiling":"full"}`)); got != http.StatusServiceUnavailable {
 		t.Errorf("status = %d", got)
 	}
 	if got := s.reasons(); !slices.Equal(got, []Reason{RefusedOff}) {
@@ -706,7 +776,7 @@ func TestEnrollConflicts(t *testing.T) {
 	if err := json.Unmarshal(must(os.ReadFile(StorePath(m.dir)))(t), &d); err != nil {
 		t.Fatal(err)
 	}
-	d.Machines["m00000000000000aa"] = &Machine{Name: "TAKEN", Fingerprint: strings.Repeat("ee", 32), State: StatePaused,
+	d.Machines["m00000000000000aa"] = &Machine{Name: "TAKEN", Fingerprint: strings.Repeat("ee", 48), State: StatePaused,
 		Reported: linuxBox, EnrolledAt: time.Now().UTC()}
 	writeRaw(t, StorePath(m.dir), must(json.Marshal(d))(t))
 	if _, err := enroll(taken, newIdentity(t)); err == nil || last() != RefusedConflict {
@@ -729,7 +799,7 @@ func TestEnrollGivesUpOnASilentMaster(t *testing.T) {
 		_, _ = io.Copy(io.Discard, c) // reads the request, never answers
 		hung <- c
 	}()
-	code := enrollCode{Name: "box", Addresses: []string{ln.Addr().String()}, Fingerprint: m.id.Fingerprint, Secret: "c2VjcmV0", Expires: time.Now().Add(time.Hour).Unix()}
+	code := enrollCode{Name: "box", Addresses: []string{ln.Addr().String()}, Fingerprint: m.id.Fingerprint, Seed: fuzzSeed, Expires: time.Now().Add(time.Hour).Unix()}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	start := time.Now()
@@ -770,7 +840,7 @@ func TestCreateEnrollment(t *testing.T) {
 	before := time.Now()
 	code := must(s.CreateEnrollment(fp, "box", 0, ""))(t)
 	ec := must(parseEnrollCode(code))(t)
-	if ec.Name != "box" || ec.Fingerprint != fp || !slices.Equal(ec.Addresses, []string{"127.0.0.1:1"}) || len(ec.Secret) < 40 {
+	if ec.Name != "box" || ec.Fingerprint != fp || !slices.Equal(ec.Addresses, []string{"127.0.0.1:1"}) || ec.key() == nil {
 		t.Errorf("code carries %+v", ec)
 	}
 	if end := time.Unix(ec.Expires, 0); end.Before(before.Add(DefaultEnrollTTL-time.Second)) || end.After(time.Now().Add(DefaultEnrollTTL+time.Second)) {
@@ -781,11 +851,11 @@ func TestCreateEnrollment(t *testing.T) {
 	newer := must(s.CreateEnrollment(fp, "BOX", time.Hour, ""))(t)
 	child := newIdentity(t)
 	var why *Refusal
-	if _, err := s.enroll(ec.Secret, child.Fingerprint, linuxBox); !errors.As(err, &why) || why.Reason != RefusedUnknownCode ||
+	if _, err := s.enroll(keyHashOf(t, code), child.Fingerprint, linuxBox); !errors.As(err, &why) || why.Reason != RefusedUnknownCode ||
 		!strings.Contains(err.Error(), string(RefusedUnknownCode)) {
 		t.Errorf("the replaced code: %v", err)
 	}
-	if got, err := s.enroll(secretOf(t, newer), child.Fingerprint, linuxBox); err != nil || got.Name != "BOX" {
+	if got, err := s.enroll(keyHashOf(t, newer), child.Fingerprint, linuxBox); err != nil || got.Name != "BOX" {
 		t.Errorf("the newer code: %+v, %v", got, err)
 	}
 	if _, err := s.CreateEnrollment(fp, "box", 0, ""); err == nil {
@@ -800,9 +870,9 @@ func TestCreateEnrollment(t *testing.T) {
 }
 
 func TestParseEnrollCode(t *testing.T) {
-	fp := strings.Repeat("ab", 32)
+	fp := strings.Repeat("ab", 48)
 	later := time.Now().Add(time.Hour).Unix()
-	good := enrollCode{Name: "box", Addresses: []string{"10.0.0.1:7443", "[::1]:7443"}, Fingerprint: fp, Secret: "c2VjcmV0", Expires: later}
+	good := enrollCode{Name: "box", Addresses: []string{"10.0.0.1:7443", "[::1]:7443"}, Fingerprint: fp, Seed: fuzzSeed, Expires: later}
 	if got, err := parseEnrollCode("\t" + good.encode() + "\r\n"); err != nil || got.Name != "box" || len(got.Addresses) != 2 {
 		t.Fatalf("the good code: %+v, %v", got, err)
 	}
@@ -826,7 +896,7 @@ func TestParseEnrollCode(t *testing.T) {
 		"padded base64":       good.encode() + "==",
 		"not JSON":            raw("hello"),
 		"an array":            raw("[]"),
-		"an unknown key":      raw(`{"n":"box","a":["10.0.0.1:1"],"f":"` + fp + `","s":"c2VjcmV0","e":` + fmt.Sprint(later) + `,"u":"http://x"}`),
+		"an unknown key":      raw(`{"n":"box","a":["10.0.0.1:1"],"f":"` + fp + `","s":"` + fuzzSeed + `","e":` + fmt.Sprint(later) + `,"u":"http://x"}`),
 		"two values":          raw(`{}{}`),
 		"no name":             with(func(c *enrollCode) { c.Name = "" }),
 		"a bad name":          with(func(c *enrollCode) { c.Name = "../box" }),
@@ -835,17 +905,25 @@ func TestParseEnrollCode(t *testing.T) {
 		"too many addresses":  with(func(c *enrollCode) { c.Addresses = slices.Repeat([]string{"10.0.0.1:1"}, maxAddresses+1) }),
 		"no fingerprint":      with(func(c *enrollCode) { c.Fingerprint = "" }),
 		"a short fingerprint": with(func(c *enrollCode) { c.Fingerprint = fp[:40] }),
-		"no secret":           with(func(c *enrollCode) { c.Secret = "" }),
-		"a strange secret":    with(func(c *enrollCode) { c.Secret = "a\nb" }),
+		"a legacy pin":        with(func(c *enrollCode) { c.Fingerprint = fp[:64] }),
+		"no seed":             with(func(c *enrollCode) { c.Seed = "" }),
+		"a strange seed":      with(func(c *enrollCode) { c.Seed = "a\nb" }),
+		"a short seed":        with(func(c *enrollCode) { c.Seed = fuzzSeed[:22] }),
+		"a long seed":         with(func(c *enrollCode) { c.Seed = fuzzSeed + "AAAA" }),
 		"no expiry":           with(func(c *enrollCode) { c.Expires = 0 }),
 		"expired":             with(func(c *enrollCode) { c.Expires = time.Now().Add(-time.Second).Unix() }),
 		"too long":            codePrefix + strings.Repeat("A", maxCodeLen),
 	} {
 		if got, err := parseEnrollCode(bad); err == nil {
 			t.Errorf("%s: accepted as %+v", name, got)
-		} else if got.Secret != "" || got.Fingerprint != "" {
+		} else if got.Seed != "" || got.Fingerprint != "" {
 			t.Errorf("%s: refused, but returned %+v", name, got)
 		}
+	}
+	// A code from a master before ML-DSA-87 is named for what it is.
+	legacy := legacyCodePrefix + strings.TrimPrefix(good.encode(), codePrefix)
+	if got, err := parseEnrollCode(legacy); err == nil || !strings.Contains(err.Error(), "ML-DSA-87") || got.Seed != "" {
+		t.Errorf("a tntfleet1_ code: %+v, %v", got, err)
 	}
 }
 
@@ -869,13 +947,13 @@ func TestEnrollDialing(t *testing.T) {
 
 	// A server that is not the master named in the code: nothing is sent.
 	impostor := newIdentity(t)
-	forged := enrollCode{Name: "trap", Addresses: []string{s.addr}, Fingerprint: impostor.Fingerprint, Secret: "c2VjcmV0", Expires: time.Now().Add(time.Hour).Unix()}
+	forged := enrollCode{Name: "trap", Addresses: []string{s.addr}, Fingerprint: impostor.Fingerprint, Seed: fuzzSeed, Expires: time.Now().Add(time.Hour).Unix()}
 	before, _ := s.audit()
 	if _, _, err := Enroll(ctxFor(t), forged.encode(), newIdentity(t), linuxBox); err == nil || !strings.Contains(err.Error(), "could not reach the master") {
 		t.Errorf("a server with another certificate: %v", err)
 	}
 	if after, _ := s.audit(); len(after) != len(before) {
-		t.Error("the secret was sent to a server that is not the master")
+		t.Error("the proof was sent to a server that is not the master")
 	}
 
 	// What this machine says about itself is checked before anything is dialed.
@@ -923,7 +1001,7 @@ func TestEnrollDistrustsTheAnswer(t *testing.T) {
 		srv := httptest.NewUnstartedServer(mux)
 		srv.TLS = must(MasterEnrollTLS(m.id))(t)
 		srv.StartTLS()
-		code := enrollCode{Name: "box", Addresses: []string{srv.Listener.Addr().String()}, Fingerprint: m.id.Fingerprint, Secret: "c2VjcmV0", Expires: time.Now().Add(time.Hour).Unix()}
+		code := enrollCode{Name: "box", Addresses: []string{srv.Listener.Addr().String()}, Fingerprint: m.id.Fingerprint, Seed: fuzzSeed, Expires: time.Now().Add(time.Hour).Unix()}
 		if got, digits, err := Enroll(ctxFor(t), code.encode(), newIdentity(t), linuxBox); err == nil || got.ID != "" || digits != "" {
 			t.Errorf("%s: Enroll = %+v, %q, %v", name, got, digits, err)
 		}

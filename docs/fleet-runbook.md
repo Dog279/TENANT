@@ -59,6 +59,59 @@ The same init runs inside a running Tenant, from either of its own screens:
 
 Nothing answers on the fleet port but the pinned link and the enroll endpoint, both TLS 1.3.
 
+### What the link is encrypted with
+
+Every connection between a master and its machines uses one set of algorithms, the CNSA 2.0
+suite, and both ends close a connection that negotiated anything else:
+
+| | |
+|---|---|
+| Protocol | TLS 1.3, nothing older |
+| Cipher suite | `TLS_AES_256_GCM_SHA384` (AES-256, SHA-384) |
+| Key exchange | ML-KEM-1024 (FIPS 203) |
+| Certificates | ML-DSA-87 (FIPS 204), self-signed, one per machine |
+| Pins | the SHA-384 of the other side's certificate |
+
+A peer link (`tenant peer`) over TLS uses the same set. What this does not cover: Tenant does
+not run in Go's FIPS 140-3 mode, so it makes no claim of a validated module; a machine's
+memory snapshots, the audit log's hashes and an update's checksum use other algorithms
+(X25519 and ChaCha20-Poly1305, SHA-256); and a peer link in overlay mode is plain HTTP inside
+the overlay's own encryption.
+
+### A fleet from before ML-DSA-87
+
+A fleet set up with an older Tenant has ECDSA certificates pinned by SHA-256. It moves by
+itself, master first:
+
+1. **Update the master.** At its first start it makes its new certificate and keeps the old
+   one (`fleet-identity-legacy.pem`) for the machines that still pin it. `tenant fleet show
+   NAME` says which machines those are.
+2. **Update the machines** with `tenant fleet update` (or a rollout), as always. Until a
+   machine has moved, updating it is all the master does with it: a call to it fails with
+   "still on its certificate from before the ML-DSA-87 profile".
+3. **Each machine moves when its update is done.** It makes itself a new certificate, sends it
+   over the link it has, and connects again with it. The fleet log has "is moving to a new
+   certificate" and "moved to its new certificate" for each. Nothing is typed anywhere.
+
+Update the master before the machines. A machine updated first keeps its link to the old
+master and can be updated over it, but serves no call until the master is updated too.
+
+While a machine has not moved, the move itself rests on the old certificates: the machine
+takes its master's new fingerprint, and the master the machine's new certificate, on the
+strength of the link each authenticated the old way. So do not leave machines in between.
+The master deletes its old key (`fleet-identity-legacy.pem`) at the first start after the
+last machine has moved. To end it sooner, `tenant fleet revoke` the machines that `tenant
+fleet show` still lists on an old certificate, or delete that file and restart the master;
+either way those machines are enrolled again.
+
+This move is for a limited time. A later release takes the old certificates out of Tenant
+altogether; a machine that has not moved by then has to be enrolled again, so move the whole
+fleet on this release.
+
+An enrollment code from an older master (`tntfleet1_…`) is not taken by a current machine,
+and an older Tenant cannot enroll with a current master: update first, then ask for a new
+code. Peers do not move by themselves: after both sides are updated, pair them again.
+
 ### What the master records
 
 The master's fleet has a log of its own, `fleet`: `tenant logs query log:fleet`, `/logs
@@ -108,7 +161,9 @@ to be reachable, on its one fleet port, at an address on the list a code carries
   certificates it pinned at enrollment), so the address is only a route and whoever else holds
   it learns nothing and can do nothing with it. Say plainly what then faces the internet: the
   TLS 1.3 handshake on the fleet port, and the enroll endpoint's check of a code (five attempts a
-  minute per address, a body cap, refusals in the Security log). Keep in mind that the fleet port's
+  minute per address, a body cap, refusals in the Security log). A new machine never sends its
+  code: it signs for that one connection with a key made from the code, so what it sends
+  enrolls nothing anywhere else. Keep in mind that the fleet port's
   default listen address is every interface (`0.0.0.0:9777`): on a master with a public
   address, set `--listen` to the one interface you mean.
 
@@ -781,7 +836,11 @@ machine its old master's. The new master confirms the machine by its code, or (w
 machine. From then on the old master's certificate is refused, whatever
 address it answers at. The audit log gets a `rehome` record: the account, and the old and new
 masters' fingerprints. Nothing on the link, no tool and no master-side command makes a machine
-rehome.
+rehome. (One thing on the link does change the fingerprint a machine pins, once: a machine
+enrolled before ML-DSA-87 takes its own master's new certificate over the link it made with
+its old one, as described under "A fleet from before ML-DSA-87". Its audit log gets a `rekey`
+record with the old and new fingerprints before it does. A machine that is already on the new
+certificates ignores the same word from its master.)
 
 The machine's memory copies were sealed to the old fleet's key and recovery key, so the new
 master shows the machine's memory as **needs recovery key** and reads none of it. Bring the old

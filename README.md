@@ -71,7 +71,7 @@ sudo or Go toolchain needed; the archives are also on the
 a cosign signature and SBOMs, and, once the project key is set up, a
 project-key signature (`checksums.txt.sig`) that `tenant update` checks with
 nothing installed. `TENANT_VERSION` pins a version and
-`TENANT_INSTALL_DIR` picks the directory. Or build from source with Go 1.26:
+`TENANT_INSTALL_DIR` picks the directory. Or build from source with Go 1.27:
 `go build ./cmd/tenant`.
 
 ## Quickstart

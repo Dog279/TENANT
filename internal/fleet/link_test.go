@@ -894,7 +894,7 @@ func TestLinkOfflineFailsAtOnce(t *testing.T) {
 		func() error { _, err := r.mgr.Ping(ctxFor(t), id); return err },
 		func() error { _, err := r.mgr.Result(ctxFor(t), id, "abc"); return err },
 		func() error {
-			_, err := r.mgr.Update(ctxFor(t), id, Update{Version: "2", SHA256: fuzzPrint, Size: 1, Data: []byte{1}})
+			_, err := r.mgr.Update(ctxFor(t), id, Update{Version: "2", SHA256: fuzzSum, Size: 1, Data: []byte{1}})
 			return err
 		},
 	} {
@@ -1280,7 +1280,7 @@ func TestLinkAddressPush(t *testing.T) {
 // update; tool calls are refused, by whichever end is the newer, and the
 // refusal says why.
 func TestLinkVersionMismatch(t *testing.T) {
-	update := Update{Version: "9.9.9", SHA256: fuzzPrint, Size: 4, Offset: 0, Data: []byte("abcd")}
+	update := Update{Version: "9.9.9", SHA256: fuzzSum, Size: 4, Offset: 0, Data: []byte("abcd")}
 	check := func(t *testing.T, r *rig, k *kid, childLink int) {
 		id := k.mach.ID
 		if m := r.status(t, id); !m.Online || m.Link != childLink {
@@ -1464,7 +1464,7 @@ func TestClientKeepsTrying(t *testing.T) {
 	deadAddr := dead.Addr().String()
 	_ = dead.Close()
 	// A listener that is not the master: the pin refuses it.
-	other := must(tls.Listen("tcp", "127.0.0.1:0", must(MasterTLS(newIdentity(t), Open(t.TempDir())))(t)))(t)
+	other := must(tls.Listen("tcp", "127.0.0.1:0", must(MasterTLS(newIdentity(t), nil, Open(t.TempDir())))(t)))(t)
 	defer other.Close()
 	go func() {
 		for {
@@ -1549,8 +1549,8 @@ func TestWireShapesThatNeverChange(t *testing.T) {
 		{methodHello, "fleet/hello", `{"link":1}`, string(must(encode(helloParams{Link: 1}))(t))},
 		{methodPing, "ping", ``, ``},
 		{methodUpdate, "fleet/update",
-			`{"version":"1.5.0","sha256":"` + fuzzPrint + `","size":5,"offset":0,"data":"aGVsbG8="}`,
-			string(must(encode(Update{Version: "1.5.0", SHA256: fuzzPrint, Size: 5, Data: []byte("hello")}))(t))},
+			`{"version":"1.5.0","sha256":"` + fuzzSum + `","size":5,"offset":0,"data":"aGVsbG8="}`,
+			string(must(encode(Update{Version: "1.5.0", SHA256: fuzzSum, Size: 5, Data: []byte("hello")}))(t))},
 	} {
 		if tc.method != tc.name || tc.got != tc.params {
 			t.Errorf("%s: method %q with params %s", tc.name, tc.method, tc.got)
@@ -1568,9 +1568,9 @@ func TestWireShapesThatNeverChange(t *testing.T) {
 		{"fleet/hello", `{"link":1,"later":{"x":[1]}}`, hello},
 		{"ping", ``, `{}`},
 		{"ping", `{"later":1}`, `{}`},
-		{"fleet/update", `{"version":"1.5.0","sha256":"` + fuzzPrint + `","size":5,"offset":0,"data":"aGVsbG8="}`, `{"received":5,"applying":true}`},
-		{"fleet/update", `{"version":"1.5.0","sha256":"` + fuzzPrint + `","size":5,"offset":0,"data":"aGVsbG8=","later":true}`, `{"received":5,"applying":true}`},
-		{"fleet/update", `{"version":"1.5.0","sha256":"` + fuzzPrint + `","size":5,"offset":0,"data":""}`, `{"received":0,"applying":false}`},
+		{"fleet/update", `{"version":"1.5.0","sha256":"` + fuzzSum + `","size":5,"offset":0,"data":"aGVsbG8="}`, `{"received":5,"applying":true}`},
+		{"fleet/update", `{"version":"1.5.0","sha256":"` + fuzzSum + `","size":5,"offset":0,"data":"aGVsbG8=","later":true}`, `{"received":5,"applying":true}`},
+		{"fleet/update", `{"version":"1.5.0","sha256":"` + fuzzSum + `","size":5,"offset":0,"data":""}`, `{"received":0,"applying":false}`},
 	} {
 		got, err := child.HandleRequest(ctx, tc.method, json.RawMessage(tc.params))
 		if err != nil || string(got) != tc.want {

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/json"
@@ -36,6 +35,9 @@ const (
 	// maxStoreBytes bounds fleet.json, read or written. A record is a few
 	// hundred bytes, so this is thousands of machines.
 	maxStoreBytes = 4 << 20
+	// storeReserve is the part of that no new machine or code is let into:
+	// room for changes to the records there are (Store.write).
+	storeReserve = 64 << 10
 
 	maxNameLen     = 63
 	maxAddresses   = 16
@@ -129,14 +131,27 @@ type Machine struct {
 	// Name is the operator's label. It can change, and a revoked machine's
 	// name can be given to another.
 	Name string `json:"name"`
-	// Fingerprint is the machine's pinned certificate, its only credential.
-	Fingerprint string    `json:"fingerprint"`
-	State       State     `json:"state"`
-	Reported    Reported  `json:"reported"`
+	// Fingerprint is the machine's pinned certificate, its only credential:
+	// the SHA-384 of an ML-DSA-87 certificate, or, of a machine enrolled
+	// before the cnsa profile and not moved yet, the SHA-256 of its legacy
+	// one (Legacy).
+	Fingerprint string `json:"fingerprint"`
+	// Next is the certificate a legacy machine said it is moving to
+	// (rekey.go). It is pinned as well until the machine first connects with
+	// it, and is then the machine's Fingerprint.
+	Next     string   `json:"next_fingerprint,omitempty"`
+	State    State    `json:"state"`
+	Reported Reported `json:"reported"`
+
 	EnrolledAt  time.Time `json:"enrolled_at"`
 	ConfirmedAt time.Time `json:"confirmed_at,omitzero"`
 	RevokedAt   time.Time `json:"revoked_at,omitzero"`
 }
+
+// Legacy reports whether the machine is still pinned by the certificate it
+// had before the cnsa profile. Nothing is asked of such a machine but to say
+// hello, take an update and move to a new certificate.
+func (m Machine) Legacy() bool { return len(m.Fingerprint) == legacyFingerprintLen }
 
 // fileData is fleet.json.
 type fileData struct {
@@ -157,12 +172,16 @@ type fileData struct {
 	RecoveryProven time.Time `json:"recovery_proven,omitzero"`
 }
 
-// enrollment is one enrollment code the master gave out. The secret itself
-// is only in the code: the file holds its SHA-256, which is enough to
-// recognise it and useless for enrolling.
+// enrollment is one enrollment code the master gave out. The code holds the
+// seed of a one-time signing key; the file holds the SHA-384 of that key's
+// public half, which is enough to recognise the key and useless for
+// enrolling (enroll.go).
 type enrollment struct {
-	Name    string `json:"name"`
-	Secret  string `json:"secret_sha256"`
+	Name string `json:"name"`
+	Key  string `json:"key_sha384,omitempty"`
+	// Secret is what a code from before the cnsa profile left: such a code
+	// enrolls nothing any more, and its record goes with the next change.
+	Secret  string `json:"secret_sha256,omitempty"`
 	Expires int64  `json:"expires"`           // unix seconds
 	Adopt   string `json:"adopt,omitempty"`   // a revoked machine's id the new machine takes over
 	UsedBy  string `json:"used_by,omitempty"` // the machine this code enrolled: it is spent
@@ -253,8 +272,14 @@ func parseStore(b []byte) (*fileData, error) {
 		if !validName(m.Name) {
 			return nil, fmt.Errorf("machine %s has an invalid name", id)
 		}
-		if _, err := parseFingerprint(m.Fingerprint); err != nil {
+		if _, err := parsePin(m.Fingerprint); err != nil {
 			return nil, fmt.Errorf("machine %s: %w", id, err)
+		}
+		if m.Next != "" {
+			if _, err := parseFingerprint(m.Next); err != nil || !m.Legacy() || prints[m.Next] {
+				return nil, fmt.Errorf("machine %s: its next certificate is not valid", id)
+			}
+			prints[m.Next] = true
 		}
 		if !m.State.valid() {
 			return nil, fmt.Errorf("machine %s has an unknown state", id)
@@ -280,7 +305,11 @@ func parseStore(b []byte) (*fileData, error) {
 			(e.Adopt != "" && !validID(e.Adopt)) || (e.UsedBy != "" && !validID(e.UsedBy)) {
 			return nil, errors.New("an enrollment record is not valid")
 		}
-		if _, err := parseFingerprint(e.Secret); err != nil {
+		_, err := parseFingerprint(e.Key)
+		if e.Key == "" {
+			_, err = parseDigest(e.Secret, legacyFingerprintLen/2)
+		}
+		if err != nil {
 			return nil, errors.New("an enrollment record is not valid")
 		}
 	}
@@ -365,8 +394,10 @@ func validAddress(a string) bool {
 }
 
 // pin is one machine's fingerprint, decoded for the handshake's comparison.
+// A legacy machine's is shorter, and is only ever compared with a legacy
+// connection's.
 type pin struct {
-	sum     [sha256.Size]byte
+	sum     []byte
 	machine *Machine
 }
 
@@ -484,8 +515,11 @@ func (s *Store) refreshLocked(force bool) {
 	}
 	pins := make([]pin, 0, len(d.Machines))
 	for _, m := range d.Machines {
-		sum, _ := parseFingerprint(m.Fingerprint) // parseStore checked it
+		sum, _ := parsePin(m.Fingerprint) // parseStore checked it
 		pins = append(pins, pin{sum: sum, machine: m})
+		if next, err := parseFingerprint(m.Next); err == nil {
+			pins = append(pins, pin{sum: next, machine: m})
+		}
 	}
 	s.data, s.pins, s.stamp, s.err = d, pins, st, nil
 }
@@ -567,9 +601,21 @@ func (d *fileData) named(name, except string) *Machine {
 // ErrUnknown for a certificate that is not pinned, ErrRevoked for a revoked
 // machine, and ErrUnreadable while fleet.json cannot be read.
 //
-// Knowing the machine is not permission to call it: see Check.
+// Knowing the machine is not permission to call it: see Check. Nor is the
+// machine's certificate its only kind: see Machine.Legacy.
+//
+// The connection has to be on the cnsa profile, or, when it asked for the
+// master's legacy identity, on what a legacy machine can do of it
+// (verified); a connection that is not fails, whoever made it.
 func (s *Store) Identify(cs *tls.ConnectionState) (Machine, error) {
-	leaf, err := presented(cs)
+	return s.identify(cs, cs != nil && cs.ServerName == legacyLinkServerName)
+}
+
+// identify is Identify for a connection made under the link's rule, or
+// under the rule for legacy identities: a legacy pin answers only for a
+// legacy connection, and no other pin does.
+func (s *Store) identify(cs *tls.ConnectionState, legacy bool) (Machine, error) {
+	_, sum, err := verified(cs, legacy)
 	if err != nil {
 		return Machine{}, err
 	}
@@ -578,11 +624,11 @@ func (s *Store) Identify(cs *tls.ConnectionState) (Machine, error) {
 		return Machine{}, err
 	}
 	// Every pinned fingerprint is compared, whichever matches, so how long
-	// this takes says nothing about which certificates are pinned.
-	sum := sha256.Sum256(leaf.Raw)
+	// this takes says nothing about which certificates are pinned. (A pin of
+	// the other kind is of another length, which is no secret.)
 	found := -1
 	for i := range pins {
-		found = subtle.ConstantTimeSelect(subtle.ConstantTimeCompare(pins[i].sum[:], sum[:]), i, found)
+		found = subtle.ConstantTimeSelect(subtle.ConstantTimeCompare(pins[i].sum, sum), i, found)
 	}
 	if found < 0 {
 		return Machine{}, ErrUnknown
@@ -713,6 +759,7 @@ func (s *Store) write(fn func(d *fileData) error) error {
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrUnreadable, err)
 	}
+	records := len(d.Machines) + len(d.Enrollments)
 	if err := fn(d); err != nil {
 		return err
 	}
@@ -721,8 +768,20 @@ func (s *Store) write(fn func(d *fileData) error) error {
 	if err != nil {
 		return fmt.Errorf("fleet: encode fleet.json: %w", err)
 	}
-	if b = append(b, '\n'); len(b) > maxStoreBytes {
-		return fmt.Errorf("fleet: fleet.json would grow past %d bytes", maxStoreBytes)
+	// A change that adds a record stops short of the limit, so that a change
+	// to the records there are always fits: a revoke must never be the one
+	// thing a full file has no room for.
+	limit := maxStoreBytes
+	if len(d.Machines)+len(d.Enrollments) > records {
+		limit -= storeReserve
+	}
+	if b = append(b, '\n'); len(b) > limit {
+		return fmt.Errorf("fleet: fleet.json would grow past %d bytes", limit)
+	}
+	// Read back as the next reader will read it: a change that would leave
+	// the file unreadable, and the whole fleet down with it, is not saved.
+	if _, err := parseStore(b); err != nil {
+		return fmt.Errorf("fleet: the change is not saved, it would leave fleet.json unreadable: %w", err)
 	}
 	if err := writePrivate(s.path, b); err != nil {
 		return fmt.Errorf("fleet: save fleet.json: %w", err)

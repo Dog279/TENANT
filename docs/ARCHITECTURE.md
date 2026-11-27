@@ -27,11 +27,11 @@ block for drift.
 <!-- docfacts:generated:start; date=2026-11-27; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
-| Go packages | 108 |
-| Go files | 1,639 |
-| Test files | 834 |
-| Production Go LOC | 217,033 |
-| Test Go LOC | 190,416 |
+| Go packages | 109 |
+| Go files | 1,643 |
+| Test files | 836 |
+| Production Go LOC | 217,901 |
+| Test Go LOC | 191,383 |
 | Go modules | 1 |
 | Plugin capability packages | 15 |
 | Version | `0.0.1` |
@@ -108,7 +108,7 @@ option while allowing operators to opt into cloud inference.
 **Build:** `go build -o tenant ./cmd/tenant` (pure Go, no CGO, single binary)
 **Test:** `go test ./...` (see current Windows verification status above;
 `-race` needs `CGO_ENABLED=1`)
-**Module:** `tenant` (local, no remote) — Go 1.26, toolchain go1.26.3
+**Module:** `tenant` (local, no remote) — Go 1.27, toolchain go1.27.4
 
 ---
 
@@ -137,6 +137,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/secrets` | nothing in the module | leaf |
 | `internal/datalock` | nothing in the module | leaf |
 | `internal/httplimits` | nothing in the module | leaf |
+| `internal/cnsa` | nothing in the module | leaf: the one TLS profile of every Fleet and Peer connection (TLS 1.3, AES-256-GCM, ML-KEM-1024, ML-DSA-87), and the check that a connection got it |
 | `internal/version` | nothing in the module | leaf |
 | `internal/procprotect` | nothing in the module | leaf: asks the operating system to keep other programs out of the process |
 | `internal/selfupdate` | nothing in the module | leaf: finding, verifying and swapping in a release binary; tenant update sequences it |
@@ -162,8 +163,8 @@ generated from `internal/archtest/rules.go`, and
 | `internal/research` | `internal/fsperm` |  |
 | `internal/backup` | `internal/datalock`, `internal/fsperm`, `internal/secrets`, `internal/version` |  |
 | `internal/fleet/shadow` | `internal/memory/episodic`, `internal/memory/semantic`, `internal/secrets`, `internal/fsperm`, `internal/datalock` | a fleet machine's memory: the master's shadow in RAM and its encrypted snapshots, the child's copies, and which side wins; knows no link |
-| `internal/peering` | `internal/httplimits`, `internal/secrets` |  |
-| `internal/fleet` | `internal/fleet/shadow`, `internal/secrets`, `internal/datalock`, `internal/httplimits`, `internal/mcp/**`, `internal/model` | a fleet's identity, enrollment and fleet.json, and the link between a master and its children; serves the tool mux it is handed and knows no tool and no command |
+| `internal/peering` | `internal/cnsa`, `internal/httplimits`, `internal/secrets` |  |
+| `internal/fleet` | `internal/cnsa`, `internal/fleet/shadow`, `internal/secrets`, `internal/datalock`, `internal/httplimits`, `internal/mcp/**`, `internal/model` | a fleet's identity, enrollment and fleet.json, and the link between a master and its children; serves the tool mux it is handed and knows no tool and no command |
 | `internal/mcp` | `internal/mcp/transport` | wire protocol only, no LLM knowledge |
 | `internal/model` | `internal/model/profiles`, `internal/runtrace` | no memory, agent or plugins |
 | `internal/model/**` | `internal/model/**`, `internal/runtrace`, `internal/fsperm` |  |

@@ -83,7 +83,7 @@ var (
 	// codeShape is every character an enrollment code can hold: none of them
 	// ends a quote, starts a variable or ends a line in a POSIX shell or in
 	// PowerShell, so a code stands in single quotes in both, unchanged.
-	codeShape = regexp.MustCompile(`^tntfleet1_[A-Za-z0-9_-]+$`)
+	codeShape = regexp.MustCompile(`^tntfleet2_[A-Za-z0-9_-]+$`)
 	// repoShape is a GitHub owner/name, the only thing put into the scripts'
 	// address.
 	repoShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$`)

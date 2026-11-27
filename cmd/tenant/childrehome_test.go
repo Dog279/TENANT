@@ -69,7 +69,7 @@ func sameSnapshot(a, b map[string][]byte) bool {
 // master's certificate and leads to another address.
 func codeTo(t *testing.T, code string, addrs ...string) string {
 	t.Helper()
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(code, "tntfleet1_"))
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(code, "tntfleet2_"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func codeTo(t *testing.T, code string, addrs ...string) string {
 	}
 	c["a"] = addrs
 	raw, _ = json.Marshal(c)
-	return "tntfleet1_" + base64.RawURLEncoding.EncodeToString(raw)
+	return "tntfleet2_" + base64.RawURLEncoding.EncodeToString(raw)
 }
 
 // impostor is a TLS listener on loopback with a certificate of its own, that
@@ -453,15 +453,24 @@ func TestChildRehomeIsStartedOnlyOnTheMachine(t *testing.T) {
 		t.Errorf("childRehome is called from %q; only `tenant child rehome` may", callers)
 	}
 	slices.Sort(writers)
+	// internal/fleet/rekey.go is the one writer that acts on the link, and
+	// fleet/rekey the one method behind it. Reviewed here (2026-11-27): it
+	// replaces the pinned fingerprint of the master a machine already has
+	// with that same master's new certificate, only on a link the machine
+	// made with its identity from before the ML-DSA-87 profile, only from a
+	// master it authenticated by the old pin, once (the machine is off that
+	// identity afterwards, and no other link listens to it), and only after
+	// the machine's audit log has the record (AuditRekey). It is not a way
+	// to a master the machine did not have: TestRekeyIsALegacyLinksOnly.
 	if want := []string{"cmd/tenant/childctl.go: childInstall", "cmd/tenant/childctl.go: childRehome", "cmd/tenant/childctl.go: childUpdates", "internal/fleet/child.go: UpdateChild",
-		"internal/fleet/client.go: addresses"}; !slices.Equal(writers, want) {
+		"internal/fleet/client.go: addresses", "internal/fleet/rekey.go: rekey"}; !slices.Equal(writers, want) {
 		t.Errorf("child.json is written from %q, want %q", writers, want)
 	}
 	slices.Sort(methods)
 	methods = slices.Compact(methods)
 	link := []string{"fleet/addresses", "fleet/confirm", "fleet/hello", "fleet/memory/get", "fleet/memory/list",
-		"fleet/memory/purge", "fleet/memory/put", "fleet/result", "fleet/revoked", "fleet/update"}
+		"fleet/memory/purge", "fleet/memory/put", "fleet/rekey", "fleet/result", "fleet/revoked", "fleet/update"}
 	if !slices.Equal(methods, link) {
-		t.Errorf("the link's methods are %q, want %q: a new one is reviewed here, and none may change which master a child trusts", methods, link)
+		t.Errorf("the link's methods are %q, want %q: a new one is reviewed here, and none but fleet/rekey, as described above, may change which master a child trusts", methods, link)
 	}
 }

@@ -1,7 +1,9 @@
 package fleet
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -61,14 +63,23 @@ func newIdentity(t *testing.T) Identity {
 	return id
 }
 
-// secretOf digs the secret out of an enrollment code.
-func secretOf(t *testing.T, code string) string {
+// sum256 is the lowercase hex SHA-256 of b: how the audit log hashes its
+// records and a call's arguments and result. (Certificates are pinned by
+// SHA-384, fingerprintOf; the audit log is not.)
+func sum256(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// keyHashOf is the hash of an enrollment code's key, which the master knows
+// the code by (Store.enroll).
+func keyHashOf(t testing.TB, code string) string {
 	t.Helper()
 	ec, err := parseEnrollCode(code)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ec.Secret
+	return hashKey(ec.key().PublicKey().Bytes())
 }
 
 // add enrolls a machine without the network and brings it to state.
@@ -84,7 +95,7 @@ func (m *master) addIdentity(t *testing.T, name string, state State, child Ident
 	if err != nil {
 		t.Fatal(err)
 	}
-	mach, err := m.store.enroll(secretOf(t, code), child.Fingerprint, linuxBox)
+	mach, err := m.store.enroll(keyHashOf(t, code), child.Fingerprint, linuxBox)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +201,7 @@ func fleetFiles(t *testing.T) []string {
 	}
 	childID := must(MintIdentity(ChildIdentityPath(childDir)))(t)
 	code := must(s.CreateEnrollment(id.Fingerprint, "box", 0, ""))(t)
-	mach := must(s.enroll(secretOf(t, code), childID.Fingerprint, linuxBox))(t)
+	mach := must(s.enroll(keyHashOf(t, code), childID.Fingerprint, linuxBox))(t)
 	must(s.Confirm(id.Fingerprint, mach.ID, ConfirmCode(id.Fingerprint, childID.Fingerprint)))(t)
 
 	c := Child{ID: mach.ID, Name: mach.Name, MasterAddresses: []string{"127.0.0.1:1"}, MasterFingerprint: id.Fingerprint,

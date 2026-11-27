@@ -185,7 +185,7 @@ func (f *fakeFleet) Update(id, version, arch, _ string, allowOlder bool) error {
 }
 
 // fakeEnrollCode is the code the fake makes: the shape of a real one.
-const fakeEnrollCode = "tntfleet1_eyJuIjoid2ViMSJ9-_Zz09"
+const fakeEnrollCode = "tntfleet2_eyJuIjoid2ViMSJ9-_Zz09"
 
 func (f *fakeFleet) Enroll(name, by string) (FleetEnrollment, error) {
 	f.mu.Lock()

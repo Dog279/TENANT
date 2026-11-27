@@ -173,7 +173,7 @@ func TestFleetInitFromTheDashboard(t *testing.T) {
 	if !strings.Contains(body, "This fleet has no recovery key yet") || !strings.Contains(body, `action="/fleet/add"`) || strings.Contains(body, `action="/fleet/init"`) {
 		t.Fatalf("the page of a new master:\n%s", body)
 	}
-	if a := d.post("/fleet/add", "name", "web1", "runs", "user"); a.code != http.StatusOK || regexp.MustCompile(`tntfleet1_[A-Za-z0-9_-]+`).FindString(a.body) == "" {
+	if a := d.post("/fleet/add", "name", "web1", "runs", "user"); a.code != http.StatusOK || regexp.MustCompile(`tntfleet2_[A-Za-z0-9_-]+`).FindString(a.body) == "" {
 		t.Fatalf("a code on the new fleet: %d\n%s", a.code, a.body)
 	}
 

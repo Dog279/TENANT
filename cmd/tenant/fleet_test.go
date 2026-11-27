@@ -427,7 +427,7 @@ var fleetHostile = []string{
 // cannot close, and can neither draw on the screen nor pass for a line of it.
 func TestFleetScreensEscapeWhatAMachineSays(t *testing.T) {
 	for _, evil := range fleetHostile {
-		m := fleet.Machine{ID: "m0123456789abcdef", Name: evil, Fingerprint: strings.Repeat("ab", 32), State: fleet.StatePending,
+		m := fleet.Machine{ID: "m0123456789abcdef", Name: evil, Fingerprint: strings.Repeat("ab", 48), State: fleet.StatePending,
 			Reported: fleet.Reported{OS: evil, User: evil, Version: evil, Sandbox: evil, Ceiling: evil}, EnrolledAt: time.Now()}
 		clean := fleet.Machine{ID: m.ID, Name: "web1", Fingerprint: m.Fingerprint, State: fleet.StatePending,
 			Reported: fleet.Reported{OS: "linux", User: "root", Version: "1", Sandbox: "host", Ceiling: "full"}, EnrolledAt: m.EnrolledAt}
@@ -867,7 +867,7 @@ func TestFleetReplayedCodeRaisesTheAlert(t *testing.T) {
 	}
 	had := alerts()
 	// The same code with another secret: well formed, and never given out.
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(ch.enrollCode, "tntfleet1_"))
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(ch.enrollCode, "tntfleet2_"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -877,7 +877,7 @@ func TestFleetReplayedCodeRaisesTheAlert(t *testing.T) {
 	}
 	fields["s"] = strings.Repeat("A", 43)
 	raw, _ = json.Marshal(fields)
-	forged := "tntfleet1_" + base64.RawURLEncoding.EncodeToString(raw)
+	forged := "tntfleet2_" + base64.RawURLEncoding.EncodeToString(raw)
 	if _, _, err := fleet.Enroll(context.Background(), forged, thief, fleet.Reported{OS: "linux", Sandbox: "host", Ceiling: "full"}); err == nil || !strings.Contains(err.Error(), "403") {
 		t.Fatalf("a forged code: %v, want the master's refusal", err)
 	}
@@ -1012,16 +1012,16 @@ func TestFleetEnrollRunsInitAndPrintsThePaste(t *testing.T) {
 	l.must("init", "--address", "master.example:9777", "--address", "10.0.0.1:9777")
 	stderr := captureStderr(t, func() {
 		out := l.must("enroll", "web1", "--ttl", "5m")
-		if strings.Contains(out, "\n") || !strings.HasPrefix(out, "tntfleet1_") {
+		if strings.Contains(out, "\n") || !strings.HasPrefix(out, "tntfleet2_") {
 			t.Errorf("standard output is not the code alone:\n%s", out)
 		}
 	})
-	for _, want := range []string{"| tenant child install", "printf '%s\\n' 'tntfleet1_", "expires in 5m0s", "tenant fleet confirm web1", "tenant serve"} {
+	for _, want := range []string{"| tenant child install", "printf '%s\\n' 'tntfleet2_", "expires in 5m0s", "tenant fleet confirm web1", "tenant serve"} {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("the instructions lack %q:\n%s", want, stderr)
 		}
 	}
-	if regexp.MustCompile(`tenant child install\s+\S*tntfleet1_`).MatchString(stderr) {
+	if regexp.MustCompile(`tenant child install\s+\S*tntfleet2_`).MatchString(stderr) {
 		t.Errorf("the paste passes the code as an argument:\n%s", stderr)
 	}
 	if addrs, _ := fleet.Open(l.cfg).Addresses(); len(addrs) != 2 || addrs[0] != "master.example:9777" {

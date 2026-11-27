@@ -17,7 +17,7 @@ func validChild() Child {
 		ID:                "m0123456789abcdef",
 		Name:              "box",
 		MasterAddresses:   []string{"10.0.0.1:7443", "master.lan:7443"},
-		MasterFingerprint: strings.Repeat("ab", 32),
+		MasterFingerprint: strings.Repeat("ab", 48),
 		Sandbox:           "host",
 		Ceiling:           CeilingNoExec,
 	}
@@ -87,7 +87,7 @@ func TestChildRoundTrip(t *testing.T) {
 // child.json is read strictly: anything unexpected stops the child rather
 // than leave it running wider than the operator wrote.
 func TestParseChildRejects(t *testing.T) {
-	fp := strings.Repeat("ab", 32)
+	fp := strings.Repeat("ab", 48)
 	good := `{"version":1,"id":"m0123456789abcdef","name":"box","master_addresses":["10.0.0.1:7443"],"master_fingerprint":"` + fp + `","sandbox":"host","ceiling":"read-only"}`
 	if c, err := parseChild([]byte(good)); err != nil || c.Ceiling != CeilingReadOnly {
 		t.Fatalf("the valid file: %+v, %v", c, err)

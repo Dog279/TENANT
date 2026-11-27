@@ -608,7 +608,7 @@ func fleetPages(t *testing.T, m fleet.Machine, link *fleet.MachineStatus) (list,
 // machine has a say: its name, what it reports, where it connected from and
 // why its link ended.
 func saidEverywhere(said string) (fleet.Machine, *fleet.MachineStatus) {
-	m := fleet.Machine{ID: "m0123456789abcdef", Name: said, Fingerprint: strings.Repeat("ab", 32), State: fleet.StateConfirmed,
+	m := fleet.Machine{ID: "m0123456789abcdef", Name: said, Fingerprint: strings.Repeat("ab", 48), State: fleet.StateConfirmed,
 		Reported: fleet.Reported{OS: said, User: said, Version: said, Sandbox: said, Ceiling: said}, EnrolledAt: time.Unix(1_700_000_000, 0), ConfirmedAt: time.Unix(1_700_000_300, 0)}
 	return m, &fleet.MachineStatus{Machine: m, Online: true, Since: time.Unix(1_700_000_400, 0), Link: 1, Remote: said, InFlight: 1, LastError: said}
 }
@@ -632,7 +632,7 @@ func oddRunes(page string) map[rune]bool {
 func TestFleetDashShowsWhatAMachineSaysAsItsWords(t *testing.T) {
 	const id = "m0123456789abcdef"
 	machine, odd := saidEverywhere, oddRunes
-	cleanList, cleanOne := fleetPages(t, fleet.Machine{ID: id, Name: "web1", Fingerprint: strings.Repeat("ab", 32), State: fleet.StateConfirmed,
+	cleanList, cleanOne := fleetPages(t, fleet.Machine{ID: id, Name: "web1", Fingerprint: strings.Repeat("ab", 48), State: fleet.StateConfirmed,
 		Reported: fleet.Reported{OS: "linux", User: "linux", Version: "linux", Sandbox: "linux", Ceiling: "linux"}, EnrolledAt: time.Unix(1_700_000_000, 0), ConfirmedAt: time.Unix(1_700_000_300, 0)},
 		&fleet.MachineStatus{Online: true, Since: time.Unix(1_700_000_400, 0), Link: 1, Remote: "linux", InFlight: 1, LastError: "linux"})
 	for _, evil := range fleetHostile {

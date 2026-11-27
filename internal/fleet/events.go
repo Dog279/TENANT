@@ -136,6 +136,21 @@ var ReportNotRecorded = Events.Event(2112, event.Warning, "Link", "What machine 
 		"fleet.json is not writable, or is locked by another process.",
 		"Check the config directory's permissions and free space.")
 
+var Rekeying = Events.Event(1104, event.Info, "Link", "Machine {name} is moving to a new certificate", "name", "machine", "certificate").
+	Doc("A machine enrolled before Tenant moved to ML-DSA-87 certificates sent the new certificate it has made for itself, and the master pinned it beside the old one. The machine connects again with it by itself.",
+		"The machine's Tenant was updated to one that knows the new certificates, and it connected with its old one.",
+		"None. Until it has moved, the machine can be updated and nothing else.")
+
+var Rekeyed = Events.Event(1105, event.Info, "Link", "Machine {name} moved to its new certificate", "name", "machine", "certificate").
+	Doc("A machine connected with the new certificate it had sent, and the master dropped the old one. The machine is on ML-DSA-87 from now on and can be called again.",
+		"The step after the machine sent its new certificate.",
+		"None.")
+
+var RekeyRefused = Events.Event(2114, event.Warning, "Link", "Machine {name} was not moved to a new certificate: {err}", "name", "machine", "err").
+	Doc("A machine on its old certificate sent a new one and the master did not pin it. The machine stays on the old one, where it can be updated and nothing else, and tries again when it next connects.",
+		"What it sent is not an ML-DSA-87 certificate, is another machine's, or fleet.json could not be saved.",
+		"Read err. For a file that cannot be saved, check the config directory. If it keeps on, revoke the machine and enroll it again.")
+
 var AddressesNotTaken = Events.Event(2113, event.Warning, "Link", "Machine {name} did not take the master's addresses: {err}", "name", "machine", "err").
 	Doc("The master sent a connected machine its current list of addresses and the machine did not acknowledge it. The machine keeps dialling the addresses it has.",
 		"The link dropped as the list was sent, or the machine runs a Tenant too old to take it.",

@@ -602,6 +602,10 @@ func showText(m fleet.Machine, link *fleet.MachineStatus, scheme *approval.Schem
 		"  certificate " + m.Fingerprint,
 		"  enrolled    " + fleetTime(m.EnrolledAt),
 	}
+	if m.Legacy() {
+		lines = append(lines, "  This certificate is from before Tenant moved to ML-DSA-87. Until the machine has moved it can be updated and nothing else:",
+			"  `tenant fleet update` it, and it makes itself a new certificate and connects with that.")
+	}
 	if !m.ConfirmedAt.IsZero() {
 		lines = append(lines, "  confirmed   "+fleetTime(m.ConfirmedAt))
 	}
@@ -883,7 +887,7 @@ func initFleet(o fleetOps, lc *launchConfig, listen string, addresses []string, 
 	// ponytail: two inits at the same instant could each mint an identity and
 	// the second replace the first; take fleet.json's lock around this if
 	// init is ever scripted in parallel.
-	if id, err = fleet.LoadIdentity(path); errors.Is(err, fs.ErrNotExist) {
+	if id, _, err = fleet.LoadMasterIdentity(o.cfgDir); errors.Is(err, fs.ErrNotExist) {
 		if id, err = fleet.MintIdentity(path); err == nil {
 			created = true
 			detail := "certificate " + id.Fingerprint

@@ -93,7 +93,7 @@ func FuzzMasterTakesAChildsFrame(f *testing.F) {
 	childID := must(MintIdentity(ChildIdentityPath(f.TempDir())))(f)
 	code := must(store.CreateEnrollment(id.Fingerprint, "box", 0, ""))(f)
 	ec := must(parseEnrollCode(code))(f)
-	mach := must(store.enroll(ec.Secret, childID.Fingerprint, linuxBox))(f)
+	mach := must(store.enroll(hashKey(ec.key().PublicKey().Bytes()), childID.Fingerprint, linuxBox))(f)
 	must(store.Confirm(id.Fingerprint, mach.ID, ConfirmCode(id.Fingerprint, childID.Fingerprint)))(f)
 	mgr := must(newManager(ManagerConfig{Store: store, Identity: id}))(f)
 	ctx := context.Background()
@@ -201,7 +201,7 @@ func (f *fuzzTools) Dispatch(ctx context.Context, call model.ToolCall) (string, 
 // FuzzChildTakesAMastersFrame: every frame a master can send, dispatched by
 // the child's handler, before and after the hello.
 func FuzzChildTakesAMastersFrame(f *testing.F) {
-	piece := `{"version":"1.5.0","sha256":"` + fuzzPrint + `","size":5,"offset":0,"data":"aGVsbG8="}`
+	piece := `{"version":"1.5.0","sha256":"` + fuzzSum + `","size":5,"offset":0,"data":"aGVsbG8="}`
 	for _, seed := range [][]byte{
 		rpc("1", methodHello, `{"link":1}`), rpc("1", methodHello, `{"link":3}`), rpc("1", methodHello, `{"link":0}`),
 		rpc("1", methodPing, ``),

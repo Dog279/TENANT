@@ -79,7 +79,7 @@ func TestAuditTamperingIsFound(t *testing.T) {
 		"a record put in with the right prev": func(l [][]byte) [][]byte {
 			// It chains to the line before it, and so the record after it no
 			// longer does.
-			forged := must(encode(AuditRecord{Seq: 3, Time: time.Now().UTC(), Event: AuditCall, Call: "x", Tool: "os_exec", Prev: fingerprintOf(l[1])}))(t)
+			forged := must(encode(AuditRecord{Seq: 3, Time: time.Now().UTC(), Event: AuditCall, Call: "x", Tool: "os_exec", Prev: sum256(l[1])}))(t)
 			return append(l[:2], append([][]byte{forged}, l[2:]...)...)
 		},
 		"a record replaced by another line": func(l [][]byte) [][]byte {
@@ -209,8 +209,8 @@ func TestAuditChain(t *testing.T) {
 	prev := auditStart
 	for i, line := range lines {
 		rec := must(parseAuditRecord(line))(t)
-		if rec.Seq != uint64(i+1) || rec.Prev != prev || fingerprintOf(line) != hashes[i] {
-			t.Errorf("line %d: seq %d, prev %s; its hash is %s and append said %s", i+1, rec.Seq, rec.Prev, fingerprintOf(line), hashes[i])
+		if rec.Seq != uint64(i+1) || rec.Prev != prev || sum256(line) != hashes[i] {
+			t.Errorf("line %d: seq %d, prev %s; its hash is %s and append said %s", i+1, rec.Seq, rec.Prev, sum256(line), hashes[i])
 		}
 		if got := rec.Time.Format(time.RFC3339Nano); got != "2026-11-18T11:00:00.987Z" {
 			t.Errorf("time %s: want UTC to the millisecond", got)

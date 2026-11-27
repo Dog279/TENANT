@@ -412,7 +412,7 @@ func (l *Listener) Bind(addr string) (net.Listener, error) {
 		return nil, fmt.Errorf("peering: bind %q: %w", addr, err)
 	}
 	if l.tlsCert != nil {
-		ln = tls.NewListener(ln, &tls.Config{Certificates: []tls.Certificate{*l.tlsCert}})
+		ln = tls.NewListener(ln, ServerTLSConfig(*l.tlsCert))
 	}
 	return ln, nil
 }

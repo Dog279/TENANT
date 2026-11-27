@@ -25,7 +25,7 @@ func TestFleetCodeAloneConfirmsAMachine(t *testing.T) {
 
 	// What `fleet enroll` tells the operator follows the setting.
 	said := func() string {
-		return enrollText(enrolled{Name: "x", Code: "tntfleet1_x", Addresses: []string{"127.0.0.1:9777"}, Digits: fleetConfirmDigits(l.cfg)})
+		return enrollText(enrolled{Name: "x", Code: "tntfleet2_x", Addresses: []string{"127.0.0.1:9777"}, Digits: fleetConfirmDigits(l.cfg)})
 	}
 	if text := said(); !strings.Contains(text, "the code confirms it") || strings.Contains(text, "six digits and waits") {
 		t.Errorf("what `fleet enroll` says with the default:\n%s", text)

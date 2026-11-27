@@ -142,7 +142,7 @@ func TestFleetInitWithNoTerminal(t *testing.T) {
 	}
 	// Enroll, which runs init, says so too, and still gives its code.
 	code, err := l.run("enroll", "web1")
-	if err != nil || !strings.HasPrefix(code, "tntfleet1_") || !strings.Contains(said.String(), "no recovery key yet") {
+	if err != nil || !strings.HasPrefix(code, "tntfleet2_") || !strings.Contains(said.String(), "no recovery key yet") {
 		t.Fatalf("enroll: %v\n%s\n%s", err, code, said)
 	}
 }

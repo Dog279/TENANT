@@ -32,6 +32,10 @@ type ManagerConfig struct {
 	// Store is the master's fleet.json and Identity its certificate.
 	Store    *Store
 	Identity Identity
+	// Legacy is the identity this master had before the cnsa profile, when
+	// machines still pin it (LoadMasterIdentity): they are served it, and
+	// moved off it (rekey.go). Nil serves no such machine.
+	Legacy *Identity
 	// Addr is the host:port the one fleet port is bound to.
 	Addr string
 	// Role names this process to another that finds the fleet held: "serve",
@@ -179,7 +183,7 @@ func StartManager(cfg ManagerConfig) (*Manager, error) {
 }
 
 func newManager(cfg ManagerConfig) (*Manager, error) {
-	tlsCfg, err := MasterTLS(cfg.Identity, cfg.Store)
+	tlsCfg, err := MasterTLS(cfg.Identity, cfg.Legacy, cfg.Store)
 	if err != nil {
 		return nil, err
 	}
@@ -390,6 +394,9 @@ func (m *Manager) live(id string, toolCall bool) (*link, error) {
 	if l == nil {
 		return nil, &OfflineError{Machine: id, Since: seen.at, Started: m.started}
 	}
+	if toolCall && l.legacy {
+		return nil, fmt.Errorf("%w: %w", ErrIncompatible, ErrLegacy)
+	}
 	if toolCall && !speaks(m.linkVersion, l.version) {
 		return nil, fmt.Errorf("%w: %s", ErrIncompatible, incompatible("the master", m.linkVersion, l.version))
 	}
@@ -478,7 +485,7 @@ func (m *Manager) Call(ctx context.Context, id string, c Call) (Result, error) {
 func (r callResult) result(callID string) Result {
 	text, clipped := cut(r.Text, maxResultText)
 	res := Result{CallID: callID, Text: text, IsError: r.IsError, Clipped: r.Clipped || clipped}
-	if _, err := parseFingerprint(r.Audit); err == nil {
+	if _, err := parseDigest(r.Audit, 32); err == nil {
 		res.Audit = r.Audit
 	}
 	return res
@@ -620,6 +627,20 @@ func (m *Manager) serveLink(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, answer, status)
 		return
 	}
+	// A machine that connects with the certificate it said it is moving to
+	// has moved (rekey.go): that certificate is its only one from here on.
+	if mach.Next != "" {
+		if leaf, perr := presented(r.TLS); perr == nil && fingerprintOf(leaf.Raw) == mach.Next {
+			if err := m.store.promote(mach.ID, mach.Next); err != nil {
+				RekeyRefused.Log(m.ctx, "name", mach.Name, "machine", mach.ID, "err", err)
+				w.Header().Set("Connection", "close")
+				http.Error(w, "the fleet is not available", statusUnavailable)
+				return
+			}
+			Rekeyed.Log(m.ctx, "name", mach.Name, "machine", mach.ID, "certificate", mach.Next)
+			mach.Fingerprint, mach.Next = mach.Next, ""
+		}
+	}
 	// One connection per machine at a time gets as far as the hello: a machine
 	// holds its link and at most one more that is not a link yet, however many
 	// times it dials.
@@ -645,7 +666,7 @@ func (m *Manager) serveLink(w http.ResponseWriter, r *http.Request) {
 		LinkNotUpgraded.Log(m.ctx, "machine", mach.ID, "remote", r.RemoteAddr, "err", err)
 		return
 	}
-	l := &link{m: m, id: mach.ID, remote: r.RemoteAddr, slots: make(chan struct{}, m.inFlight), calls: map[string]*call{}}
+	l := &link{m: m, id: mach.ID, remote: r.RemoteAddr, legacy: mach.Legacy(), slots: make(chan struct{}, m.inFlight), calls: map[string]*call{}}
 	l.sess = mcp.NewSession(&guard{Transport: t, l: l, tokens: requestBurst, refilled: time.Now()}, l)
 	l.sess.Start(m.ctx)
 
@@ -739,6 +760,9 @@ type link struct {
 	id     string // the machine
 	remote string
 	sess   *mcp.Session
+	// legacy: the machine made this link with the certificate it had before
+	// the cnsa profile. No call is made on it (Manager.live).
+	legacy bool
 
 	version   int           // the link version the child said in its hello
 	arch      string        // the architecture it said, when it is a known one
@@ -816,7 +840,11 @@ func (l *link) request(ctx context.Context, d time.Duration, method string, para
 
 func (l *link) hello(mach Machine) error {
 	var res helloResult
-	if err := l.request(l.m.ctx, l.m.helloTime, methodHello, helloParams{Link: l.m.linkVersion}, &res); err != nil {
+	hello := helloParams{Link: l.m.linkVersion}
+	if l.legacy {
+		hello.Rekey = l.m.cfg.Identity.Fingerprint
+	}
+	if err := l.request(l.m.ctx, l.m.helloTime, methodHello, hello, &res); err != nil {
 		return err
 	}
 	if res.Link < 1 || res.Link > maxLinkVersion {
@@ -886,12 +914,14 @@ func (l *link) reason() string {
 	return "the machine closed the link"
 }
 
-// HandleRequest serves what a child may ask its master: fleet/confirm, and
-// ping. The guard has let the request through.
+// HandleRequest serves what a child may ask its master: fleet/confirm,
+// fleet/rekey and ping. The guard has let the request through.
 func (l *link) HandleRequest(ctx context.Context, method string, params json.RawMessage) (json.RawMessage, error) {
 	switch method {
 	case methodPing:
 		return emptyObject, nil
+	case methodRekey:
+		return l.rekey(params)
 	case methodConfirm:
 		return l.confirm(ctx, params)
 	}
@@ -1030,7 +1060,9 @@ func (g *guard) admit(raw []byte) (pass bool, err error) {
 		if !g.take() {
 			return false, g.strike("more requests than the link allows")
 		}
-		if msg.IsRequest() && msg.Method != methodConfirm && msg.Method != methodPing {
+		// fleet/rekey is a legacy link's to ask; from any other machine it is
+		// one more thing a child never sends.
+		if msg.IsRequest() && msg.Method != methodConfirm && msg.Method != methodPing && !(msg.Method == methodRekey && l.legacy) {
 			// Let through to be refused by name, and counted.
 			return true, g.strike("a request for " + clip(msg.Method))
 		}

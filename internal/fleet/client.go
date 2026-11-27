@@ -19,6 +19,7 @@ import (
 
 	"github.com/gobwas/ws"
 
+	"tenant/internal/cnsa"
 	"tenant/internal/fleet/shadow"
 	"tenant/internal/mcp"
 	"tenant/internal/mcp/transport"
@@ -107,6 +108,12 @@ type ClientConfig struct {
 	// nil, or a nil report, says nothing. That the master is saying hello is
 	// the news an update in progress waits for: the link is back.
 	Hello func() *UpdateReport
+	// Rekeyed is told, before it happens, that this machine is about to pin
+	// its master's new certificate at the master's word (rekey.go): from and
+	// to are the old and the new fingerprint. It is where the machine's audit
+	// log records it (AuditLog.Rekey); an error leaves the machine as it is.
+	// Nil records nothing.
+	Rekeyed func(from, to string) error
 	// Memory keeps the copies of this machine's memory the master sends
 	// (TEN-532): encrypted snapshots the child cannot read. Nil answers the
 	// memory methods as a child that does not know them would.
@@ -164,12 +171,13 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if cfg.Tools == nil {
 		return nil, errors.New("fleet: a child needs the tools it serves")
 	}
-	id, err := LoadIdentity(ChildIdentityPath(cfg.Dir))
+	// Loading it checks it, the master's fingerprint included.
+	child, err := LoadChild(ChildPath(cfg.Dir))
 	if err != nil {
 		return nil, err
 	}
-	// Loading it checks it, the master's fingerprint included.
-	if _, err := LoadChild(ChildPath(cfg.Dir)); err != nil {
+	id, err := loadChildIdentity(cfg.Dir, child)
+	if err != nil {
 		return nil, err
 	}
 	log := cfg.Log
@@ -307,13 +315,21 @@ func (c *Client) connect(ctx context.Context) (state LinkState, addr, detail str
 	if err != nil {
 		return LinkOffline, "", err.Error(), false
 	}
-	cfg, err := ChildTLS(c.id, child.MasterFingerprint)
+	c.mu.Lock()
+	// A move to a new identity that got as far as child.json and no further
+	// (rekey.go) is finished here, as NewClient would at the next start.
+	if c.id.Legacy && len(child.MasterFingerprint) == cnsa.FingerprintLen {
+		if id, err := finishRekey(c.cfg.Dir); err == nil {
+			c.id = id
+		}
+	}
+	id := c.id
+	addrs := append(child.MasterAddresses, c.pushed...)
+	c.mu.Unlock()
+	cfg, err := ChildTLS(id, child.MasterFingerprint)
 	if err != nil {
 		return LinkOffline, "", err.Error(), false
 	}
-	c.mu.Lock()
-	addrs := append(child.MasterAddresses, c.pushed...)
-	c.mu.Unlock()
 	var failed []string
 	for i, addr := range addrs {
 		if slices.Contains(addrs[:i], addr) {
@@ -321,7 +337,7 @@ func (c *Client) connect(ctx context.Context) (state LinkState, addr, detail str
 		}
 		t, state, err := c.dialLink(ctx, cfg, addr)
 		if t != nil {
-			return c.serve(ctx, t, addr)
+			return c.serve(ctx, t, addr, id.Legacy)
 		}
 		if state != LinkOffline {
 			// The master itself answered. No other address says otherwise.
@@ -375,8 +391,8 @@ func (c *Client) dialLink(ctx context.Context, cfg *tls.Config, addr string) (*t
 }
 
 // serve runs the session of one link until it ends.
-func (c *Client) serve(ctx context.Context, t *transport.WS, addr string) (LinkState, string, string, bool) {
-	l := &childLink{c: c, addr: addr}
+func (c *Client) serve(ctx context.Context, t *transport.WS, addr string, legacy bool) (LinkState, string, string, bool) {
+	l := &childLink{c: c, addr: addr, legacy: legacy}
 	l.sess = mcp.NewSession(noticing{t, l}, l)
 	c.setStatus(LinkConnected, addr, "") // before the hello can add to it
 	c.log.Info("fleet: linked to the master", "address", addr)
@@ -409,10 +425,18 @@ type childLink struct {
 	c    *Client
 	addr string
 	sess *mcp.Session
+	// legacy: this machine made the link with the certificate it had before
+	// the cnsa profile. It serves no tool and keeps no memory over it; it is
+	// updated over it, and moved off it (rekey.go).
+	legacy bool
 
-	master  atomic.Int32 // the link version the master said in its hello; 0 before
-	revoked atomic.Bool
+	master   atomic.Int32 // the link version the master said in its hello; 0 before
+	revoked  atomic.Bool
+	rekeying atomic.Bool // this link's one try at moving off a legacy identity has started
 }
+
+// errLegacyLink is what a child answers a call on a legacy link.
+var errLegacyLink = mcp.NewError(codeIncompatible, "fleet: this machine is still on its certificate from before the ML-DSA-87 profile and serves nothing over it: update the master's Tenant, and the machine moves to a new one by itself")
 
 func (l *childLink) HandleRequest(ctx context.Context, method string, params json.RawMessage) (json.RawMessage, error) {
 	c := l.c
@@ -429,11 +453,17 @@ func (l *childLink) HandleRequest(ctx context.Context, method string, params jso
 		if c.cfg.Memory == nil {
 			break // a child that keeps no copies is a child that does not know these
 		}
+		if l.legacy {
+			return nil, errLegacyLink
+		}
 		if v := int(l.master.Load()); !speaks(c.linkVersion, v) {
 			return nil, mcp.NewError(codeIncompatible, incompatible("this machine", c.linkVersion, v))
 		}
 		return c.memory(method, params)
 	case methodToolsList, methodToolsCall, methodResult:
+		if l.legacy {
+			return nil, errLegacyLink
+		}
 		if v := int(l.master.Load()); !speaks(c.linkVersion, v) {
 			return nil, mcp.NewError(codeIncompatible, incompatible("this machine", c.linkVersion, v))
 		}
@@ -500,6 +530,20 @@ func (l *childLink) hello(params json.RawMessage) (json.RawMessage, error) {
 		OS: runtime.GOOS, User: c.cfg.User, Version: c.cfg.Version, Sandbox: child.Sandbox, Ceiling: string(child.Ceiling)}}
 	if c.cfg.Hello != nil {
 		res.Update = c.cfg.Hello()
+	}
+	// The master asks this machine to move off its legacy identity. Not in
+	// the trial run of an update: the Tenant that started it is older, comes
+	// back if the trial fails, and could not read what a move leaves behind.
+	if p.Rekey != "" && l.legacy && (res.Update == nil || res.Update.State != UpdateTrial) && l.rekeying.CompareAndSwap(false, true) {
+		c.mu.Lock()
+		start := !c.stopped
+		if start {
+			c.calls.Add(1) // rekey gives it back
+		}
+		c.mu.Unlock()
+		if start {
+			go c.rekey(l, p.Rekey)
+		}
 	}
 	return encode(res)
 }

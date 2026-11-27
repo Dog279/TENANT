@@ -300,13 +300,13 @@ func TestChildRefusesBadRequests(t *testing.T) {
 		{methodResult, `{"call_id":"../x"}`, mcp.ErrInvalidParams},
 		{methodUpdate, ``, mcp.ErrInvalidParams},
 		{methodUpdate, `{"version":"1","sha256":"zz","size":1,"offset":0,"data":"AA=="}`, mcp.ErrInvalidParams},
-		{methodUpdate, `{"version":"","sha256":"` + fuzzPrint + `","size":1,"offset":0,"data":"AA=="}`, mcp.ErrInvalidParams},
-		{methodUpdate, `{"version":"1","sha256":"` + fuzzPrint + `","size":0,"offset":0}`, mcp.ErrInvalidParams},
-		{methodUpdate, `{"version":"1","sha256":"` + fuzzPrint + `","size":1,"offset":-1,"data":"AA=="}`, mcp.ErrInvalidParams},
-		{methodUpdate, `{"version":"1","sha256":"` + fuzzPrint + `","size":1,"offset":1,"data":"AA=="}`, mcp.ErrInvalidParams},
-		{methodUpdate, `{"version":"1","sha256":"` + fuzzPrint + `","size":2000000000,"offset":0}`, mcp.ErrInvalidParams},
-		{methodUpdate, `{"version":"1\n2","sha256":"` + fuzzPrint + `","size":1,"offset":0}`, mcp.ErrInvalidParams},
-		{methodUpdate, `{"version":"1","sha256":"` + fuzzPrint + `","size":1,"offset":0,"data":"not base64!"}`, mcp.ErrInvalidParams},
+		{methodUpdate, `{"version":"","sha256":"` + fuzzSum + `","size":1,"offset":0,"data":"AA=="}`, mcp.ErrInvalidParams},
+		{methodUpdate, `{"version":"1","sha256":"` + fuzzSum + `","size":0,"offset":0}`, mcp.ErrInvalidParams},
+		{methodUpdate, `{"version":"1","sha256":"` + fuzzSum + `","size":1,"offset":-1,"data":"AA=="}`, mcp.ErrInvalidParams},
+		{methodUpdate, `{"version":"1","sha256":"` + fuzzSum + `","size":1,"offset":1,"data":"AA=="}`, mcp.ErrInvalidParams},
+		{methodUpdate, `{"version":"1","sha256":"` + fuzzSum + `","size":2000000000,"offset":0}`, mcp.ErrInvalidParams},
+		{methodUpdate, `{"version":"1\n2","sha256":"` + fuzzSum + `","size":1,"offset":0}`, mcp.ErrInvalidParams},
+		{methodUpdate, `{"version":"1","sha256":"` + fuzzSum + `","size":1,"offset":0,"data":"not base64!"}`, mcp.ErrInvalidParams},
 	} {
 		if _, err := l.HandleRequest(ctx, tc.method, json.RawMessage(tc.params)); code(err) != tc.want {
 			t.Errorf("%s %s = %v, want code %d", tc.method, tc.params, err, tc.want)
@@ -324,10 +324,10 @@ func TestChildRefusesBadRequests(t *testing.T) {
 	}
 
 	// A machine with no updater says so, and one whose updater fails says why.
-	if (Update{Version: "1", SHA256: fuzzPrint, Size: MaxUpdateChunk + 1, Data: make([]byte, MaxUpdateChunk+1)}).validate() == nil {
+	if (Update{Version: "1", SHA256: fuzzSum, Size: MaxUpdateChunk + 1, Data: make([]byte, MaxUpdateChunk+1)}).validate() == nil {
 		t.Error("a piece over the chunk limit is valid")
 	}
-	piece := `{"version":"1","sha256":"` + fuzzPrint + `","size":1,"offset":0,"data":"AA=="}`
+	piece := `{"version":"1","sha256":"` + fuzzSum + `","size":1,"offset":0,"data":"AA=="}`
 	k.c.cfg.Update = func(context.Context, Update) (UpdateAck, error) { return UpdateAck{}, errors.New("disk full") }
 	if _, err := l.HandleRequest(ctx, methodUpdate, json.RawMessage(piece)); code(err) != codeUnavailable || !strings.Contains(err.Error(), "disk full") {
 		t.Errorf("an update that fails = %v", err)

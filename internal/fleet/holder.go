@@ -16,7 +16,7 @@ import (
 // memory is encrypted to (KeyPath). They are written owner-only; doctor
 // audits them and the file tools refuse them.
 func AtRestPaths(dir string) []string {
-	return []string{StorePath(dir), MasterIdentityPath(dir), filepath.Join(dir, holderFileName), KeyPath(dir)}
+	return []string{StorePath(dir), MasterIdentityPath(dir), MasterLegacyIdentityPath(dir), filepath.Join(dir, holderFileName), KeyPath(dir)}
 }
 
 // KeyPath is the master's fleet key under its config dir (TEN-532): sealed by

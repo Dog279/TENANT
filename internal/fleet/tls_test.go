@@ -83,16 +83,28 @@ func expiredPEM(t *testing.T) []byte {
 }
 
 func TestParseFingerprint(t *testing.T) {
-	good := strings.Repeat("0a", 32)
+	good := strings.Repeat("0a", 48)
 	if _, err := parseFingerprint(good); err != nil {
 		t.Fatal(err)
 	}
+	legacy := good[:64]
 	for _, bad := range []string{
-		"", "0a", good[:63], good + "0", strings.ToUpper(good), "zz" + good[2:], " " + good[1:],
-		strings.Repeat("0a:", 21) + "0",
+		"", "0a", good[:95], good + "0", strings.ToUpper(good), "zz" + good[2:], " " + good[1:],
+		strings.Repeat("0a:", 32) + "0", legacy,
 	} {
 		if _, err := parseFingerprint(bad); err == nil {
 			t.Errorf("parseFingerprint(%q) accepted", bad)
+		}
+	}
+	// A pin is a fingerprint, or a legacy one of 64 digits; nothing else.
+	for _, ok := range []string{good, legacy} {
+		if _, err := parsePin(ok); err != nil {
+			t.Errorf("parsePin(%q): %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", legacy[:63], legacy + "0", strings.ToUpper(legacy), "zz" + legacy[2:], good[:95]} {
+		if _, err := parsePin(bad); err == nil {
+			t.Errorf("parsePin(%q) accepted", bad)
 		}
 	}
 }
@@ -103,7 +115,7 @@ func TestTLSConfigsCannotBeBuiltOpen(t *testing.T) {
 	m := newMaster(t)
 	child := newIdentity(t)
 
-	for _, fp := range []string{"", "abc", strings.ToUpper(m.id.Fingerprint), m.id.Fingerprint[:63], m.id.Fingerprint + "0", "g" + m.id.Fingerprint[1:]} {
+	for _, fp := range []string{"", "abc", strings.ToUpper(m.id.Fingerprint), m.id.Fingerprint[:95], m.id.Fingerprint[:64], m.id.Fingerprint + "0", "g" + m.id.Fingerprint[1:]} {
 		if cfg, err := ChildTLS(child, fp); err == nil || cfg != nil {
 			t.Errorf("ChildTLS with fingerprint %q: cfg = %v, err = %v; want an error and no configuration", fp, cfg != nil, err)
 		}
@@ -120,17 +132,17 @@ func TestTLSConfigsCannotBeBuiltOpen(t *testing.T) {
 	if cfg, err := MasterEnrollTLS(Identity{}); err == nil || cfg != nil {
 		t.Error("MasterEnrollTLS without an identity must fail")
 	}
-	if cfg, err := MasterTLS(Identity{}, m.store); err == nil || cfg != nil {
+	if cfg, err := MasterTLS(Identity{}, nil, m.store); err == nil || cfg != nil {
 		t.Error("MasterTLS without an identity must fail")
 	}
-	if cfg, err := MasterTLS(m.id, nil); err == nil || cfg != nil {
+	if cfg, err := MasterTLS(m.id, nil, nil); err == nil || cfg != nil {
 		t.Error("MasterTLS without a store must fail")
 	}
 
 	// What can be built demands TLS 1.3 and a certificate from the other side.
 	link := must(MasterLinkTLS(m.id, m.store))(t)
 	enroll := must(MasterEnrollTLS(m.id))(t)
-	both := must(MasterTLS(m.id, m.store))(t)
+	both := must(MasterTLS(m.id, nil, m.store))(t)
 	for name, cfg := range map[string]*tls.Config{"link": link, "enroll": enroll, "both": both} {
 		if cfg.MinVersion != tls.VersionTLS13 || cfg.ClientAuth != tls.RequireAnyClientCert || cfg.VerifyConnection == nil || !cfg.SessionTicketsDisabled {
 			t.Errorf("%s: MinVersion %x, ClientAuth %v, VerifyConnection set %v, tickets off %v", name, cfg.MinVersion, cfg.ClientAuth, cfg.VerifyConnection != nil, cfg.SessionTicketsDisabled)
@@ -281,7 +293,7 @@ func TestOnlyTheEnrollEndpointTakesAnUnpinnedCertificate(t *testing.T) {
 
 	enroll := must(MasterEnrollTLS(m.id))(t)
 	link := must(MasterLinkTLS(m.id, m.store))(t)
-	both := must(MasterTLS(m.id, m.store))(t)
+	both := must(MasterTLS(m.id, nil, m.store))(t)
 
 	connects := func(server, client *tls.Config) *tls.ConnectionState {
 		t.Helper()
