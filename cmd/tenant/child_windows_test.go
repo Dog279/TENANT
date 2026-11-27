@@ -211,6 +211,11 @@ func TestChildExeSafeWindows(t *testing.T) {
 	if err := childExeSafe(`C:\Program Files\Tenant\tenant.exe`); err != nil {
 		t.Errorf("a binary under Program Files: %v", err)
 	}
+	// A folder made on the system drive takes the drive's access list, which
+	// lets every signed-in account change its files: not a place to run from.
+	if err := childExeSafe(`C:\Tenant\tenant.exe`); err == nil || !strings.Contains(err.Error(), "runs this binary as SYSTEM") {
+		t.Errorf("a binary in a folder of its own on the system drive: %v", err)
+	}
 	// And the real command refuses before the code is spent.
 	m := newFleetMaster(t)
 	sysDir := filepath.Join(t.TempDir(), "child")

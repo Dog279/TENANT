@@ -203,7 +203,7 @@ func (f *fakeFleet) Enroll(name, by string) (FleetEnrollment, error) {
 		Warning:   "warning: every IP address this code carries is private, link-local or loopback: a machine at another site cannot dial these.",
 		Lines: []FleetPasteLine{
 			{"Linux, macOS, nothing installed (sudo asks for your password)", "curl -fsSL https://github.com/o/r/releases/latest/download/install.sh | TENANT_CHILD=system TENANT_ENROLL_CODE=" + q + " sudo --preserve-env=TENANT_CHILD,TENANT_ENROLL_CODE sh"},
-			{"Windows, Tenant installed (PowerShell run as administrator)", q + " | tenant child install --system"},
+			{"Windows, Tenant under Program Files (PowerShell run as administrator)", q + " | tenant child install --system"},
 		}}, nil
 }
 

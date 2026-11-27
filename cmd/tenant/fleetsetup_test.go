@@ -36,8 +36,8 @@ func TestEnrollPaste(t *testing.T) {
 	want := []pasteLine{
 		{"Linux, macOS, nothing installed (sudo asks for your password)", "curl -fsSL https://github.com/acme/tenant/releases/latest/download/install.sh | TENANT_CHILD=system TENANT_ENROLL_CODE='tntfleet1_abc-_Z9' sudo --preserve-env=TENANT_CHILD,TENANT_ENROLL_CODE sh"},
 		{"Windows, nothing installed (PowerShell run as administrator)", "$env:TENANT_CHILD='system'; $env:TENANT_ENROLL_CODE='tntfleet1_abc-_Z9'; irm https://github.com/acme/tenant/releases/latest/download/install.ps1 | iex"},
-		{"Linux, macOS, Tenant installed (in a root shell)", "printf '%s\\n' 'tntfleet1_abc-_Z9' | tenant child install --system"},
-		{"Windows, Tenant installed (PowerShell run as administrator)", "'tntfleet1_abc-_Z9' | tenant child install --system"},
+		{"Linux, macOS, Tenant in /usr/local/bin (in a root shell)", "printf '%s\\n' 'tntfleet1_abc-_Z9' | tenant child install --system"},
+		{"Windows, Tenant under Program Files (PowerShell run as administrator)", "'tntfleet1_abc-_Z9' | tenant child install --system"},
 	}
 	if !slices.Equal(boot, want) {
 		t.Errorf("from boot:\n got %q\nwant %q", boot, want)

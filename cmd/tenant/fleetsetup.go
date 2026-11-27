@@ -137,8 +137,8 @@ func enrollPaste(code string) (lines []pasteLine, note string) {
 				"$env:TENANT_CHILD='system'; $env:TENANT_ENROLL_CODE=" + q + "; irm " + base + "install.ps1 | iex"})
 	}
 	return append(lines,
-		pasteLine{"Linux, macOS, Tenant installed (in a root shell)", "printf '%s\\n' " + q + " | tenant child install --system"},
-		pasteLine{"Windows, Tenant installed (PowerShell run as administrator)", q + " | tenant child install --system"}), note
+		pasteLine{"Linux, macOS, Tenant in /usr/local/bin (in a root shell)", "printf '%s\\n' " + q + " | tenant child install --system"},
+		pasteLine{"Windows, Tenant under Program Files (PowerShell run as administrator)", q + " | tenant child install --system"}), note
 }
 
 // addressWarning is the plain warning for a code whose every IP address is

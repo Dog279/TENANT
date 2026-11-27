@@ -35,38 +35,31 @@ function tenant { $in = @($input) -join ''; Write-Output ("args={0} stdin={1}" -
 	script := filepath.Join(t.TempDir(), "paste.ps1")
 	n := 0
 	for _, code := range pasteCodes {
-		for _, system := range []bool{true} { // a child is always the machine's own
-			lines, _ := enrollPaste(code)
-			for _, l := range lines {
-				if !strings.HasPrefix(l.For, "Windows") {
-					continue
-				}
-				n++
-				if err := os.WriteFile(script, []byte(stand+l.Line+"\r\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				cmd := exec.Command(ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script)
-				hideWindow(cmd)
-				cmd.Env = env
-				out, err := cmd.CombinedOutput()
-				if err != nil {
-					t.Fatalf("%q: %v\n%s", l.For, err, out)
-				}
-				child, want := "user", ""
-				if system {
-					child = "system"
-				}
-				switch {
-				case strings.Contains(l.Line, "install.ps1"):
-					want = "child=" + child + " code=" + code + " url=https://github.com/acme/tenant/releases/latest/download/install.ps1"
-				case system:
-					want = "args=child install --system stdin=" + code
-				default:
-					want = "args=child install stdin=" + code
-				}
-				if got := strings.TrimSpace(string(out)); got != want {
-					t.Errorf("%q in PowerShell gave %q, want %q", l.For, got, want)
-				}
+		lines, _ := enrollPaste(code)
+		for _, l := range lines {
+			if !strings.HasPrefix(l.For, "Windows") {
+				continue
+			}
+			n++
+			if err := os.WriteFile(script, []byte(stand+l.Line+"\r\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script)
+			hideWindow(cmd)
+			cmd.Env = env
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("%q: %v\n%s", l.For, err, out)
+			}
+			want := ""
+			switch {
+			case strings.Contains(l.Line, "install.ps1"):
+				want = "child=system code=" + code + " url=https://github.com/acme/tenant/releases/latest/download/install.ps1"
+			default:
+				want = "args=child install --system stdin=" + code
+			}
+			if got := strings.TrimSpace(string(out)); got != want {
+				t.Errorf("%q in PowerShell gave %q, want %q", l.For, got, want)
 			}
 		}
 	}

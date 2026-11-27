@@ -132,7 +132,8 @@ It prints the code alone on standard output, then (on standard error) when it ex
 addresses it carries, and one line for each kind of machine. **A child is the machine's own**: a
 service that runs as root (Linux, macOS) or SYSTEM (Windows) from boot. So every line is for an
 elevated terminal. For a machine with nothing on it, the line fetches the install script from
-the latest release, checks the download against the release's checksums, puts the binary where
+the master's own release (the latest release, for a development build), checks the download
+against the release's checksums, puts the binary where
 only an administrator can replace it (`/usr/local/bin`, `%ProgramFiles%\Tenant`), and goes
 straight on to `tenant child install`:
 
@@ -143,7 +144,8 @@ curl -fsSL https://github.com/OWNER/REPO/releases/latest/download/install.sh | T
 $env:TENANT_CHILD='system'; $env:TENANT_ENROLL_CODE='<code>'; irm https://github.com/OWNER/REPO/releases/latest/download/install.ps1 | iex
 ```
 
-For a machine that has Tenant already, in a root shell or a PowerShell run as administrator:
+For a machine that has Tenant already where only an administrator can replace it
+(`/usr/local/bin`, under `%ProgramFiles%`), in a root shell or a PowerShell run as administrator:
 
 ```
 printf '%s\n' '<code>' | tenant child install            # Linux, macOS
@@ -152,6 +154,15 @@ printf '%s\n' '<code>' | tenant child install            # Linux, macOS
 
 The lines `tenant fleet enroll` prints end in `--system`, which older versions need and this one
 accepts. Without elevation `tenant child install` refuses (exit 2) before the code is spent.
+
+The service runs whatever is at the binary's path, as root or SYSTEM, at every boot, so
+`tenant child install` refuses a binary that anyone but an administrator could replace: on
+Linux and macOS one that is not root's, with every folder above it, and closed to writing by group and
+others; on Windows one anywhere but under `%ProgramFiles%` (a folder of its own on the system
+drive, such as `C:\Tenant`, lets every signed-in account change its files). A Tenant in your
+own folder (`~/.local/bin`, `%LOCALAPPDATA%\Programs\tenant`) is refused for that reason: use
+the first line, and the script puts a copy in the right place. `sudo` does not look in
+`~/.local/bin` either.
 
 Whoever adds a machine to a fleet owns or administers it, and a child that runs as one account
 reaches only what that account may, and runs only while that account is logged on (on Linux,
@@ -163,16 +174,18 @@ account. What follows:
   a user's PATH, shell profile, keychain or signed-in tools. Files it writes are root's or
   SYSTEM's.
 - **Linux: the child's browser does not start.** Chrome refuses to run as root with its own
-  sandbox on, and Tenant turns that sandbox off only inside a container, when
-  `browser_no_sandbox` says so. The other tools are not affected.
+  sandbox on, and Tenant turns that sandbox off only inside a container or a user namespace,
+  when `browser_no_sandbox` says so. The other tools are not affected.
 
 **A machine nobody may administer** can still run a child as one account:
 `tenant child install --dir <directory>` keeps the child's files in that directory and installs
 a logon task, launch agent or user unit for the account that typed it. No line the master
-prints does this. A child that an older Tenant installed for an account keeps running, and
-`tenant child status`, `pause`, `resume`, `rehome` and `uninstall` still find it. To make it the
-machine's own: `tenant child uninstall`, then enroll again from an elevated terminal (a new
-enrollment is a new key).
+prints does this, and from a root shell on Linux and macOS it is refused: it would be a root
+service whose binary and directory nothing had checked. A child that an older Tenant installed
+for an account keeps running, and `tenant child status`, `pause`, `resume`, `rehome` and
+`uninstall` still find it. While it is there an install refuses, so that one machine does not
+become two to its master. To make it the machine's own: `tenant child uninstall`, then enroll
+again from an elevated terminal (a new enrollment is a new key).
 
 `--ceiling full|no-exec|read-only` sets what the machine lets its master do (below). The code is
 read from standard input or `$TENANT_ENROLL_CODE`, never from an argument: no line puts it on a

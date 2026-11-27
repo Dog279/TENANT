@@ -37,43 +37,36 @@ exec "$@"`,
 		}
 	}
 	for _, code := range pasteCodes {
-		for _, system := range []bool{true} { // a child is always the machine's own
-			lines, _ := enrollPaste(code)
-			for _, l := range lines {
-				if !strings.HasPrefix(l.For, "Linux") {
-					continue
+		lines, _ := enrollPaste(code)
+		for _, l := range lines {
+			if !strings.HasPrefix(l.For, "Linux") {
+				continue
+			}
+			_ = os.Remove(filepath.Join(bin, "sudo.args"))
+			cmd := exec.Command(sh, "-s")
+			cmd.Stdin = strings.NewReader(l.Line + "\n")
+			cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "HOME=" + bin, "BIN=" + bin}
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("%s: %v\n%s", l.Line[:40], err, out)
+			}
+			want := ""
+			switch {
+			case strings.Contains(l.Line, "install.sh"):
+				want = "child=system code=" + code + "\n"
+				args, _ := os.ReadFile(filepath.Join(bin, "curl.args"))
+				if string(args) != "-fsSL https://github.com/acme/tenant/releases/latest/download/install.sh\n" {
+					t.Errorf("curl was given %q", args)
 				}
-				_ = os.Remove(filepath.Join(bin, "sudo.args"))
-				cmd := exec.Command(sh, "-s")
-				cmd.Stdin = strings.NewReader(l.Line + "\n")
-				cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "HOME=" + bin, "BIN=" + bin}
-				out, err := cmd.CombinedOutput()
-				if err != nil {
-					t.Fatalf("%s: %v\n%s", l.Line[:40], err, out)
-				}
-				child, want := "user", ""
-				if system {
-					child = "system"
-				}
-				switch {
-				case strings.Contains(l.Line, "install.sh"):
-					want = "child=" + child + " code=" + code + "\n"
-					args, _ := os.ReadFile(filepath.Join(bin, "curl.args"))
-					if string(args) != "-fsSL https://github.com/acme/tenant/releases/latest/download/install.sh\n" {
-						t.Errorf("curl was given %q", args)
-					}
-				case system:
-					want = "args=child install --system stdin=" + code + "\n"
-				default:
-					want = "args=child install stdin=" + code + "\n"
-				}
-				if string(out) != want {
-					t.Errorf("%q in sh gave %q, want %q", l.For, out, want)
-				}
-				args, err := os.ReadFile(filepath.Join(bin, "sudo.args"))
-				if sudo := strings.Contains(l.Line, "sudo "); sudo != (err == nil) || sudo && string(args) != "--preserve-env=TENANT_CHILD,TENANT_ENROLL_CODE sh\n" {
-					t.Errorf("%q: sudo was given %q (%v)", l.For, args, err)
-				}
+			default:
+				want = "args=child install --system stdin=" + code + "\n"
+			}
+			if string(out) != want {
+				t.Errorf("%q in sh gave %q, want %q", l.For, out, want)
+			}
+			args, err := os.ReadFile(filepath.Join(bin, "sudo.args"))
+			if sudo := strings.Contains(l.Line, "sudo "); sudo != (err == nil) || sudo && string(args) != "--preserve-env=TENANT_CHILD,TENANT_ENROLL_CODE sh\n" {
+				t.Errorf("%q: sudo was given %q (%v)", l.For, args, err)
 			}
 		}
 	}

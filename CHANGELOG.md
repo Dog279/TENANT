@@ -11,14 +11,24 @@ Releases page.
   PowerShell run as administrator) and refuses without one, before the code is spent.
   `tenant fleet enroll`, `/fleet enroll` and the dashboard's **Add machine** print one set of
   lines, all for an elevated terminal; the dashboard no longer asks "as you or from boot".
-  `--system` is still accepted, and an older master's `TENANT_CHILD=user` line installs the same
-  service. Children that an earlier version installed for an account keep running.
+  `--system` is still accepted. Children that an earlier version installed for an account keep
+  running, and an install refuses while this account still has one: `tenant child uninstall` it
+  first, or the machine would be two machines to its master.
+  - The binary the service runs must be where only an administrator can replace it. On Windows
+    that is now under `%ProgramFiles%` and nowhere else: a folder of its own on the system drive
+    (`C:\Tenant`) lets every signed-in account change its files. On Linux and macOS it is a path
+    that is root's all the way up (`/usr/local/bin`). The install script puts it there.
+  - The install scripts take `TENANT_CHILD=user` as `system`: a development build of an older
+    master prints that line for the latest release's script. A released older master hands out
+    its own release's script and installs what it always did.
   - A child that runs as one account is still possible, for a machine nobody may administer:
-    `tenant child install --dir <directory>`.
+    `tenant child install --dir <directory>`. From a root shell on Linux and macOS that is
+    refused: it would be a root service nothing had checked.
   - Every command a master runs on a child now runs as root or SYSTEM, in that account's
     environment, and the files it writes are that account's.
   - **Linux:** a child that runs as root cannot start its browser: Chrome refuses to run as root
-    with its sandbox on, and Tenant turns that sandbox off only inside a container.
+    with its sandbox on, and Tenant turns that sandbox off only inside a container or a user
+    namespace, when `browser_no_sandbox` says so.
 - **New: send a fleet machine a build of your own (TEN-552, second part).**
   `go run ./scripts/devbuild [system/processor ...]` builds Tenant from a checkout and packs each
   target as the archive a release would carry, under a development version of its own

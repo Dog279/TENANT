@@ -74,7 +74,7 @@ func childExeSafe(exe string) error {
 		// A sticky directory (/tmp) lets nobody replace another's file, but
 		// nothing that runs as root belongs under one.
 		if st == nil || st.Uid != 0 || info.Mode().Perm()&0o022 != 0 {
-			return fmt.Errorf("%s can be changed by an account other than root, and a --system child runs this binary as root at every boot; "+
+			return fmt.Errorf("%s can be changed by an account other than root, and the child runs this binary as root at every boot; "+
 				"install it where only root can write (/usr/local/bin) and run it from there", p)
 		}
 		if p == filepath.Dir(p) {

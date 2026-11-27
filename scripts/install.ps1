@@ -24,8 +24,8 @@
 #   TENANT_CHILD        system: the child is a service that runs as SYSTEM from
 #                       boot (run this from an elevated PowerShell; tenant.exe
 #                       then goes to %ProgramFiles%\Tenant, where only
-#                       administrators can replace it). An older master's line
-#                       says user, and gets the same
+#                       administrators can replace it). A development build of
+#                       an older master says user, and gets the same
 #   TENANT_ENROLL_CODE  the one-time code `tenant fleet enroll <name>` printed on the
 #                       master. Left unset, it is asked for. It is never passed as an
 #                       argument, where the process list shows it.

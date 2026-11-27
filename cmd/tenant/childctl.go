@@ -65,7 +65,16 @@ const childCodeEnv = "TENANT_ENROLL_CODE"
 // Seams. Tests keep a child away from this machine's own system directory
 // and its own system log, and shorten the watch.
 var (
-	childSystemDir       = fleet.SystemDir
+	childSystemDir = fleet.SystemDir
+	// childOwnDir is this account's own child directory: where an install
+	// put a child before a child was the machine's own (TEN-558).
+	childOwnDir = func() (string, error) {
+		cfg, err := soul.DefaultDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve config dir: %w", err)
+		}
+		return filepath.Join(cfg, "child"), nil
+	}
 	openChildOSLog       = fleet.OpenOSLog
 	registerChildOSLog   = fleet.RegisterOSLog
 	unregisterChildOSLog = fleet.UnregisterOSLog
@@ -106,7 +115,16 @@ func cmdChild(ctx context.Context, args []string) error {
 	}
 	// An install is the machine's own unless a directory is named.
 	sys := *system || verb == "install" && *dirFlag == ""
-	dir, err := childDir(verb, *dirFlag, sys)
+	// A child in a directory someone names runs as the account that installs
+	// it, with none of the checks a root service gets (who can replace its
+	// binary, who can write its directory). Root has no use for one. On
+	// Windows an elevated terminal is still the same account, and its logon
+	// task runs without the administrator's token.
+	if verb == "install" && !sys && runtime.GOOS != "windows" && childElevated() {
+		return exitError{2, "from a root shell a child is the machine's own: `tenant child install` without --dir. " +
+			"One in a directory you name runs as the account that installs it, and as root nothing would have checked its binary or its directory"}
+	}
+	dir, err := childDir(*dirFlag, sys)
 	if err != nil {
 		return err
 	}
@@ -164,19 +182,18 @@ func cmdChild(ctx context.Context, args []string) error {
 // machine's for an install or with --system (system). A command other than
 // install, given neither, acts on this account's own child where there is
 // one (an older Tenant installed those), else on the machine's.
-func childDir(verb, named string, system bool) (string, error) {
+func childDir(named string, system bool) (string, error) {
 	switch {
 	case named != "":
 		return filepath.Abs(expandPath(named))
 	case system:
 		return childSystemDir(), nil
 	}
-	cfg, err := soul.DefaultDir()
+	own, err := childOwnDir()
 	if err != nil {
-		return "", fmt.Errorf("resolve config dir: %w", err)
+		return "", err
 	}
-	own := filepath.Join(cfg, "child")
-	if verb != "install" && !exists(fleet.ChildPath(own)) && exists(fleet.ChildPath(childSystemDir())) {
+	if !exists(fleet.ChildPath(own)) && exists(fleet.ChildPath(childSystemDir())) {
 		return childSystemDir(), nil
 	}
 	return own, nil
@@ -231,6 +248,16 @@ func childInstall(ctx context.Context, in io.Reader, out io.Writer, dir string, 
 	if exists(fleet.ChildPath(dir)) || exists(fleet.ChildIdentityPath(dir)) {
 		return exitError{2, "this machine is already enrolled (" + dir + "): `tenant child status` shows where it stands. " +
 			"To enroll it again, `tenant child uninstall` first: a new enrollment is a new key"}
+	}
+	// A child an earlier Tenant installed for this account is still this
+	// machine's child: a second one beside it would be a second machine to
+	// the master, and the commands without a flag would go on acting on the
+	// old one. (Under sudo this sees the account sudo leaves as home.)
+	if o.system {
+		if own, err := childOwnDir(); err == nil && filepath.Clean(own) != filepath.Clean(dir) && exists(fleet.ChildPath(own)) {
+			return exitError{2, "this account already has a child of its own (" + own + "), from before a child was the machine's own. " +
+				"`tenant child uninstall` removes it; then enroll again from here. Installed beside it, this machine would be two machines to its master"}
+		}
 	}
 	exe, err := os.Executable()
 	if err == nil {

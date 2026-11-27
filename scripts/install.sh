@@ -28,8 +28,9 @@
 #
 #   TENANT_CHILD        system: the child is a service that runs as root from
 #                       boot (run the script as root; the binary then goes to
-#                       /usr/local/bin, where only root can replace it). An
-#                       older master's line says user, and gets the same
+#                       /usr/local/bin, where only root can replace it). A
+#                       development build of an older master says user, and
+#                       gets the same
 #   TENANT_ENROLL_CODE  the one-time code `tenant fleet enroll <name>` printed on the
 #                       master. Left unset, it is asked for on the terminal. It is
 #                       never passed as an argument, where the process list shows it.

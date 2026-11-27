@@ -139,7 +139,7 @@
     <input type="text" name="name" class="cinput" maxlength="63" placeholder="a name, e.g. web1" aria-label="A name for the new machine" required>
     <button type="submit" class="btn sm">Make a code</button>
   </form>
-  <div class="dim mt">This makes a one-time code and the line to paste on the new machine, in an elevated terminal: the child is a service that runs as root or SYSTEM, from boot.{{if .View.ConfirmDigits}}The code joins nothing by itself: the machine shows six digits and waits here until they are typed on the computer running Tenant{{if .View.RemoteConfirm}}, or in a signed-in browser elsewhere with the sign-in key again (remote confirmation is on){{end}}.{{else}}The code is all the machine needs: it joins as soon as the line is pasted there, and you are told here. Paste it only on that machine.{{end}}</div>
+  <div class="dim mt">This makes a one-time code and the line to paste on the new machine, in an elevated terminal: the child is a service that runs as root or SYSTEM, from boot. {{if .View.ConfirmDigits}}The code joins nothing by itself: the machine shows six digits and waits here until they are typed on the computer running Tenant{{if .View.RemoteConfirm}}, or in a signed-in browser elsewhere with the sign-in key again (remote confirmation is on){{end}}.{{else}}The code is all the machine needs: it joins as soon as the line is pasted there, and you are told here. Paste it only on that machine.{{end}}</div>
 </div>
 {{template "fl-defaults" .}}
 {{template "fl-groups" .}}
