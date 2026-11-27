@@ -109,6 +109,17 @@ func childStageDir(exe string) string {
 	return filepath.Join(filepath.Dir(exe), ".tenant-child-update")
 }
 
+// removeStage removes what an update unpacked beside the installed binary.
+// On Windows a binary that has just run can stay held for a moment after its
+// process ended (the system, or a scanner, still has the file open), and a
+// single try then leaves the copy where it is: so it tries for a few seconds.
+func removeStage(exe string) {
+	dir := childStageDir(exe)
+	for try := 0; os.RemoveAll(dir) != nil && try < 50; try++ {
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // childStaged is an update whose archive arrived whole and checked, and whose
 // binary is unpacked and ran.
 type childStaged struct {
@@ -352,7 +363,7 @@ func (u *childUpdater) write(ctx context.Context, p fleet.Update, dir, part stri
 	}
 	bin, err := u.stage(ctx, part, p.Version)
 	if err != nil {
-		_ = os.RemoveAll(childStageDir(u.exe))
+		removeStage(u.exe)
 		return fleet.UpdateAck{}, fmt.Errorf("%w; nothing was changed", err)
 	}
 	s := childStaged{to: p.Version, sha: p.SHA256, binary: bin}
@@ -470,12 +481,12 @@ func childApply(ctx context.Context, dir, exe string, s childStaged, log *slog.L
 	st := fleet.ChildUpdate{UpdateReport: fleet.UpdateReport{From: version.Version, To: s.to, State: fleet.UpdateTrial, At: childUpdateNow()},
 		Step: fleet.StepTrial, SHA256: s.sha}
 	if err := fleet.WriteChildUpdate(dir, st); err != nil {
-		_ = os.RemoveAll(childStageDir(exe))
+		removeStage(exe)
 		log.Warn("fleet child: the update was not applied: its state cannot be recorded", "err", err)
 		return false
 	}
 	fail := func(reason string) bool {
-		_ = os.RemoveAll(childStageDir(exe))
+		removeStage(exe)
 		rolledBack(dir, st, reason, log)
 		return false
 	}
@@ -511,7 +522,7 @@ func childApply(ctx context.Context, dir, exe string, s childStaged, log *slog.L
 	if err := childSwap(exe, s.binary); err != nil {
 		return fail("the new version could not be put in place: " + err.Error())
 	}
-	_ = os.RemoveAll(childStageDir(exe))
+	removeStage(exe)
 	log.Info("fleet child: the new version reached the master in its trial and is in place; restarting into it", "to", s.to)
 	return true
 }
@@ -685,7 +696,7 @@ func settleChildUpdate(dir, exe string, log *slog.Logger) *childPending {
 		rolledBack(dir, st, "the update was interrupted before the new version first ran; this machine kept the version it had", log)
 		p.st, _, _ = fleet.ReadChildUpdate(dir)
 	default:
-		_ = os.RemoveAll(childStageDir(exe))
+		removeStage(exe)
 		rolledBack(dir, st, "the update was interrupted during the trial run of the new version; this machine kept the version it had", log)
 		p.st, _, _ = fleet.ReadChildUpdate(dir)
 	}
