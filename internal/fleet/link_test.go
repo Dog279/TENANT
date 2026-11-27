@@ -345,7 +345,7 @@ func newFakeTools() *fakeTools {
 		},
 		"hold": func(ctx context.Context, _ json.RawMessage) (string, bool, error) {
 			select {
-			case <-f.hold():
+			case <-ctx.Value(heldKey{}).(chan struct{}):
 				return "held", false, nil
 			case <-ctx.Done():
 				return "stopped: " + ctx.Err().Error(), true, nil
@@ -391,9 +391,17 @@ func (f *fakeTools) Dispatch(ctx context.Context, call model.ToolCall) (string, 
 	if fn == nil {
 		return "", false, fmt.Errorf("unknown tool %q", call.Name)
 	}
+	// What a "hold" waits on is read before the start is announced. Read
+	// after it, a release that followed the announcement at once swapped the
+	// channel first, and the call held on until its deadline (seen on CI's
+	// Linux runner, twice).
+	ctx = context.WithValue(ctx, heldKey{}, f.hold())
 	f.started <- call
 	return fn(ctx, call.Arguments)
 }
+
+// heldKey is where Dispatch leaves a call the channel a "hold" waits on.
+type heldKey struct{}
 
 // kid is a child machine: its files in a temp dir and its client.
 type kid struct {

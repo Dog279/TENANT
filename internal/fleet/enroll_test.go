@@ -434,6 +434,53 @@ func TestEnrollRateLimit(t *testing.T) {
 	}
 }
 
+// An answer sent while the request body is unread closes the connection with
+// data pending, which resets it: the machine then sees a dropped connection in
+// place of the reason. (TestEnrollRateLimit on CI's Windows runner: a 429 that
+// arrived as "forcibly closed by the remote host".) So the refusals that need
+// nothing from the body read it first all the same: here no certificate, and
+// a source over its limit.
+func TestEnrollReadsTheBodyBeforeItAnswers(t *testing.T) {
+	m := newMaster(t)
+	h := newEnrollHandler(m.store, nil, nil, nil)
+	for i := range enrollAttempts + 2 { // the last two are over the limit
+		body := &readToEnd{r: strings.NewReader(strings.Repeat("x", 10<<10))}
+		w := &answerSpy{ResponseRecorder: httptest.NewRecorder(), body: body}
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, EnrollPath, body))
+		want := http.StatusForbidden
+		if i >= enrollAttempts {
+			want = http.StatusTooManyRequests
+		}
+		if w.Code != want || !w.read {
+			t.Errorf("attempt %d: status %d, want %d; body read before the answer: %v", i, w.Code, want, w.read)
+		}
+	}
+}
+
+// readToEnd notes when its reader has been read to the end.
+type readToEnd struct {
+	r   io.Reader
+	end bool
+}
+
+func (b *readToEnd) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	b.end = b.end || err == io.EOF
+	return n, err
+}
+
+// answerSpy notes, as the status is written, whether the body had been read.
+type answerSpy struct {
+	*httptest.ResponseRecorder
+	body *readToEnd
+	read bool
+}
+
+func (w *answerSpy) WriteHeader(status int) {
+	w.read = w.body.end
+	w.ResponseRecorder.WriteHeader(status)
+}
+
 func TestAttemptLimiter(t *testing.T) {
 	l := attemptLimiter{max: 2, window: time.Minute}
 	t0 := time.Unix(1_800_000_000, 0)

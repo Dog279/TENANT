@@ -534,6 +534,12 @@ func (h *enrollHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, answer, status)
 	}
+	// The body is read before anything is answered. A request is about
+	// 10 KiB, more than the server has taken in when the handler starts, and
+	// an answer sent with the rest unread closes the connection with data
+	// pending: that resets it, and the machine sees a dropped connection in
+	// place of the reason. The server's ReadTimeout bounds a slow body.
+	body, bodyErr := io.ReadAll(http.MaxBytesReader(w, r.Body, maxEnrollBody))
 	if ok, report := h.limit.allow(sourceKey(r.RemoteAddr), ref.Time); !ok {
 		if report {
 			refuse(http.StatusTooManyRequests, RefusedRateLimit, "too many enrollment attempts; try again in a minute")
@@ -562,10 +568,9 @@ func (h *enrollHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		refuse(http.StatusServiceUnavailable, RefusedOff, "enrollment is switched off on the master")
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxEnrollBody))
-	if err != nil {
+	if bodyErr != nil {
 		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
+		if errors.As(bodyErr, &tooLarge) {
 			refuse(http.StatusRequestEntityTooLarge, RefusedTooLarge, "request body too large")
 		} else {
 			refuse(http.StatusBadRequest, RefusedBadRequest, "bad request")
