@@ -678,7 +678,7 @@ func TestFleetRolloutCardAfterARestart(t *testing.T) {
 		`<a class="linkbtn" href="/fleet/m0000000000000007">web8</a> <span class="on-tag">failed, then done</span> <span class="dim">the machine linked again: back on the new version 2.0.0</span>`,
 		`<a class="linkbtn" href="/fleet/m0000000000000008">web9</a> <span class="act-errtag">failed, then rolled back</span>`,
 		`<a class="linkbtn" href="/fleet/m0000000000000009">web10</a> <span class="act-errtag">failed</span> <span class="dim">the machine went offline during the transfer</span>`,
-		"The last rollout is kept until the next one starts, across a restart of Tenant. One that a restart cut short is not taken up again",
+		"The last rollout is kept until the next one starts, across a restart of Tenant. One that a restart cut short is not taken up again. Before a new one, give its interrupted machines a few minutes to link again and say how their update went",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("a rollout cut short by a restart is missing %q", want)

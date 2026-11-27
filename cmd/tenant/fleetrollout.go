@@ -168,12 +168,15 @@ func rolloutCutWords(s fleetRolloutState) string {
 			ended++
 		}
 	}
-	under := "none was being updated"
+	// A new update replaces a machine's record: sent before an interrupted
+	// one is settled, how that one went may never be recorded. So wait first.
+	under, wait := "none was being updated", ""
 	if len(mid) > 0 {
 		under = "being updated: " + strings.Join(mid, ", ")
+		wait = " Before a new rollout, give those a few minutes to link again and say how their update went."
 	}
-	return fmt.Sprintf("the rollout started %s was cut short when this Tenant stopped, and is not taken up again. Of its %d machines, %d had ended, %d never started, %s. The dashboard's Fleet page shows each one; a new rollout sends nothing to a machine that already runs the version",
-		fleetTime(s.Started), len(s.Machines), ended, never, under)
+	return fmt.Sprintf("the rollout started %s was cut short when this Tenant stopped, and is not taken up again. Of its %d machines, %d had ended, %d never started, %s. The dashboard's Fleet page shows each one.%s A new rollout sends nothing to a machine that already runs the version",
+		fleetTime(s.Started), len(s.Machines), ended, never, under, wait)
 }
 
 // State is a copy of the current or last rollout; ok is false when there was

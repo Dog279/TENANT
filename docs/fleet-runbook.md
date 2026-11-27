@@ -650,6 +650,18 @@ same machines: one that already runs the version counts as done and is sent noth
 does not go on by itself because that would update machines on the word of a process that is
 gone, to a "latest" that may have moved since.
 
+**Wait before the new rollout.** Give the machines shown as interrupted a few minutes to link
+again and say how their update went (the Updates card shows it), and start the new rollout
+then. A machine has one record, its last update, and an update sent to it replaces that
+record. Sent while the interrupted one is still unsettled, the new update takes its place, and
+how the interrupted one went may never be recorded: if the latest release has moved since, a
+machine that is still applying the first refuses the new archive ("this machine is already
+applying another update"), and that refusal is all its record then says. The machine itself
+is no worse for it: it finishes the first update or rolls it back, and the version it reports
+says which. Updates are not refused for a machine whose last one is unsettled, because one
+that never says anything (it stays on its old version without a word) would then never be
+updated again.
+
 **An update that was under way** is ended in the record by how far it had got:
 
 | It was | The record says | On the machine |
@@ -685,9 +697,14 @@ Not covered: calls to a machine that is still applying an update when the master
 are not kept back, as they are while one master watches the whole update (above); one made
 before the machine has redialled fails as offline.
 
-Two Tenants on one data folder (serve and the terminal app) share the file. Each reads it
-whenever it takes the fleet, and keeps what it has itself unless the saved record started
-later, so a Tenant that takes the fleet back sees what the other did in between.
+**Two Tenants on one data folder** (serve and the terminal app) write the same file, and
+nothing keeps them apart: there is no lock between processes, and a Tenant does not read the
+file again before it writes it, so the one that writes last wins. A Tenant reads the file only
+when it takes the fleet, and then keeps what it has itself unless the saved record started
+later. One that takes the fleet from another that is still running therefore reports that
+other's rollout as cut short, and the two then overwrite each other's record. Do not run fleet
+updates from two Tenants on one data folder: start a rollout or an update from one Tenant, and
+let that one keep the fleet until every machine has said how it went.
 
 ### Where to look: the Updates card (TEN-552)
 
@@ -807,7 +824,7 @@ online as soon as a link is made; there is no command to bring it back.
 | `fleet: OUTCOME UNKNOWN … call <id>` | the link dropped mid-call. The call was not sent again. When the machine is back: `fleet_process {"host":…,"action":"result","id":"<id>"}`. The machine keeps the last 32 results (2 MiB at most) for ten minutes; a pause or a restart of its child drops them. The id of a call is also in the machine's audit log. |
 | `tenant serve (process N) holds the fleet, on …` | this process does not hold the links; work from that one. |
 | Fleet page: "has not redialled since …" | the machine took an update, never said how it went, and has no link now. It may be restarting, rolled back and unable to reach the master, or off. Look at it: `tenant child status` on the machine shows its last update. Its word is recorded here when it links again. |
-| Fleet page: "The rollout was cut short when this Tenant stopped" | the master restarted during a rollout. Nothing more was sent. Start a new rollout for the machines that show as not started or interrupted (section 5a, "The master restarts"). |
+| Fleet page: "The rollout was cut short when this Tenant stopped" | the master restarted during a rollout. Nothing more was sent. Give the machines that show as interrupted a few minutes to link again and say how their update went, then start a new rollout for the ones that did not get the version (section 5a, "The master restarts"). |
 | `child status`: "the master rejected this machine" | its certificate is not pinned on the master (revoked, or the master was rebuilt), or the master cannot read `fleet.json` just now. The child keeps trying, slowly. |
 | `child status`: "it is revoked" | the master revoked it. The child has stopped (exit 0) and will not connect with this key again: uninstall and enroll anew, or `tenant child rehome` with a code from the master it should trust now. |
 | memory "needs recovery key" (`fleet show`, `/fleet`, the Fleet page, doctor) | the machine's copies, or this master's own snapshot, were made under another fleet key. Nothing is overwritten. `tenant fleet recover <name>` with that fleet's recovery identity (section 5b). |

@@ -158,8 +158,15 @@ type fleetUpdates struct {
 }
 
 // fleetSavedName is the file in the data dir that holds each machine's last
-// update and the last rollout.
-const fleetSavedName = "fleet-updates.json"
+// update and the last rollout. fleetSavedMax is the most of it that is read,
+// far more than a fleet's records come to, and fleetUpdLines the most lines
+// one update keeps: the file is this Tenant's own, but what is read back from
+// a disk is held to the bounds of what is written there.
+const (
+	fleetSavedName = "fleet-updates.json"
+	fleetSavedMax  = 8 << 20
+	fleetUpdLines  = 32
+)
 
 // fleetSaved is fleet-updates.json. Saved is when it was written: the last
 // moment the Tenant that wrote it is known to have been running.
@@ -231,19 +238,34 @@ func (u *fleetUpdates) restore() (*fleetRolloutState, time.Time, error) {
 	if u.dataDir == "" {
 		return nil, time.Time{}, nil
 	}
-	b, err := os.ReadFile(filepath.Join(u.dataDir, fleetSavedName))
+	f, err := os.Open(filepath.Join(u.dataDir, fleetSavedName))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, time.Time{}, nil
 	}
 	var doc fleetSaved
 	if err == nil {
-		err = json.Unmarshal(b, &doc)
+		var b []byte
+		b, err = io.ReadAll(io.LimitReader(f, fleetSavedMax+1))
+		_ = f.Close()
+		if err == nil && len(b) > fleetSavedMax {
+			err = fmt.Errorf("it is larger than the %d MB that is read", fleetSavedMax>>20)
+		}
+		if err == nil {
+			err = json.Unmarshal(b, &doc)
+		}
 	}
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("%s does not read: %w", fleetSavedName, err)
 	}
+	// Under one lock from the first record to the last line: nothing sees a
+	// record between being read and being ended, and no save in between
+	// writes the file without what it held.
 	var cut []*fleetUpdateState
 	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.rollout == nil {
+		u.rollout = doc.Rollout // fleetRollout.restore replaces it; until then a save keeps it
+	}
 	for id, s := range doc.Machines {
 		if s == nil {
 			continue
@@ -252,25 +274,26 @@ func (u *fleetUpdates) restore() (*fleetRolloutState, time.Time, error) {
 			continue // this process's own is running, or is this one, or is newer
 		}
 		s.Machine = id
+		if len(s.Lines) > fleetUpdLines {
+			s.Lines = s.Lines[:fleetUpdLines]
+		}
 		u.runs[id] = s
 		if !s.Over() {
 			s.Finished = doc.Saved
 			cut = append(cut, s)
 		}
 	}
-	u.mu.Unlock()
 	for _, s := range cut {
+		line := "this Tenant stopped before anything was sent to the machine: nothing changed there"
 		switch s.Stage {
 		case fleetUpdApplying:
-			u.silent(s, "this Tenant stopped while the machine was applying the update: how it went is recorded when the machine links again")
+			s.Unheard = true
+			line = "this Tenant stopped while the machine was applying the update: how it went is recorded when the machine links again"
 		case fleetUpdSending:
-			u.mu.Lock()
 			s.Cut = true
-			u.mu.Unlock()
-			u.say(s, fleetUpdFailed, "this Tenant stopped while the archive was on its way to the machine: most likely nothing changed there, and an update sent again goes on from what arrived. Had the machine all of it, how it went is recorded when it links again")
-		default:
-			u.say(s, fleetUpdFailed, "this Tenant stopped before anything was sent to the machine: nothing changed there")
+			line = "this Tenant stopped while the archive was on its way to the machine: most likely nothing changed there, and an update sent again goes on from what arrived. Had the machine all of it, how it went is recorded when it links again"
 		}
+		u.said(s, fleetUpdFailed, line)
 	}
 	return doc.Rollout, doc.Saved, nil
 }
@@ -279,9 +302,9 @@ func (u *fleetUpdates) restore() (*fleetRolloutState, time.Time, error) {
 // word on a later link settles it (heard).
 func (u *fleetUpdates) silent(s *fleetUpdateState, line string) {
 	u.mu.Lock()
+	defer u.mu.Unlock()
 	s.Unheard = true
-	u.mu.Unlock()
-	u.say(s, fleetUpdFailed, line)
+	u.said(s, fleetUpdFailed, line)
 }
 
 // heard is told that machine has a link. Where its last update ended with
@@ -294,7 +317,9 @@ func (u *fleetUpdates) silent(s *fleetUpdateState, line string) {
 func (u *fleetUpdates) heard(mgr *fleet.Manager, machine string) {
 	u.mu.Lock()
 	s := u.runs[machine]
-	open := s != nil && (s.Unheard || s.Cut) && s.Over()
+	// A record that names no version (a saved file that was cut or edited) is
+	// never settled: a machine that reports no version would match it.
+	open := s != nil && s.To != "" && (s.Unheard || s.Cut) && s.Over()
 	var to string
 	var earlier time.Time
 	if open {
@@ -320,13 +345,15 @@ func (u *fleetUpdates) heard(mgr *fleet.Manager, machine string) {
 		return
 	}
 	u.mu.Lock()
+	defer u.mu.Unlock()
 	if u.runs[machine] != s || !s.Unheard && !s.Cut { // a new update, or another link got here first
-		u.mu.Unlock()
 		return
 	}
-	s.Unheard, s.Cut, s.Finished = false, false, time.Time{}
-	u.mu.Unlock()
-	u.say(s, stage, "the machine linked again: "+line)
+	// In one step. Were the lock let go between the flags and the line, the
+	// record would read as running there: Start would refuse the machine, and
+	// a save for another machine would write it down unfinished.
+	s.Unheard, s.Cut, s.Finished = false, false, time.Now()
+	u.said(s, stage, "the machine linked again: "+line)
 }
 
 // heardAll is heard for every machine that has a link now: those that linked
@@ -363,10 +390,16 @@ func (u *fleetUpdates) State(machine string) (fleetUpdateState, bool) {
 func (u *fleetUpdates) say(s *fleetUpdateState, stage, line string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	u.said(s, stage, line)
+}
+
+// said is say with u.mu held: what changes with the stage and the line
+// changes in the same step.
+func (u *fleetUpdates) said(s *fleetUpdateState, stage, line string) {
 	if stage != "" {
 		s.Stage = stage
 	}
-	if line != "" && len(s.Lines) < 32 {
+	if line != "" && len(s.Lines) < fleetUpdLines {
 		s.Lines = append(s.Lines, line)
 	}
 	if line != "" { // the fleet log keeps every step, past what the page shows
@@ -608,11 +641,19 @@ func (u *fleetUpdates) send(ctx context.Context, mgr *fleet.Manager, st fleet.Ma
 		u.say(s, fleetUpdApplying, fmt.Sprintf("sent %s%s; the machine checked its SHA-256 and is applying it. The calls it is running finish first, and new ones wait until it is back. Its background commands end at the restart", fleetMB(size), resumed))
 	}
 
+	// quiet ends the wait with the machine's word still owed, and looks once
+	// more: a machine that linked since the last look was told of (heard) while
+	// the record was still running, and a link lasts, so nothing would look
+	// again.
+	quiet := func(line string) {
+		u.silent(s, line)
+		u.heard(mgr, st.ID)
+	}
 	trial := false
 	for deadline := time.Now().Add(fleetUpdateWait); ; {
 		select {
 		case <-ctx.Done():
-			u.silent(s, "gave up waiting: "+ctx.Err().Error())
+			quiet("gave up waiting: " + ctx.Err().Error())
 			return
 		case <-time.After(fleetUpdatePoll):
 		}
@@ -645,7 +686,7 @@ func (u *fleetUpdates) send(ctx context.Context, mgr *fleet.Manager, st fleet.Ma
 			}
 		}
 		if time.Now().After(deadline) {
-			u.silent(s, fmt.Sprintf("the machine has not said within %s whether it runs %s or rolled back; `tenant fleet show %s` shows where it stands", fleetUpdateWait, newV, st.Name))
+			quiet(fmt.Sprintf("the machine has not said within %s whether it runs %s or rolled back; `tenant fleet show %s` shows where it stands", fleetUpdateWait, newV, st.Name))
 			return
 		}
 	}

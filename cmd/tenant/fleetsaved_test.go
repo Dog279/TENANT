@@ -7,6 +7,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,8 +95,10 @@ func TestFleetUpdatesSavedAndRestored(t *testing.T) {
 		}
 	}
 	// What restore made of them is on disk, and reading it again changes nothing.
-	if doc, _, ok := savedDoc(dir); !ok || doc.Machines["applying"].Stage != fleetUpdFailed || !doc.Machines["applying"].Unheard {
-		t.Errorf("the file after restore: %+v", doc.Machines["applying"])
+	// The rollout is still in it: the file is written again before the rollout
+	// is handed on, and a Tenant that died there would have lost it.
+	if doc, _, ok := savedDoc(dir); !ok || doc.Machines["applying"].Stage != fleetUpdFailed || !doc.Machines["applying"].Unheard || doc.Rollout == nil || len(doc.Machines) != 6 {
+		t.Errorf("the file after restore: %+v, rollout %v, %d machines", doc.Machines["applying"], doc.Rollout, len(doc.Machines))
 	}
 	before, _ := next.State("applying")
 	if _, _, err := next.restore(); err != nil {
@@ -146,6 +149,8 @@ func TestFleetUpdatesSavedFileThatDoesNotRead(t *testing.T) {
 		"a time that is not one":       {`{"saved":"yesterday"}`, false},
 		"nothing in it":                {`{}`, true},
 		"a machine that is null":       {`{"machines":{"m1":null},"rollout":null}`, true},
+		"larger than is read": {`{"machines":{"m1":{"stage":"done","to":"2.0.0","started":"2026-11-26T10:00:00Z","finished":"2026-11-26T10:01:00Z","lines":["` +
+			strings.Repeat("x", 8<<20) + `"]}}}`, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -261,6 +266,21 @@ func TestFleetUpdateHeardOnALaterLink(t *testing.T) {
 	r.updates.heard(r.mgr, k.id)
 	if st := state(); !st.Unheard || st.Stage != fleetUpdFailed {
 		t.Errorf("done on a version it does not run was believed: %+v", st)
+	}
+	// A record that names no version (a saved file that was cut, or edited) is
+	// settled by nothing: a machine that reports no version would match it.
+	nameless := &fleetUpdateState{Machine: k.id, From: "1.0.0", Stage: fleetUpdApplying, Started: time.Now()}
+	r.updates.mu.Lock()
+	r.updates.runs[k.id] = nameless
+	r.updates.mu.Unlock()
+	r.updates.silent(nameless, "the machine has not said")
+	restart(nil, "")
+	if link, _ := machineStatus(r.mgr, k.id); !link.Online || link.Reported.Version != "" {
+		t.Fatalf("the machine was to report no version: %+v", link.Reported)
+	}
+	r.updates.heard(r.mgr, k.id)
+	if st := state(); !st.Unheard || st.Stage != fleetUpdFailed || len(st.Lines) != 1 {
+		t.Errorf("a record that names no version was settled by a machine that reports none: %+v", st)
 	}
 	// An update that is running is its own loop's to end.
 	r.updates.mu.Lock()
@@ -617,5 +637,119 @@ func TestDashRolloutShowsWhatBecameOfAnUpdate(t *testing.T) {
 	ro.Finished = time.Time{}
 	if got := dashRollout(ro, updateRecords{"quiet": {Stage: fleetUpdDone, Started: in, Lines: []string{"done since"}}}).Machines[0]; got.Words() != "failed, then done" || got.Reason != "done since" {
 		t.Errorf("in a running rollout: %q %q", got.Words(), got.Reason)
+	}
+}
+
+// A machine that is linked on the new version when the master gives up
+// waiting for its word is not left "failed, and waiting for its word". Its
+// link was told of while the update still ran, a link lasts, and nothing
+// would look again: so the wait looks once more as it ends. Found in review,
+// where the link came up between the wait's last look and its end; here the
+// machine comes back on the new version with no word of the update, which the
+// wait reads the same way.
+func TestFleetUpdateTheWaitLooksOnceMoreAsItGivesUp(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out the time a machine is given to say how its update went")
+	}
+	r := newUpdateRig(t)
+	k, _ := r.kid("web1", func(p fleet.Update, again func(func() *fleet.UpdateReport, string)) (fleet.UpdateAck, error) {
+		ack := honest(p)
+		if ack.Applying {
+			again(nil, "2.0.0")
+		}
+		return ack, nil
+	})
+	if err := r.updates.Start(r.mgr, k.id, fleetUpdateOpts{version: "v2.0.0"}); err != nil {
+		t.Fatal(err)
+	}
+	state := func() fleetUpdateState {
+		st, _ := r.updates.State(k.id)
+		return st
+	}
+	eventually(t, "the update ends as done", func() bool { return state().Stage == fleetUpdDone })
+	st := state()
+	if st.Unheard || !st.Over() || lastLine(st.Lines) != "the machine linked again: back on the new version 2.0.0" ||
+		!strings.Contains(st.Lines[len(st.Lines)-2], "has not said within") {
+		t.Errorf("the update of a machine that was linked on 2.0.0 when the wait gave up: %+v", st)
+	}
+}
+
+// What a machine says on a later link settles its record in one step. Were
+// the record let go between "nobody has its word" and how it went, it would
+// read as running there: Start would refuse the machine ("is being updated
+// already"), and a save for another machine would write it down unfinished,
+// for the next Tenant to end as "stopped before anything was sent". Found in
+// review. A reader looks at the record the whole time it is settled, over and
+// over.
+func TestFleetUpdateHeardSettlesInOneStep(t *testing.T) {
+	r := newUpdateRig(t)
+	k, restart := r.kid("web1", func(p fleet.Update, _ func(func() *fleet.UpdateReport, string)) (fleet.UpdateAck, error) {
+		return honest(p), nil
+	})
+	restart(nil, "2.0.0")
+	u := newFleetUpdates("") // nothing is saved: only the record is looked at
+	var running atomic.Int64
+	stop, stopped := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if st, ok := u.State(k.id); ok && !st.Over() {
+				running.Add(1)
+			}
+		}
+	}()
+	for i := 0; i < 1000; i++ {
+		s := &fleetUpdateState{Machine: k.id, To: "2.0.0", Stage: fleetUpdFailed, Unheard: true, Started: time.Now(), Finished: time.Now()}
+		u.mu.Lock()
+		u.runs[k.id] = s
+		u.mu.Unlock()
+		u.heard(r.mgr, k.id)
+		if st, _ := u.State(k.id); st.Stage != fleetUpdDone || st.Unheard || !st.Over() || len(st.Lines) != 1 {
+			t.Fatalf("round %d: the machine's word did not settle the record: %+v", i, st)
+		}
+	}
+	close(stop)
+	<-stopped
+	if n := running.Load(); n != 0 {
+		t.Errorf("a record being settled was seen as running %d times", n)
+	}
+}
+
+// The saved file is this Tenant's own, and what is read back from it is still
+// held to the bounds of what is written there: an update keeps no more lines
+// than one is given while it runs, however many the file holds.
+func TestFleetUpdatesSavedFileIsHeldToItsBounds(t *testing.T) {
+	dir := t.TempDir()
+	lines := make([]string, 500)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %d", i)
+	}
+	began := time.Now().Add(-time.Hour)
+	b, err := json.Marshal(fleetSaved{Saved: time.Now(), Machines: map[string]*fleetUpdateState{
+		"ended": {Stage: fleetUpdDone, To: "2.0.0", Lines: lines, Started: began, Finished: began.Add(time.Minute)},
+		"cut":   {Stage: fleetUpdApplying, To: "2.0.0", Lines: lines, Started: began},
+	}})
+	if err == nil {
+		err = os.WriteFile(filepath.Join(dir, fleetSavedName), b, 0o600)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := newFleetUpdates(dir)
+	if _, _, err := u.restore(); err != nil {
+		t.Fatal(err)
+	}
+	for id, stage := range map[string]string{"ended": fleetUpdDone, "cut": fleetUpdFailed} {
+		if st, _ := u.State(id); len(st.Lines) != 32 || st.Lines[31] != "line 31" || st.Stage != stage || !st.Over() || st.Unheard != (id == "cut") {
+			t.Errorf("%s read back with %d lines: stage %s, over %v, unheard %v", id, len(st.Lines), st.Stage, st.Over(), st.Unheard)
+		}
+	}
+	if doc, raw, ok := savedDoc(dir); !ok || len(doc.Machines["cut"].Lines) != 32 || len(raw) > 8<<10 {
+		t.Errorf("the file after restore is %d bytes, ok %v", len(raw), ok)
 	}
 }

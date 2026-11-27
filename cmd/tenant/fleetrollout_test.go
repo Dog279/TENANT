@@ -377,7 +377,7 @@ func TestRolloutKeptAndRestored(t *testing.T) {
 	if next.Stop() || len(f.started()) != started {
 		t.Error("a restored rollout is running, or started a machine")
 	}
-	if got := rolloutCutWords(s); !strings.Contains(got, "Of its 3 machines, 1 had ended, 1 never started, being updated: name-b.") {
+	if got := rolloutCutWords(s); !strings.Contains(got, "Of its 3 machines, 1 had ended, 1 never started, being updated: name-b. The dashboard's Fleet page shows each one. Before a new rollout, give those a few minutes to link again and say how their update went. A new rollout sends nothing") {
 		t.Errorf("the operator is told: %s", got)
 	}
 	// A second read (this process took the fleet again) changes nothing when
@@ -412,7 +412,7 @@ func TestRolloutKeptAndRestored(t *testing.T) {
 		s.Machines[2].Reason != "not started: the rollout was stopped by the operator" || time.Since(s.Finished) > time.Minute {
 		t.Errorf("a stopped rollout, restored: %+v", s)
 	}
-	if got := rolloutCutWords(fleetRolloutState{Machines: []fleetRolloutMachine{{ID: "a", Status: fleetUpdDone}, {ID: "b", Status: fleetRollNotStarted}}}); !strings.Contains(got, "1 had ended, 1 never started, none was being updated.") {
+	if got := rolloutCutWords(fleetRolloutState{Machines: []fleetRolloutMachine{{ID: "a", Status: fleetUpdDone}, {ID: "b", Status: fleetRollNotStarted}}}); !strings.Contains(got, "1 had ended, 1 never started, none was being updated. The dashboard's Fleet page shows each one. A new rollout sends nothing") {
 		t.Errorf("with none in flight: %s", got)
 	}
 

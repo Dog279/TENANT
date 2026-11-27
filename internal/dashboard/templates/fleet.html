@@ -252,7 +252,7 @@
     <span class="dim"><a class="linkbtn" href="/fleet">Reload</a> to see how far it has got. Stop starts no more machines; those updating now finish.</span>
   </div>
   {{end}}
-  <div class="dim mt">The last rollout is kept until the next one starts, across a restart of Tenant. One that a restart cut short is not taken up again: start a new one for the machines it never reached. A machine that already runs the version is sent nothing.</div>
+  <div class="dim mt">The last rollout is kept until the next one starts, across a restart of Tenant. One that a restart cut short is not taken up again. Before a new one, give its interrupted machines a few minutes to link again and say how their update went: an update sent to one sooner replaces its record, and how the interrupted one went may then never be recorded. A machine that already runs the version is sent nothing.</div>
 </div>
 {{end}}
 
