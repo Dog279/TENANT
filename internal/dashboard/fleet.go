@@ -264,8 +264,9 @@ type FleetView struct {
 	// rules and the groups. "" when it can't be worked out. A confirm step
 	// carries it, and its second post is refused when it has changed.
 	LayersKey string
-	// Rollout is the current or last rollout of this process; nil with none,
-	// and in a process that does not hold the fleet.
+	// Rollout is the current or last rollout, this process's own or the one
+	// it found saved when it took the fleet; nil with none, and in a process
+	// that does not hold the fleet.
 	Rollout *FleetRollout
 }
 
@@ -297,8 +298,8 @@ func (g FleetGroup) Href() string { return "/fleet/group/" + url.PathEscape(g.Na
 // FleetRollout is a rollout as far as it has got. Times are as the page shows
 // them ("" for none). Stopped is "" while it runs on its own and when it
 // ended on its own, else why it stopped ("stopped by the operator", "stopped
-// at <name>"). It lives in the memory of the process that holds the fleet: a
-// restart forgets it.
+// at <name>", "cut short when this Tenant stopped"). The process that holds
+// the fleet saves it, and a Tenant started later shows it as it stood.
 type FleetRollout struct {
 	Version           string // as asked for; "" is the latest release
 	Limit             int    // how many at once
@@ -309,9 +310,11 @@ type FleetRollout struct {
 }
 
 // FleetRolloutMachine is one machine of a rollout. Status is waiting,
-// running, done, skipped, rolled_back, failed or not_started; Stage is its
-// update's stage while it runs; Reason says why it ended as it did (it may
-// hold what the machine said, quoted by the control).
+// running, done, skipped, rolled_back, failed, not_started or interrupted (its
+// update was under way when the Tenant that ran the rollout stopped); Stage is
+// its update's stage while it runs, and for an interrupted one what its update
+// has come to since; Reason says why it ended as it did (it may hold what the
+// machine said, quoted by the control).
 type FleetRolloutMachine struct {
 	ID, Name, Status, Stage, Reason string
 }
@@ -329,18 +332,27 @@ func (m FleetRolloutMachine) Words() string {
 		return "running"
 	case "not_started":
 		return "not started"
+	case "interrupted":
+		switch m.Stage {
+		case "done", "rolled_back":
+			return "interrupted, then " + strings.ReplaceAll(m.Stage, "_", " ")
+		}
 	}
 	return strings.ReplaceAll(m.Status, "_", " ")
 }
 
 // Pill is the class of the machine's status pill.
 func (m FleetRolloutMachine) Pill() string {
-	switch m.Status {
+	status := m.Status
+	if status == "interrupted" && (m.Stage == "done" || m.Stage == "rolled_back") {
+		status = m.Stage
+	}
+	switch status {
 	case "done":
 		return "on-tag"
 	case "rolled_back", "failed":
 		return "act-errtag"
-	case "running", "waiting":
+	case "running", "waiting", "interrupted":
 		return "risk"
 	}
 	return "tag"
@@ -376,7 +388,8 @@ type FleetMachine struct {
 	// Start is what a pending machine would be confirmed with; nil when that
 	// can't be worked out, and then it can't be confirmed.
 	Start *FleetStart
-	// Update is the machine's last update from this process; nil with none.
+	// Update is the machine's last update from this Tenant, this process's or
+	// one saved by the process that held the fleet before it; nil with none.
 	Update *FleetUpdate
 	// Groups are the names of the groups it is in, in name order.
 	Groups []string
@@ -392,11 +405,33 @@ type FleetUpdate struct {
 	Running           bool
 	Lines             []string
 	Started, Finished string
+	// Away is since when the machine has not redialled: it took the update,
+	// never said how it went and has no link now. "" otherwise.
+	Away string
 }
 
 // Words is the stage as the page says it.
 func (u FleetUpdate) Words() string {
 	return strings.ReplaceAll(u.Stage, "_", " ")
+}
+
+// Pill is the class of the stage's pill.
+func (u FleetUpdate) Pill() string {
+	switch {
+	case u.Stage == "done":
+		return "on-tag"
+	case u.Running:
+		return "risk"
+	}
+	return "act-errtag"
+}
+
+// Last is the last thing said of the update: how it ended, and why.
+func (u FleetUpdate) Last() string {
+	if len(u.Lines) == 0 {
+		return ""
+	}
+	return u.Lines[len(u.Lines)-1]
 }
 
 // FleetStart is the approval settings a pending machine starts with.
@@ -1250,7 +1285,7 @@ type restFleetMachine struct {
 	Update       *restFleetUpdate  `json:"update,omitempty"`
 }
 
-// restFleetUpdate is a machine's last update from this process.
+// restFleetUpdate is a machine's last update from this Tenant.
 type restFleetUpdate struct {
 	From     string   `json:"from,omitempty"`
 	To       string   `json:"to,omitempty"`
@@ -1259,6 +1294,9 @@ type restFleetUpdate struct {
 	Lines    []string `json:"lines"`
 	Started  string   `json:"started"`
 	Finished string   `json:"finished,omitempty"`
+	// Away: the machine took the update, never said how it went and has not
+	// redialled since this time.
+	Away string `json:"not_redialled_since,omitempty"`
 }
 
 type restFleetReported struct {
@@ -1295,7 +1333,7 @@ func (s *Server) handleFleetAPI(w http.ResponseWriter, r *http.Request) {
 			Memory:   m.Memory, MemoryDetail: m.MemoryDetail, ToolRules: ruleMap(m.Rules),
 		}
 		if u := m.Update; u != nil {
-			rm.Update = &restFleetUpdate{From: u.From, To: u.To, Stage: u.Stage, Running: u.Running, Lines: u.Lines, Started: u.Started, Finished: u.Finished}
+			rm.Update = &restFleetUpdate{From: u.From, To: u.To, Stage: u.Stage, Running: u.Running, Lines: u.Lines, Started: u.Started, Finished: u.Finished, Away: u.Away}
 		}
 		if rm.Memory == FleetMemoryUnknown {
 			rm.Memory = "not_available"

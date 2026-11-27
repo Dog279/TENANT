@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -588,6 +589,96 @@ func TestFleetRolloutCard(t *testing.T) {
 	f.mu.Unlock()
 	if body := get(t, s, "/fleet").Body.String(); strings.Contains(body, "Rollout <span") {
 		t.Error("no rollout, and the card shows")
+	}
+}
+
+// The Updates card is the one place that says, for each machine shown, the
+// version it reports and how its last update went: done, rolled back and why,
+// or that it took the update and has not redialled (TEN-552). The machine's
+// own page and the API say the last too. What a machine said stays text.
+func TestFleetUpdatesCard(t *testing.T) {
+	f := fleetFake(5)
+	f.view.Machines[1].Update = &FleetUpdate{From: "1.2.3", To: "2.0.0", Stage: "done", Started: "2026-11-26 09:00", Finished: "2026-11-26 09:02",
+		Lines: []string{"fetched tenant_2.0.0_linux_x86_64.tar.gz (40.0 MB)", "back on the new version 2.0.0"}}
+	f.view.Machines[2].Update = &FleetUpdate{To: "2.0.0", Stage: "rolled_back", Started: "2026-11-26 09:03", Finished: "2026-11-26 09:05",
+		Lines: []string{`rolled back to "1.2.3": "<b>it exited</b>"`}}
+	f.view.Machines[3].Update = &FleetUpdate{To: "2.0.0", Stage: "failed", Started: "2026-11-26 09:06", Finished: "2026-11-26 09:07", Away: "2026-11-26 09:08",
+		Lines: []string{"this Tenant stopped while the machine was applying the update"}}
+	f.view.Machines[4].Update = &FleetUpdate{Stage: "fetching", Running: true, Started: "2026-11-26 09:10"}
+	s := fleetServer(f)
+	body := get(t, s, "/fleet").Body.String()
+	for _, want := range []string{
+		`<div class="card-head">Updates <span class="dim">· each machine's version, and the last update this Tenant sent it</span></div>`,
+		`<td>to 2.0.0</td>`, `<td>2026-11-26 09:02</td>`, `<span class="on-tag">done</span> <span class="dim">back on the new version 2.0.0</span>`,
+		`<span class="act-errtag">rolled back</span> <span class="dim">rolled back to &#34;1.2.3&#34;: &#34;&lt;b&gt;it exited&lt;/b&gt;&#34;</span>`,
+		`<span class="act-errtag">failed</span> <strong>has not redialled since 2026-11-26 09:08</strong> <span class="dim">this Tenant stopped while the machine was applying the update</span>`,
+		`<td>to a version not yet known</td>`, `<td>2026-11-26 09:10</td>`, `<span class="risk">fetching</span></td>`,
+		`<td class="dim" colspan="3">none sent from this Tenant</td>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the Updates card is missing %q", want)
+		}
+	}
+	if strings.Count(body, "has not redialled since") != 1 || strings.Contains(body, "<b>it exited</b>") {
+		t.Error("a machine that is not away is said to be, or a machine's words reached the page as markup")
+	}
+	// The machine's own page, and the API.
+	if page := get(t, s, "/fleet/m0000000000000003").Body.String(); !strings.Contains(page, `<div class="banner warn mt">This machine took the update and has not redialled since 2026-11-26 09:08.`) {
+		t.Error("the machine's own page does not say it has not redialled")
+	}
+	if page := get(t, s, "/fleet/"+fleetConfirmed).Body.String(); strings.Contains(page, "has not redialled") {
+		t.Error("a machine whose update is done is said not to have redialled")
+	}
+	raw := get(t, s, "/api/fleet").Body.String()
+	var api restFleet
+	if err := json.Unmarshal([]byte(raw), &api); err != nil {
+		t.Fatal(err)
+	}
+	if u := api.Machines[3].Update; u == nil || u.Away != "2026-11-26 09:08" || strings.Count(raw, "not_redialled_since") != 1 {
+		t.Errorf("the API's not_redialled_since: %+v\n%s", u, raw)
+	}
+	// A group that is not one shows no machine, and no card about them; a
+	// process that does not hold the fleet has no record to show.
+	if body := get(t, s, "/fleet?group=nope").Body.String(); strings.Contains(body, `<div class="card-head">Updates `) {
+		t.Error("the Updates card shows for a group that is not one")
+	}
+	f.mu.Lock()
+	f.view.Here = false
+	f.mu.Unlock()
+	if body := get(t, s, "/fleet").Body.String(); !strings.Contains(body, "The process that holds the fleet keeps the record of updates.") || strings.Contains(body, "none sent from this Tenant") {
+		t.Error("a process that does not hold the fleet shows a record of updates, or does not say who has it")
+	}
+}
+
+// A rollout that a restart of Tenant cut short says which machines were being
+// updated, with what became of each since, and offers no Stop.
+func TestFleetRolloutCardAfterARestart(t *testing.T) {
+	f := fleetFake(4)
+	f.view.Rollout = &FleetRollout{Version: "v2.0.0", Limit: 1, Started: "2026-11-26 09:00", Finished: "2026-11-26 09:07", Stopped: "cut short when this Tenant stopped",
+		Machines: []FleetRolloutMachine{
+			{ID: fleetConfirmed, Name: longName(1), Status: "done", Reason: "back on the new version 2.0.0"},
+			{ID: "m0000000000000002", Name: longName(2), Status: "interrupted", Stage: "failed", Reason: "this Tenant stopped while the machine was applying the update"},
+			{ID: "m0000000000000003", Name: longName(3), Status: "interrupted", Stage: "rolled_back", Reason: `the machine linked again: rolled back to "1.2.3": "<i>no</i>"`},
+			{ID: "m0000000000000004", Name: "web5", Status: "interrupted", Stage: "done", Reason: "the machine linked again: back on the new version 2.0.0"},
+			{ID: "m0000000000000005", Name: "web6", Status: "interrupted"},
+			{ID: "m0000000000000006", Name: "web7", Status: "not_started", Reason: "not started: the rollout was cut short when this Tenant stopped"},
+		}}
+	body := get(t, fleetServer(f), "/fleet").Body.String()
+	for _, want := range []string{
+		`<span class="tag">ended</span> <span class="dim">· started 2026-11-26 09:00, ended 2026-11-26 09:07</span>`, "The rollout was cut short when this Tenant stopped.",
+		`<span class="risk">interrupted</span> <span class="dim">this Tenant stopped while the machine was applying the update</span>`,
+		`<span class="act-errtag">interrupted, then rolled back</span> <span class="dim">the machine linked again: rolled back to &#34;1.2.3&#34;: &#34;&lt;i&gt;no&lt;/i&gt;&#34;</span>`,
+		`<a class="linkbtn" href="/fleet/m0000000000000004">web5</a> <span class="on-tag">interrupted, then done</span>`,
+		`<a class="linkbtn" href="/fleet/m0000000000000005">web6</a> <span class="risk">interrupted</span></div>`,
+		`<span class="tag">not started</span> <span class="dim">not started: the rollout was cut short when this Tenant stopped</span>`,
+		"The last rollout is kept until the next one starts, across a restart of Tenant. One that a restart cut short is not taken up again",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("a rollout cut short by a restart is missing %q", want)
+		}
+	}
+	if strings.Contains(body, `action="/fleet/rollout/stop"`) || strings.Contains(body, "kept only until Tenant restarts") {
+		t.Error("a rollout cut short offers Stop, or the page still says a restart forgets it")
 	}
 }
 

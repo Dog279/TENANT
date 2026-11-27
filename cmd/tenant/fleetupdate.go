@@ -92,28 +92,209 @@ const buildNamed = "tenant_<version>_<system>_<processor>.tar.gz, or .zip for Wi
 var versionArg = regexp.MustCompile(`^v?[0-9]{1,9}(\.[0-9]{1,9}){1,3}(-[0-9A-Za-z.]{1,32})?$`)
 
 // fleetUpdateState is one machine's update, as far as it has got. Lines are
-// what the operator is told, in order.
+// what the operator is told, in order. Unheard: it ended with nobody having
+// the machine's word on how it went (the machine went quiet, or this Tenant
+// stopped while the machine was applying it); what the machine says on a
+// later link settles it (heard). The names are the saved file's.
 type fleetUpdateState struct {
-	Machine  string
-	From, To string
-	Stage    string
-	Lines    []string
-	Started  time.Time
-	Finished time.Time
+	Machine  string    `json:"machine"`
+	From     string    `json:"from,omitempty"`
+	To       string    `json:"to,omitempty"`
+	Stage    string    `json:"stage"`
+	Lines    []string  `json:"lines,omitempty"`
+	Started  time.Time `json:"started"`
+	Finished time.Time `json:"finished,omitzero"`
+	Unheard  bool      `json:"unheard,omitempty"`
 }
 
 // Over reports whether the update has ended, one way or another.
 func (s fleetUpdateState) Over() bool { return !s.Finished.IsZero() }
 
 // fleetUpdates are the updates this process has run, one per machine: the
-// last one, kept until the next.
+// last one, kept until the next. They are saved in the data dir with the
+// rollout (save), so a Tenant started later on that dir still has them
+// (restore).
 type fleetUpdates struct {
 	dataDir string
 	fetch   sync.Mutex        // one download at a time: machines of one kind share it
 	fetched map[string]string // archive path -> the SHA-256 the release listed for it, as verified when it was fetched
 
-	mu   sync.Mutex
-	runs map[string]*fleetUpdateState
+	mu      sync.Mutex
+	runs    map[string]*fleetUpdateState
+	rollout *fleetRolloutState // the rollout as fleetRollout last gave it (keepRollout), saved with runs
+	unsaved bool               // the last save failed, and that was said
+}
+
+// fleetSavedName is the file in the data dir that holds each machine's last
+// update and the last rollout.
+const fleetSavedName = "fleet-updates.json"
+
+// fleetSaved is fleet-updates.json. Saved is when it was written: the last
+// moment the Tenant that wrote it is known to have been running.
+type fleetSaved struct {
+	Saved    time.Time                    `json:"saved"`
+	Machines map[string]*fleetUpdateState `json:"machines,omitempty"`
+	Rollout  *fleetRolloutState           `json:"rollout,omitempty"`
+}
+
+// save writes the updates and the rollout as they stand, whole and
+// atomically, after each change; u.mu is held. A save that fails is said once
+// and costs only what a restart would have remembered.
+//
+// ponytail: the whole file at every change, under the lock. A fleet's worth
+// of machines is a few hundred KB a few times per update; a journal if a
+// fleet ever makes that slow.
+func (u *fleetUpdates) save() {
+	if u.dataDir == "" {
+		return
+	}
+	b, err := json.Marshal(fleetSaved{Saved: time.Now(), Machines: u.runs, Rollout: u.rollout})
+	if err == nil {
+		err = os.MkdirAll(u.dataDir, 0o700)
+	}
+	if err == nil {
+		err = atomicWrite(filepath.Join(u.dataDir, fleetSavedName), b)
+	}
+	if failed := err != nil; failed != u.unsaved {
+		if u.unsaved = failed; failed {
+			sysUnavailable.Log(context.Background(), "component", "the record of fleet updates", "effect", "a restart of Tenant forgets the rollout and each machine's last update", "err", err)
+		}
+	}
+}
+
+// keepRollout takes the rollout as it now stands (fleetRollout calls it after
+// each change) and saves it with the updates.
+func (u *fleetUpdates) keepRollout(st fleetRolloutState) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.rollout = &st
+	u.save()
+}
+
+// restore reads what an earlier Tenant on this data dir saved, before this
+// process runs an update of its own, and returns the rollout it held (nil for
+// none) and when it was last saved. A file that is not there is no record; one
+// that does not read is the error, and is treated as no record: the master
+// starts all the same, and the next change replaces the file.
+//
+// An update that was under way has no process waiting on it any more, and is
+// not sent again from here. Its record is ended with what is known:
+//
+//   - fetching, or sending: nothing changed on the machine, which applies an
+//     update only once all of it has arrived and checked.
+//   - applying: the machine had all of it. How that went is the machine's to
+//     say, on its next link (heard); until then the record is Unheard.
+//
+// ponytail: "applying" is written after the machine's answer to the last
+// piece. A Tenant that stops between the two leaves "sending" for a machine
+// that goes on to apply it: the record then says nothing changed, and the
+// version the machine reports says otherwise. An update sent again answers
+// "already runs". Write the stage before the last piece if this ever matters.
+func (u *fleetUpdates) restore() (*fleetRolloutState, time.Time, error) {
+	if u.dataDir == "" {
+		return nil, time.Time{}, nil
+	}
+	b, err := os.ReadFile(filepath.Join(u.dataDir, fleetSavedName))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, time.Time{}, nil
+	}
+	var doc fleetSaved
+	if err == nil {
+		err = json.Unmarshal(b, &doc)
+	}
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("%s does not read: %w", fleetSavedName, err)
+	}
+	var cut []*fleetUpdateState
+	u.mu.Lock()
+	for id, s := range doc.Machines {
+		if s == nil || u.runs[id] != nil { // this process's own is the newer one
+			continue
+		}
+		s.Machine = id
+		u.runs[id] = s
+		if !s.Over() {
+			s.Finished = doc.Saved
+			cut = append(cut, s)
+		}
+	}
+	u.mu.Unlock()
+	for _, s := range cut {
+		switch s.Stage {
+		case fleetUpdApplying:
+			u.silent(s, "this Tenant stopped while the machine was applying the update: how it went is recorded when the machine links again")
+		case fleetUpdSending:
+			u.say(s, fleetUpdFailed, "this Tenant stopped while the archive was on its way to the machine: nothing changed there, and an update sent again goes on from what arrived")
+		default:
+			u.say(s, fleetUpdFailed, "this Tenant stopped before anything was sent to the machine: nothing changed there")
+		}
+	}
+	return doc.Rollout, doc.Saved, nil
+}
+
+// silent ends an update the machine took whole and then said nothing of: its
+// word on a later link settles it (heard).
+func (u *fleetUpdates) silent(s *fleetUpdateState, line string) {
+	u.mu.Lock()
+	s.Unheard = true
+	u.mu.Unlock()
+	u.say(s, fleetUpdFailed, line)
+}
+
+// heard is told that machine has a link. Where its last update ended with
+// nobody having its word (Unheard), what it says now is that word: it runs
+// the version it was sent, or it says it rolled back and why. A machine that
+// is linked on what it had and says nothing of this update may yet be
+// finishing its calls before it applies it, and the record waits on.
+func (u *fleetUpdates) heard(mgr *fleet.Manager, machine string) {
+	u.mu.Lock()
+	s := u.runs[machine]
+	open := s != nil && s.Unheard && s.Over()
+	to := ""
+	if open {
+		to = s.To
+	}
+	u.mu.Unlock()
+	if !open {
+		return
+	}
+	st, ok := machineStatus(mgr, machine)
+	if !ok || !st.Online {
+		return
+	}
+	var stage, line string
+	switch r := st.Update; {
+	case r != nil && r.To == to && r.State == fleet.UpdateRolledBack:
+		stage, line = fleetUpdRolledBack, "rolled back to "+fleetQuote(firstNonEmpty(st.Reported.Version, r.From))+": "+fleetSaid(r.Reason)
+	case r != nil && r.To == to && r.State == fleet.UpdateTrial:
+		return // its trial run: the link after it says
+	case st.Reported.Version == to:
+		stage, line = fleetUpdDone, "back on the new version "+to
+	default:
+		return
+	}
+	u.mu.Lock()
+	if u.runs[machine] != s || !s.Unheard { // a new update, or another link got here first
+		u.mu.Unlock()
+		return
+	}
+	s.Unheard, s.Finished = false, time.Time{}
+	u.mu.Unlock()
+	u.say(s, stage, "the machine linked again: "+line)
+}
+
+// heardAll is heard for every machine that has a link now: those that linked
+// before anything could be told of it.
+func (u *fleetUpdates) heardAll(mgr *fleet.Manager) {
+	all, err := mgr.Machines()
+	if err != nil {
+		return
+	}
+	for _, st := range all {
+		if st.Online {
+			u.heard(mgr, st.ID)
+		}
+	}
 }
 
 func newFleetUpdates(dataDir string) *fleetUpdates {
@@ -152,7 +333,12 @@ func (u *fleetUpdates) say(s *fleetUpdateState, stage, line string) {
 	}
 	switch s.Stage {
 	case fleetUpdDone, fleetUpdRolledBack, fleetUpdFailed, fleetUpdRefused:
-		s.Finished = time.Now()
+		if s.Finished.IsZero() { // restore gives an update that was cut short the time it was last known of
+			s.Finished = time.Now()
+		}
+	}
+	if u.runs[s.Machine] == s {
+		u.save()
 	}
 }
 
@@ -204,6 +390,7 @@ func (u *fleetUpdates) Start(mgr *fleet.Manager, machine string, o fleetUpdateOp
 	}
 	s := &fleetUpdateState{Machine: machine, From: st.Reported.Version, Stage: fleetUpdFetching, Started: time.Now()}
 	u.runs[machine] = s
+	u.save()
 	u.mu.Unlock()
 	go u.run(mgr, st, o, s)
 	return nil
@@ -383,7 +570,7 @@ func (u *fleetUpdates) send(ctx context.Context, mgr *fleet.Manager, st fleet.Ma
 	for deadline := time.Now().Add(fleetUpdateWait); ; {
 		select {
 		case <-ctx.Done():
-			fail(fleetUpdFailed, "gave up waiting: "+ctx.Err().Error())
+			u.silent(s, "gave up waiting: "+ctx.Err().Error())
 			return
 		case <-time.After(fleetUpdatePoll):
 		}
@@ -414,7 +601,7 @@ func (u *fleetUpdates) send(ctx context.Context, mgr *fleet.Manager, st fleet.Ma
 			}
 		}
 		if time.Now().After(deadline) {
-			fail(fleetUpdFailed, fmt.Sprintf("the machine has not said within %s whether it runs %s or rolled back; `tenant fleet show %s` shows where it stands", fleetUpdateWait, newV, st.Name))
+			u.silent(s, fmt.Sprintf("the machine has not said within %s whether it runs %s or rolled back; `tenant fleet show %s` shows where it stands", fleetUpdateWait, newV, st.Name))
 			return
 		}
 	}
