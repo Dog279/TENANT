@@ -64,7 +64,7 @@ func TestFleetDashAddMachine(t *testing.T) {
 	if a.code != http.StatusOK || a.page != "" {
 		t.Fatalf("Add machine: %d to %q (%s)", a.code, a.page, a.errMsg)
 	}
-	code := regexp.MustCompile(`tntfleet1_[A-Za-z0-9_-]+`).FindString(a.body)
+	code := regexp.MustCompile(`tntfleet2_[A-Za-z0-9_-]+`).FindString(a.body)
 	if code == "" {
 		t.Fatalf("no code in the answer:\n%s", a.body)
 	}

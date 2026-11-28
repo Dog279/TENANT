@@ -137,7 +137,7 @@ func (c Child) validate() error {
 	if err := validAddresses(c.MasterAddresses); err != nil {
 		return err
 	}
-	if _, err := parseFingerprint(c.MasterFingerprint); err != nil {
+	if _, err := parsePin(c.MasterFingerprint); err != nil {
 		return fmt.Errorf("child.json: master_fingerprint: %w", err)
 	}
 	if !validSandbox(c.Sandbox) {

@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPrevPath(t *testing.T) {
@@ -196,5 +197,43 @@ func TestSwapWindows(t *testing.T) {
 	}
 	if _, err := os.Stat(prev); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal("rollback must consume prev")
+	}
+}
+
+// TestSwapWaitsForAHeldBinary: on Windows a binary that has just run can
+// still be open in another handle for an instant (its own process on the way
+// out, a virus scanner), and a rename of it is refused meanwhile. Seen on
+// windows-latest, 2026-11-27: a fleet machine's update rolled back at this
+// rename, right after the trial run of the new binary. Swap and Rollback
+// wait for the handle to go.
+func TestSwapWaitsForAHeldBinary(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("only Windows refuses to rename a file another handle has open")
+	}
+	dir := t.TempDir()
+	exe, staged := filepath.Join(dir, "tenant.exe"), filepath.Join(dir, "staged.exe")
+	for path, content := range map[string]string{exe: "old", staged: "new"} {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hold := func(path string) {
+		t.Helper()
+		h, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.AfterFunc(300*time.Millisecond, func() { _ = h.Close() })
+	}
+	hold(staged)
+	if err := Swap(exe, staged); err != nil {
+		t.Fatalf("Swap of a staged binary held for an instant = %v", err)
+	}
+	hold(exe) // the new binary, as it is just after its process ended
+	if err := Rollback(exe); err != nil {
+		t.Fatalf("Rollback of a binary held for an instant = %v", err)
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "old" {
+		t.Fatalf("after Rollback exe = %q, want old", b)
 	}
 }

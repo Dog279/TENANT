@@ -1031,7 +1031,7 @@ func (m *e2eMaster) install(h *e2eHost, name string, flags ...string) (c *e2eChi
 		}
 	}
 	code, errOut, exit = m.cli(nil, "fleet", "enroll", name)
-	if code = strings.TrimSpace(code); exit != 0 || !strings.HasPrefix(code, "tntfleet1_") || strings.ContainsAny(code, " \n") {
+	if code = strings.TrimSpace(code); exit != 0 || !strings.HasPrefix(code, "tntfleet2_") || strings.ContainsAny(code, " \n") {
 		m.t.Fatalf("fleet enroll %s: exit %d, standard output %q\n%s", name, exit, code, errOut)
 	}
 	out, errOut, exit = h.run(e2eSpec{Argv: append([]string{"child", "install", "--dir", c.dir}, flags...),

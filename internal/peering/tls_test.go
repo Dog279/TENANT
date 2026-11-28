@@ -2,9 +2,16 @@ package peering
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
+	"math/big"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,23 +52,96 @@ func TestPinnedTLSClientConfig(t *testing.T) {
 	if PinnedTLSClientConfig("") != nil {
 		t.Error("empty fingerprint → nil config (plain HTTP / overlay)")
 	}
-	dir := t.TempDir()
-	cert, fp, _ := LoadOrMintCert(dir)
+	cert, fp, _ := LoadOrMintCert(t.TempDir())
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", ServerTLSConfig(cert))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				_ = c.(*tls.Conn).Handshake()
+				_, _ = c.Read(make([]byte, 1))
+			}()
+		}
+	}()
+	dial := func(cfg *tls.Config) (tls.ConnectionState, error) {
+		c, err := tls.Dial("tcp", ln.Addr().String(), cfg)
+		if err != nil {
+			return tls.ConnectionState{}, err
+		}
+		defer c.Close()
+		return c.ConnectionState(), nil
+	}
 
-	// Matching fingerprint → VerifyPeerCertificate passes.
-	good := PinnedTLSClientConfig(fp)
-	if err := good.VerifyPeerCertificate(cert.Certificate, nil); err != nil {
-		t.Errorf("matching cert should verify: %v", err)
+	// Matching fingerprint → the handshake passes, on the cnsa profile.
+	cs, err := dial(PinnedTLSClientConfig(fp))
+	if err != nil {
+		t.Fatalf("matching cert should verify: %v", err)
+	}
+	if cs.Version != tls.VersionTLS13 || cs.CipherSuite != tls.TLS_AES_256_GCM_SHA384 || cs.CurveID != tls.MLKEM1024 ||
+		cs.PeerCertificates[0].SignatureAlgorithm != x509.MLDSA87 {
+		t.Errorf("negotiated %s %s %v, certificate %v", tls.VersionName(cs.Version), tls.CipherSuiteName(cs.CipherSuite),
+			cs.CurveID, cs.PeerCertificates[0].SignatureAlgorithm)
 	}
 	// Mismatched fingerprint → rejected (MITM defense).
 	_, otherFP, _ := LoadOrMintCert(t.TempDir())
-	bad := PinnedTLSClientConfig(otherFP)
-	if err := bad.VerifyPeerCertificate(cert.Certificate, nil); err == nil {
+	if _, err := dial(PinnedTLSClientConfig(otherFP)); err == nil {
 		t.Error("a cert that doesn't match the pinned fingerprint must be rejected")
 	}
-	// No cert presented → rejected.
-	if err := good.VerifyPeerCertificate(nil, nil); err == nil {
-		t.Error("missing cert must be rejected")
+	// A pin from before SHA-384 (64 hex digits) → told to pair again.
+	if _, err := dial(PinnedTLSClientConfig(strings.Repeat("ab", 32))); err == nil || !strings.Contains(err.Error(), "pair with it again") {
+		t.Errorf("an old SHA-256 pin: %v", err)
+	}
+	// The listener serves nothing older than TLS 1.3, and no other key exchange.
+	old := PinnedTLSClientConfig(fp)
+	old.MinVersion, old.MaxVersion = tls.VersionTLS12, tls.VersionTLS12
+	if _, err := dial(old); err == nil {
+		t.Error("a TLS 1.2 client must be refused")
+	}
+	hybrid := PinnedTLSClientConfig(fp)
+	hybrid.CurvePreferences = []tls.CurveID{tls.X25519MLKEM768, tls.X25519}
+	if _, err := dial(hybrid); err == nil {
+		t.Error("a client without ML-KEM-1024 must be refused")
+	}
+}
+
+// A certificate from before the ML-DSA-87 profile is replaced, not served.
+func TestLoadOrMintCert_ReplacesOlderCertificate(t *testing.T) {
+	dir := t.TempDir()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, _ := x509.MarshalPKCS8PrivateKey(key)
+	certPath, keyPath := CertPaths(dir)
+	if err := secrets.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})); err != nil {
+		t.Fatal(err)
+	}
+	if err := secrets.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})); err != nil {
+		t.Fatal(err)
+	}
+	cert, fp, err := LoadOrMintCert(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, _ := x509.ParseCertificate(cert.Certificate[0])
+	if leaf.SignatureAlgorithm != x509.MLDSA87 || len(fp) != 96 {
+		t.Fatalf("still serving %v with pin %q", leaf.SignatureAlgorithm, fp)
+	}
+	if _, again, _ := LoadOrMintCert(dir); again != fp {
+		t.Error("the replacement is not stable across reloads")
 	}
 }
 

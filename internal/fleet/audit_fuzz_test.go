@@ -16,9 +16,9 @@ func auditSeed(tb testing.TB) []byte {
 	var out []byte
 	prev := auditStart
 	for i, rec := range []AuditRecord{
-		{Event: AuditCall, Call: "c1", Tool: "os_exec", Args: `{"command":"uptime"}`, ArgsSHA256: fingerprintOf([]byte("x"))},
+		{Event: AuditCall, Call: "c1", Tool: "os_exec", Args: `{"command":"uptime"}`, ArgsSHA256: sum256([]byte("x"))},
 		{Event: AuditDone, Call: "c1", Tool: "os_exec", Outcome: AuditOK, Asked: []AuditAsk{{Action: "os_exec", Answer: AskAllowed}},
-			ResultSHA256: fingerprintOf([]byte("y")), ResultBytes: 1},
+			ResultSHA256: sum256([]byte("y")), ResultBytes: 1},
 		{Event: AuditDone, Call: "c2", Tool: "os_write_file", Outcome: AuditRefused, Note: "not served",
 			Asked: []AuditAsk{{Action: "os_write", Answer: AskRefused, Why: "ceiling read-only"}}, AskedMore: 2},
 		{Event: AuditRehome, By: "root", From: fingerprintOf([]byte("a")), To: fingerprintOf([]byte("b"))},
@@ -27,7 +27,7 @@ func auditSeed(tb testing.TB) []byte {
 	} {
 		rec.Seq, rec.Time, rec.Prev = uint64(i+1), time.Date(2026, 11, 18, 12, 0, i, 0, time.UTC), prev
 		line := must(encode(rec))(tb)
-		prev = fingerprintOf(line)
+		prev = sum256(line)
 		out = append(append(out, line...), '\n')
 	}
 	return out
@@ -61,7 +61,7 @@ func FuzzAuditRecord(f *testing.F) {
 			}
 			return
 		}
-		if _, perr := parseFingerprint(rec.Prev); perr != nil || rec.Seq == 0 || rec.Time.IsZero() ||
+		if _, perr := parseDigest(rec.Prev, 32); perr != nil || rec.Seq == 0 || rec.Time.IsZero() ||
 			(rec.Event != AuditCall && rec.Event != AuditDone && rec.Event != AuditRehome && rec.Event != AuditUpdates && rec.Event != AuditUnprotected) || len(line) > maxAuditLine {
 			t.Fatalf("parsed as a record: %+v", rec)
 		}
@@ -84,7 +84,7 @@ func FuzzAuditRecord(f *testing.F) {
 				t.Fatalf("written back and read again it is %+v, not %+v", again, rec)
 			}
 		}
-		os := auditOSLine(rec, fingerprintOf(line))
+		os := auditOSLine(rec, sum256(line))
 		if len(os) > 600 || strings.IndexFunc(os, func(r rune) bool { return r < ' ' || r >= 0x7f }) >= 0 ||
 			strings.Count(os, "=") > 6 || strings.Count(os, " ") > 7 {
 			t.Fatalf("the system log line is %q", os)
@@ -137,8 +137,8 @@ func FuzzAuditLog(f *testing.F) {
 		var c auditCheck
 		var broken error
 		for i, w := range want {
-			if got[i].hash != fingerprintOf(w) {
-				t.Fatalf("line %d: hash %s, want %s", i+1, got[i].hash, fingerprintOf(w))
+			if got[i].hash != sum256(w) {
+				t.Fatalf("line %d: hash %s, want %s", i+1, got[i].hash, sum256(w))
 			}
 			if len(w) > maxAuditLine {
 				if got[i].line != nil {
@@ -165,7 +165,7 @@ func FuzzAuditLog(f *testing.F) {
 			return // no number is left for a next record
 		}
 		next := must(encode(AuditRecord{Seq: seq + 1, Time: time.Unix(1, 0).UTC(), Event: AuditCall, Call: "c", Tool: "t", Prev: prev}))(t)
-		if err := c.line("next", next, fingerprintOf(next)); err != nil {
+		if err := c.line("next", next, sum256(next)); err != nil {
 			t.Fatalf("the record written after a log that verifies does not: %v", err)
 		}
 	})

@@ -43,7 +43,7 @@ func TestStoreKeepsNoToken(t *testing.T) {
 	code := must(m.store.CreateEnrollment(m.id.Fingerprint, "next", 0, ""))(t)
 	b := must(os.ReadFile(StorePath(m.dir)))(t)
 	// The file names no credential a reader could use: no token, and not
-	// the secret of the code that is still good.
+	// the seed of the code that is still good.
 	var raw map[string]any
 	if err := json.Unmarshal(b, &raw); err != nil {
 		t.Fatal(err)
@@ -51,8 +51,8 @@ func TestStoreKeepsNoToken(t *testing.T) {
 	if bytes.Contains(bytes.ToLower(b), []byte("token")) {
 		t.Errorf("fleet.json has a token field:\n%s", b)
 	}
-	if secret := secretOf(t, code); bytes.Contains(b, []byte(secret)) {
-		t.Error("fleet.json holds the secret of an enrollment code")
+	if seed := must(parseEnrollCode(code))(t).Seed; bytes.Contains(b, []byte(seed)) {
+		t.Error("fleet.json holds the seed of an enrollment code")
 	}
 	if report := secrets.Probe(StorePath(m.dir)); !report.Protected {
 		t.Errorf("fleet.json is not owner-only: %+v", report)
@@ -298,7 +298,7 @@ func TestUnreadableStoreFailsClosed(t *testing.T) {
 		"bad fingerprint":      strings.Replace(string(good), boxID.Fingerprint, strings.ToUpper(boxID.Fingerprint), 1),
 		"one pin two machines": twoPins,
 		"a machine id twice": strings.Replace(string(good), `"machines": {`, `"machines": {
-    "`+box.ID+`": {"name": "other", "fingerprint": "`+strings.Repeat("ab", 32)+`", "state": "revoked", "reported": {"os": "linux", "ceiling": "full"}, "enrolled_at": "2026-01-01T00:00:00Z"},`, 1),
+    "`+box.ID+`": {"name": "other", "fingerprint": "`+strings.Repeat("ab", 48)+`", "state": "revoked", "reported": {"os": "linux", "ceiling": "full"}, "enrolled_at": "2026-01-01T00:00:00Z"},`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			writeRaw(t, path, []byte(bad))
@@ -351,7 +351,7 @@ func TestUnreadableStoreFailsClosed(t *testing.T) {
 			if _, err := m.store.CreateEnrollment(m.id.Fingerprint, "new", 0, ""); !errors.Is(err, ErrUnreadable) {
 				t.Errorf("CreateEnrollment = %v", err)
 			}
-			if _, err := m.store.enroll("c2VjcmV0", boxID.Fingerprint, linuxBox); !errors.Is(err, ErrUnreadable) {
+			if _, err := m.store.enroll(strings.Repeat("ab", 48), boxID.Fingerprint, linuxBox); !errors.Is(err, ErrUnreadable) {
 				t.Errorf("enroll = %v", err)
 			}
 			if now := must(os.ReadFile(path))(t); string(now) != bad {
@@ -389,7 +389,7 @@ func TestStoreRefusesToOutgrowItsLimit(t *testing.T) {
 	}
 	later := time.Now().Add(time.Hour).Unix()
 	record := func(i int) *enrollment {
-		return &enrollment{Name: fmt.Sprintf("filler-%07d", i), Secret: fmt.Sprintf("%064x", i), Expires: later}
+		return &enrollment{Name: fmt.Sprintf("filler-%07d", i), Key: fmt.Sprintf("%096x", i), Expires: later}
 	}
 	size := func() int { return len(must(json.MarshalIndent(&d, "", "  "))(t)) }
 	empty := size()
@@ -652,7 +652,7 @@ func writeRaw(t *testing.T, path string, b []byte) {
 }
 
 func TestParseStoreRejects(t *testing.T) {
-	fp := strings.Repeat("ab", 32)
+	fp := strings.Repeat("ab", 48)
 	machine := func(extra string) string {
 		return `{"version":1,"machines":{"m0123456789abcdef":{"name":"box","fingerprint":"` + fp +
 			`","state":"confirmed","reported":{"os":"linux","ceiling":"full"},"enrolled_at":"2026-01-01T00:00:00Z"` + extra + `}}}`
@@ -664,8 +664,12 @@ func TestParseStoreRejects(t *testing.T) {
 		t.Errorf("an empty fleet: %v", err)
 	}
 	enrollment := func(e string) string { return `{"version":1,"machines":{},"enrollments":[` + e + `]}` }
-	if _, err := parseStore([]byte(enrollment(`{"name":"a","secret_sha256":"` + fp + `","expires":1}`))); err != nil {
+	if _, err := parseStore([]byte(enrollment(`{"name":"a","key_sha384":"` + fp + `","expires":1}`))); err != nil {
 		t.Fatalf("the valid enrollment: %v", err)
+	}
+	// A record from before the cnsa profile still reads (and enrolls nothing).
+	if _, err := parseStore([]byte(enrollment(`{"name":"a","secret_sha256":"` + fp[:64] + `","expires":1}`))); err != nil {
+		t.Fatalf("a legacy enrollment record: %v", err)
 	}
 	for name, bad := range map[string]string{
 		"token field":        machine(`,"token":"abc"`),
@@ -677,14 +681,17 @@ func TestParseStoreRejects(t *testing.T) {
 		"no version":         `{"machines":{}}`,
 		"bad address":        `{"version":1,"addresses":["nope"],"machines":{}}`,
 		"null enrollment":    enrollment(`null`),
-		"enrollment name":    enrollment(`{"name":"","secret_sha256":"` + fp + `","expires":1}`),
-		"enrollment secret":  enrollment(`{"name":"a","secret_sha256":"plain-secret","expires":1}`),
-		"enrollment expiry":  enrollment(`{"name":"a","secret_sha256":"` + fp + `","expires":0}`),
-		"enrollment adopt":   enrollment(`{"name":"a","secret_sha256":"` + fp + `","expires":1,"adopt":"x"}`),
-		"enrollment used_by": enrollment(`{"name":"a","secret_sha256":"` + fp + `","expires":1,"used_by":"x"}`),
+		"enrollment name":    enrollment(`{"name":"","key_sha384":"` + fp + `","expires":1}`),
+		"enrollment secret":  enrollment(`{"name":"a","key_sha384":"plain-secret","expires":1}`),
+		"enrollment key 256": enrollment(`{"name":"a","key_sha384":"` + fp[:64] + `","expires":1}`),
+		"legacy secret 384":  enrollment(`{"name":"a","secret_sha256":"` + fp + `","expires":1}`),
+		"no key at all":      enrollment(`{"name":"a","expires":1}`),
+		"enrollment expiry":  enrollment(`{"name":"a","key_sha384":"` + fp + `","expires":0}`),
+		"enrollment adopt":   enrollment(`{"name":"a","key_sha384":"` + fp + `","expires":1,"adopt":"x"}`),
+		"enrollment used_by": enrollment(`{"name":"a","key_sha384":"` + fp + `","expires":1,"used_by":"x"}`),
 		"same name twice": `{"version":1,"machines":{` +
 			`"m0000000000000001":{"name":"box","fingerprint":"` + fp + `","state":"confirmed","reported":{"os":"linux","ceiling":"full"},"enrolled_at":"2026-01-01T00:00:00Z"},` +
-			`"m0000000000000002":{"name":"BOX","fingerprint":"` + strings.Repeat("cd", 32) + `","state":"pending","reported":{"os":"linux","ceiling":"full"},"enrolled_at":"2026-01-01T00:00:00Z"}}}`,
+			`"m0000000000000002":{"name":"BOX","fingerprint":"` + strings.Repeat("cd", 48) + `","state":"pending","reported":{"os":"linux","ceiling":"full"},"enrolled_at":"2026-01-01T00:00:00Z"}}}`,
 	} {
 		if _, err := parseStore([]byte(bad)); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -737,7 +744,7 @@ func TestRecoveryInTheStore(t *testing.T) {
 		t.Fatalf("read back: %q %v %v", rec, proven, err)
 	}
 	// Strict as the rest of the file.
-	fp := strings.Repeat("ab", 32)
+	fp := strings.Repeat("ab", 48)
 	file := func(extra string) string {
 		return `{"version":1,"machines":{"m0123456789abcdef":{"name":"box","fingerprint":"` + fp +
 			`","state":"confirmed","reported":{"os":"linux","ceiling":"full"},"enrolled_at":"2026-01-01T00:00:00Z"}}` + extra + `}`

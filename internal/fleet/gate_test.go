@@ -298,7 +298,7 @@ func TestGateRecordsEveryCall(t *testing.T) {
 	}
 	for i, want := range []AuditRecord{
 		{Event: AuditCall, Tool: "read", Args: `{"action":""}`},
-		{Event: AuditDone, Tool: "read", Outcome: AuditOK, ResultBytes: 4, ResultSHA256: fingerprintOf([]byte("data"))},
+		{Event: AuditDone, Tool: "read", Outcome: AuditOK, ResultBytes: 4, ResultSHA256: sum256([]byte("data"))},
 		{Event: AuditCall, Tool: "act", Args: `{"action":"os_exec"}`},
 		{Event: AuditDone, Tool: "act", Outcome: AuditError},
 		{Event: AuditCall, Tool: "boom"},
@@ -306,7 +306,7 @@ func TestGateRecordsEveryCall(t *testing.T) {
 	} {
 		got := recs[i]
 		if got.Event != want.Event || got.Tool != want.Tool || got.Call != "c1" || got.Outcome != want.Outcome ||
-			(want.Args != "" && (got.Args != want.Args || got.ArgsSHA256 != fingerprintOf([]byte(want.Args)))) ||
+			(want.Args != "" && (got.Args != want.Args || got.ArgsSHA256 != sum256([]byte(want.Args)))) ||
 			(want.ResultBytes != 0 && (got.ResultBytes != want.ResultBytes || got.ResultSHA256 != want.ResultSHA256)) {
 			t.Errorf("record %d = %+v, want %+v", i+1, got, want)
 		}
@@ -334,7 +334,7 @@ func TestGateRecordIsBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	recs := r.records()
-	if got := recs[0]; len(got.Args) > maxAuditArgs || got.ArgsSHA256 != fingerprintOf([]byte(long)) || !strings.HasPrefix(long, got.Args) {
+	if got := recs[0]; len(got.Args) > maxAuditArgs || got.ArgsSHA256 != sum256([]byte(long)) || !strings.HasPrefix(long, got.Args) {
 		t.Errorf("arguments kept: %d bytes, hash %s", len(got.Args), got.ArgsSHA256)
 	}
 	if got := recs[1]; len(got.Asked) != maxAuditAsks || got.AskedMore != 5 || len(got.Asked[0].Action) > maxToolLen {
@@ -381,7 +381,7 @@ func TestGateSaysWhenTheEndOfACallCouldNotBeRecorded(t *testing.T) {
 		t.Fatalf("result: %q, failed %v", text, failed)
 	}
 	lines := readLines(t, r.dir)
-	if len(lines) != 1 || ask.audit != fingerprintOf(lines[0]) {
+	if len(lines) != 1 || ask.audit != sum256(lines[0]) {
 		t.Errorf("%d records; the result carries %s", len(lines), ask.audit)
 	}
 }
@@ -411,8 +411,8 @@ func TestAuditHashTravelsWithTheResult(t *testing.T) {
 		t.Fatalf("call = %+v, %v", res, err)
 	}
 	lines := readLines(t, k.dir)
-	if len(lines) != 2 || res.Audit != fingerprintOf(lines[1]) {
-		t.Fatalf("the result carries %q; the record of its end hashes to %s", res.Audit, fingerprintOf(lines[len(lines)-1]))
+	if len(lines) != 2 || res.Audit != sum256(lines[1]) {
+		t.Fatalf("the result carries %q; the record of its end hashes to %s", res.Audit, sum256(lines[len(lines)-1]))
 	}
 	if rec := must(parseAuditRecord(lines[1]))(t); rec.Call != res.CallID || rec.Tool != "echo" || rec.Outcome != AuditOK {
 		t.Errorf("the record: %+v", rec)

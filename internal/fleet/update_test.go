@@ -85,7 +85,7 @@ func TestHelloArchAndUpdate(t *testing.T) {
 // wait, nor does word of another version; done does, rolled back does, and so
 // does the hold's limit. What is not a tool call is not kept back.
 func TestCallsWaitOutAnUpdate(t *testing.T) {
-	update := Update{Version: "2.0.0", SHA256: fuzzPrint, Size: 4, Data: []byte("abcd")}
+	update := Update{Version: "2.0.0", SHA256: fuzzSum, Size: 4, Data: []byte("abcd")}
 	type answer struct {
 		res Result
 		err error
@@ -242,7 +242,7 @@ func TestChildUpdateFile(t *testing.T) {
 		t.Fatalf("no file: ok %v, %v", ok, err)
 	}
 	want := ChildUpdate{UpdateReport: UpdateReport{From: "1", To: "2", State: UpdateTrial, At: time.Unix(5, 0).UTC()},
-		Step: StepCommit, SHA256: fuzzPrint, Deadline: time.Unix(65, 0).UTC()}
+		Step: StepCommit, SHA256: fuzzSum, Deadline: time.Unix(65, 0).UTC()}
 	if err := WriteChildUpdate(dir, want); err != nil {
 		t.Fatal(err)
 	}

@@ -199,7 +199,7 @@ func TestFleetEndToEnd(t *testing.T) {
 		if len(conns) < 4 { // two enrollments, two links at least
 			t.Fatalf("the wire recorded %d connections", len(conns))
 		}
-		secrets := []string{cmdMark, outA + outB, fileMark, "alpha", "beta", alpha.id, beta.id, "tntfleet1_",
+		secrets := []string{cmdMark, outA + outB, fileMark, "alpha", "beta", alpha.id, beta.id, "tntfleet2_",
 			"os_exec", "os_read_file", "fleet_", "tools/call", "tools/list", "fleet/confirm", "fleet/hello", "jsonrpc",
 			"/fleet/enroll", "/fleet/link", "HTTP/1.1", "Upgrade", "websocket", "Sec-WebSocket", "POST ", "GET ", "Write-Output", "echo ", "note.txt"}
 		var total int

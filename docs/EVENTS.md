@@ -1216,6 +1216,8 @@ Writes the `fleet` log.
 | [1101](#fleet-1101) | info | Link | `Machine {name} connected from {remote}` |
 | [1102](#fleet-1102) | info | Link | `Machine {name} disconnected: {why}` |
 | [1103](#fleet-1103) | verbose | Link | `A connection from {remote} for {machine} did not become a link: {err}` |
+| [1104](#fleet-1104) | info | Link | `Machine {name} is moving to a new certificate` |
+| [1105](#fleet-1105) | info | Link | `Machine {name} moved to its new certificate` |
 | [1201](#fleet-1201) | info | Call | `Call {tool} on {name}: {outcome}` |
 | [1202](#fleet-1202) | info | Call | `The rest of call {call}'s result on {name} was read` |
 | [1203](#fleet-1203) | info | Call | `A call of {tool} on {name} asks first: this turn has read from {read_from}` |
@@ -1238,6 +1240,7 @@ Writes the `fleet` log.
 | [2111](#fleet-2111) | warning | Link | `Machine {name} sent what the link does not allow: {what}` |
 | [2112](#fleet-2112) | warning | Link | `What machine {name} reports about itself was not recorded: {err}` |
 | [2113](#fleet-2113) | warning | Link | `Machine {name} did not take the master's addresses: {err}` |
+| [2114](#fleet-2114) | warning | Link | `Machine {name} was not moved to a new certificate: {err}` |
 | [2201](#fleet-2201) | warning | Call | `This turn's work on machine {host} did not go into its memory: {err}` |
 | [2301](#fleet-2301) | warning | Update | `Update of {name} {stage}: {line}` |
 | [2401](#fleet-2401) | warning | Memory | `The fleet key is held in memory that is not locked against the swap file: {why}` |
@@ -1385,6 +1388,34 @@ Writes the `fleet` log.
 **Why it happens.** The machine went away mid-handshake, or something between the two closed the connection.
 
 **What to do.** None: the machine tries again by itself.
+
+### fleet 1104
+
+`Machine {name} is moving to a new certificate`
+
+- **Level:** info · **Channel:** operational · **Task:** Link · **Log:** fleet
+- **Fields:** `name`, `machine`, `certificate`
+- **Find it:** `provider:fleet id:1104`
+
+**What it means.** A machine enrolled before Tenant moved to ML-DSA-87 certificates sent the new certificate it has made for itself, and the master pinned it beside the old one. The machine connects again with it by itself.
+
+**Why it happens.** The machine's Tenant was updated to one that knows the new certificates, and it connected with its old one.
+
+**What to do.** None. Until it has moved, the machine can be updated and nothing else.
+
+### fleet 1105
+
+`Machine {name} moved to its new certificate`
+
+- **Level:** info · **Channel:** operational · **Task:** Link · **Log:** fleet
+- **Fields:** `name`, `machine`, `certificate`
+- **Find it:** `provider:fleet id:1105`
+
+**What it means.** A machine connected with the new certificate it had sent, and the master dropped the old one. The machine is on ML-DSA-87 from now on and can be called again.
+
+**Why it happens.** The step after the machine sent its new certificate.
+
+**What to do.** None.
 
 ### fleet 1201
 
@@ -1693,6 +1724,20 @@ Writes the `fleet` log.
 **Why it happens.** The link dropped as the list was sent, or the machine runs a Tenant too old to take it.
 
 **What to do.** None for a dropped link: the list is sent again when the machine connects. For an old Tenant, update the machine.
+
+### fleet 2114
+
+`Machine {name} was not moved to a new certificate: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Link · **Log:** fleet
+- **Fields:** `name`, `machine`, `err`
+- **Find it:** `provider:fleet id:2114`
+
+**What it means.** A machine on its old certificate sent a new one and the master did not pin it. The machine stays on the old one, where it can be updated and nothing else, and tries again when it next connects.
+
+**Why it happens.** What it sent is not an ML-DSA-87 certificate, is another machine's, or fleet.json could not be saved.
+
+**What to do.** Read err. For a file that cannot be saved, check the config directory. If it keeps on, revoke the machine and enroll it again.
 
 ### fleet 2201
 
@@ -5956,7 +6001,7 @@ Writes the `security` log.
 - **Keywords:** `audit.failure`
 - **Find it:** `provider:security id:4321`
 
-**What it means.** The fleet's enroll endpoint turned an attempt away. reason says why: rate_limited, bad_method, no_certificate, enrollment_off, store_unreadable, body_too_large, bad_request, unknown_code, expired_code, conflict (the name or the certificate is in use). name is the machine name on the code, when the code was recognised; certificate is the fingerprint the attempt presented.
+**What it means.** The fleet's enroll endpoint turned an attempt away. reason says why: rate_limited, bad_method, no_certificate, enrollment_off, store_unreadable, body_too_large, bad_request, unknown_code, bad_proof, expired_code, conflict (the name or the certificate is in use). name is the machine name on the code, when the code was recognised; certificate is the fingerprint the attempt presented.
 
 **Why it happens.** A code that was mistyped or has expired, a machine enrolled twice, or something on the network probing the fleet port.
 

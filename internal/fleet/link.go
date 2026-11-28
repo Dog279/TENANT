@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -26,7 +27,7 @@ import (
 //
 // Master to child:
 //
-//	fleet/hello     {"link":N}                         -> {"link":N,"os","user","version","sandbox","ceiling"[,"arch"][,"update"]}
+//	fleet/hello     {"link":N[,"rekey"]}               -> {"link":N,"os","user","version","sandbox","ceiling"[,"arch"][,"update"]}
 //	ping            (no params)                        -> {}
 //	fleet/update    {"version","sha256","size","offset","data"} -> {"received":N,"applying":bool}
 //	tools/list      (no params)                        -> {"tools":[{"name","description","parameters"}]}
@@ -43,8 +44,14 @@ import (
 // Child to master:
 //
 //	fleet/confirm   {"call_id","action","detail"}      -> {"allow":bool}
+//	fleet/rekey     {"certificate"}                    -> {}    (rekey.go)
 //	ping            (no params)                        -> {}
 //	notifications/cancelled
+//
+// Every link is on the cnsa profile (tls.go). A link a machine made with the
+// certificate it had before that profile is a legacy link: both ends refuse
+// everything on it but the hello, ping, fleet/update, fleet/addresses and
+// fleet/rekey, which moves the machine off it.
 //
 // The hello, ping and fleet/update never change shape, whatever LinkVersion
 // becomes, so that a child of any age can still be told who it is talking to
@@ -318,7 +325,7 @@ var knownArch = map[string]bool{"amd64": true, "arm64": true}
 func Served(link int) bool { return speaks(LinkVersion, link) }
 
 func (u Update) validate() error {
-	if _, err := parseFingerprint(u.SHA256); err != nil || len(u.Version) == 0 || len(u.Version) > maxReportedLen || !printable(u.Version) ||
+	if _, err := parseDigest(u.SHA256, sha256.Size); err != nil || len(u.Version) == 0 || len(u.Version) > maxReportedLen || !printable(u.Version) ||
 		u.Size < 1 || u.Size > maxUpdateSize || u.Offset < 0 || len(u.Data) > MaxUpdateChunk || u.Offset+int64(len(u.Data)) > u.Size ||
 		len(u.Checksums) > MaxReleaseChecksums || len(u.Bundle) > MaxReleaseBundle || len(u.Signature) > MaxReleaseSignature || !validAsset(u.Asset) {
 		return errors.New("fleet: not a valid piece of an update")
@@ -336,6 +343,10 @@ func validAsset(s string) bool {
 
 type helloParams struct {
 	Link int `json:"link"`
+	// Rekey is the master's fingerprint as it is now, said on a legacy link
+	// only: the machine is asked to move to a new identity (rekey.go). Added
+	// without a new link version: an older child reads past it.
+	Rekey string `json:"rekey,omitempty"`
 }
 
 type helloResult struct {

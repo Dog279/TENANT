@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"bytes"
+	"crypto/mldsa"
 	"encoding/base64"
 	"encoding/json"
 	"reflect"
@@ -16,15 +17,27 @@ import (
 // refuses must come back empty.
 
 const (
-	fuzzPrint = "abababababababababababababababababababababababababababababababab"
+	// fuzzPrint is a certificate fingerprint (SHA-384), fuzzSum a SHA-256
+	// (an update's, or a legacy fingerprint).
+	fuzzPrint = "abababababababababababababababababababababababababababababababababababababababababababababababab"
+	fuzzSum   = "abababababababababababababababababababababababababababababababab"
+	// fuzzSeed is an enrollment key's seed: 32 bytes in base64url.
+	fuzzSeed  = "c2VlZC1zZWVkLXNlZWQtc2VlZC1zZWVkLXNlZWQtc2U"
 	fuzzLater = 4102444800 // 2100-01-01: a code in the seed corpus that does not expire
+)
+
+// fuzzKey and fuzzProof are an enroll request's key and proof: the right
+// sizes, in standard base64, signing nothing.
+var (
+	fuzzKey   = base64.StdEncoding.EncodeToString(make([]byte, mldsa.MLDSA87PublicKeySize))
+	fuzzProof = base64.StdEncoding.EncodeToString(make([]byte, mldsa.MLDSA87SignatureSize))
 )
 
 // FuzzParseEnrollCode: the code an operator pastes into a new machine. The
 // input is tried as a whole code and as the payload of one, so the fuzzer
 // reaches the fields behind the base64.
 func FuzzParseEnrollCode(f *testing.F) {
-	good := enrollCode{Name: "box", Addresses: []string{"10.0.0.1:7443", "[::1]:7443"}, Fingerprint: fuzzPrint, Secret: "c2VjcmV0LXNlY3JldA", Expires: fuzzLater}
+	good := enrollCode{Name: "box", Addresses: []string{"10.0.0.1:7443", "[::1]:7443"}, Fingerprint: fuzzPrint, Seed: fuzzSeed, Expires: fuzzLater}
 	payload, _ := json.Marshal(good)
 	for _, seed := range []string{
 		good.encode(),
@@ -34,16 +47,19 @@ func FuzzParseEnrollCode(f *testing.F) {
 		peerInvitePrefix + "eyJuIjoiaHViIn0",
 		codePrefix + "!!!",
 		codePrefix + strings.Repeat("A", 9000),
-		`{"n":"box","a":["10.0.0.1:7443"],"f":"` + fuzzPrint + `","s":"c2VjcmV0","e":1}`,
-		`{"n":"../../etc","a":["10.0.0.1:7443"],"f":"` + fuzzPrint + `","s":"c2VjcmV0","e":4102444800}`,
-		`{"n":"box","a":["http://evil/"],"f":"` + fuzzPrint + `","s":"c2VjcmV0","e":4102444800}`,
-		`{"n":"box","a":[],"f":"` + fuzzPrint + `","s":"c2VjcmV0","e":4102444800}`,
-		`{"n":"box","a":["10.0.0.1:7443"],"f":"","s":"c2VjcmV0","e":4102444800}`,
-		`{"n":"box","a":["10.0.0.1:7443"],"f":"` + strings.ToUpper(fuzzPrint) + `","s":"c2VjcmV0","e":4102444800}`,
+		`{"n":"box","a":["10.0.0.1:7443"],"f":"` + fuzzPrint + `","s":"` + fuzzSeed + `","e":1}`,
+		`{"n":"../../etc","a":["10.0.0.1:7443"],"f":"` + fuzzPrint + `","s":"` + fuzzSeed + `","e":4102444800}`,
+		`{"n":"box","a":["http://evil/"],"f":"` + fuzzPrint + `","s":"` + fuzzSeed + `","e":4102444800}`,
+		`{"n":"box","a":[],"f":"` + fuzzPrint + `","s":"` + fuzzSeed + `","e":4102444800}`,
+		`{"n":"box","a":["10.0.0.1:7443"],"f":"","s":"` + fuzzSeed + `","e":4102444800}`,
+		`{"n":"box","a":["10.0.0.1:7443"],"f":"` + strings.ToUpper(fuzzPrint) + `","s":"` + fuzzSeed + `","e":4102444800}`,
 		`{"n":"box","a":["10.0.0.1:7443"],"f":"` + fuzzPrint + `","s":"a\nb","e":4102444800}`,
-		`{"n":"box","a":["10.0.0.1:7443"],"f":"` + fuzzPrint + `","s":"c2VjcmV0","e":-1}`,
-		`{"n":"box","a":["10.0.0.1:7443"],"f":"` + fuzzPrint + `","s":"c2VjcmV0","e":4102444800,"x":1}`,
-		`{"n":"box","a":["10.0.0.1:7443"],"f":"` + fuzzPrint + `","s":"c2VjcmV0","e":4102444800}{}`,
+		`{"n":"box","a":["10.0.0.1:7443"],"f":"` + fuzzPrint + `","s":"c2VjcmV0","e":4102444800}`,
+		`{"n":"box","a":["10.0.0.1:7443"],"f":"` + fuzzSum + `","s":"` + fuzzSeed + `","e":4102444800}`,
+		legacyCodePrefix + strings.TrimPrefix(good.encode(), codePrefix),
+		`{"n":"box","a":["10.0.0.1:7443"],"f":"` + fuzzPrint + `","s":"` + fuzzSeed + `","e":-1}`,
+		`{"n":"box","a":["10.0.0.1:7443"],"f":"` + fuzzPrint + `","s":"` + fuzzSeed + `","e":4102444800,"x":1}`,
+		`{"n":"box","a":["10.0.0.1:7443"],"f":"` + fuzzPrint + `","s":"` + fuzzSeed + `","e":4102444800}{}`,
 		`[]`, `null`, `{"e":1e400}`, `{"a":[null]}`,
 	} {
 		f.Add(seed)
@@ -57,7 +73,7 @@ func FuzzParseEnrollCode(f *testing.F) {
 				}
 				continue
 			}
-			if !validName(c.Name) || !validSecret(c.Secret) || c.Expires <= 0 ||
+			if !validName(c.Name) || c.key() == nil || c.Expires <= 0 ||
 				len(c.Addresses) == 0 || len(c.Addresses) > maxAddresses || validAddresses(c.Addresses) != nil {
 				t.Fatalf("accepted %+v", c)
 			}
@@ -78,11 +94,18 @@ const fuzzRecipient = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqm
 
 func FuzzParseStore(f *testing.F) {
 	machine := `{"name":"box","fingerprint":"` + fuzzPrint + `","state":"confirmed","reported":{"os":"linux","user":"root","version":"1.2.3","sandbox":"host","ceiling":"full"},"enrolled_at":"2026-11-18T18:00:00Z","confirmed_at":"2026-11-18T18:05:00Z"}`
-	other := strings.Replace(strings.Replace(machine, fuzzPrint, strings.Repeat("cd", 32), 1), `"box"`, `"other"`, 1)
+	other := strings.Replace(strings.Replace(machine, fuzzPrint, strings.Repeat("cd", 48), 1), `"box"`, `"other"`, 1)
 	good := `{"version":1,"addresses":["10.0.0.1:7443"],"machines":{"m0123456789abcdef":` + machine + `,"m00000000000000ff":` + other +
-		`},"enrollments":[{"name":"next","secret_sha256":"` + fuzzPrint + `","expires":4102444800,"adopt":"m0123456789abcdef"}]}`
+		`},"enrollments":[{"name":"next","key_sha384":"` + fuzzPrint + `","expires":4102444800,"adopt":"m0123456789abcdef"}]}`
+	// A machine enrolled before the cnsa profile, moving to a new certificate.
+	legacy := strings.Replace(strings.Replace(machine, `"`+fuzzPrint+`"`, `"`+fuzzSum+`","next_fingerprint":"`+strings.Repeat("ef", 48)+`"`, 1), `"box"`, `"old"`, 1)
 	for _, seed := range []string{
 		good,
+		`{"version":1,"machines":{"m0123456789abcdef":` + machine + `,"m00000000000000ee":` + legacy + `}}`,
+		`{"version":1,"machines":{"m00000000000000ee":` + strings.Replace(legacy, strings.Repeat("ef", 48), fuzzPrint, 1) + `,"m0123456789abcdef":` + machine + `}}`,
+		`{"version":1,"machines":{"m0123456789abcdef":` + strings.Replace(machine, `"confirmed"`, `"confirmed","next_fingerprint":"`+strings.Repeat("ef", 48)+`"`, 1) + `}}`,
+		`{"version":1,"machines":{},"enrollments":[{"name":"a","secret_sha256":"` + fuzzSum + `","expires":4102444800}]}`,
+		`{"version":1,"machines":{},"enrollments":[{"name":"a","key_sha384":"` + fuzzSum + `","expires":4102444800}]}`,
 		`{"version":1,"machines":{}}`,
 		`{"version":1,"enroll_off":true,"machines":null}`,
 		"", "{", "null", "[]", `{"version":2,"machines":{}}`, strings.Repeat("\x00", 64),
@@ -120,10 +143,18 @@ func FuzzParseStore(f *testing.F) {
 			if !validID(id) || m == nil || m.ID != id || !validName(m.Name) || !m.State.valid() || m.Reported.validate() != nil {
 				t.Fatalf("accepted machine %q: %+v", id, m)
 			}
-			if _, err := parseFingerprint(m.Fingerprint); err != nil || prints[m.Fingerprint] {
+			if _, err := parsePin(m.Fingerprint); err != nil || prints[m.Fingerprint] {
 				t.Fatalf("accepted machine %q with fingerprint %q", id, m.Fingerprint)
 			}
 			prints[m.Fingerprint] = true
+			// Only a legacy machine is moving to a next certificate, and that
+			// is a new one nobody else has.
+			if m.Next != "" {
+				if _, err := parseFingerprint(m.Next); err != nil || !m.Legacy() || prints[m.Next] {
+					t.Fatalf("accepted machine %q with next certificate %q", id, m.Next)
+				}
+				prints[m.Next] = true
+			}
 			if key := strings.ToLower(m.Name); m.State != StateRevoked {
 				if names[key] {
 					t.Fatalf("accepted two live machines named %q", m.Name)
@@ -171,6 +202,7 @@ func FuzzParseChild(f *testing.F) {
 		strings.Replace(good, `["os_read_file","os_list_dir"]`, `null`, 1),
 		strings.Replace(good, `["os_read_file","os_list_dir"]`, `["a","a"]`, 1),
 		strings.Replace(good, fuzzPrint, ``, 1),
+		strings.Replace(good, fuzzPrint, fuzzSum, 1), // a master's legacy fingerprint
 		strings.Replace(good, `10.0.0.1:7443`, `http://10.0.0.1`, 1),
 		strings.Replace(good, `"version":1`, `"version":1,"version":2`, 1),
 		strings.Replace(good, `"sandbox":"host"`, `"sandbox":"host","ceiling":"full"`, 1),
@@ -189,7 +221,7 @@ func FuzzParseChild(f *testing.F) {
 		if c.validate() != nil || !c.Ceiling.valid() || len(c.MasterAddresses) == 0 {
 			t.Fatalf("accepted %+v", c)
 		}
-		if _, err := parseFingerprint(c.MasterFingerprint); err != nil {
+		if _, err := parsePin(c.MasterFingerprint); err != nil {
 			t.Fatalf("accepted the master fingerprint %q", c.MasterFingerprint)
 		}
 		// A tool list is the whole of what is served.
@@ -209,33 +241,39 @@ func FuzzParseChild(f *testing.F) {
 // FuzzParseEnrollRequest: the body a machine nobody knows yet posts to the
 // enroll endpoint.
 func FuzzParseEnrollRequest(f *testing.F) {
+	kp := `{"key":"` + fuzzKey + `","proof":"` + fuzzProof + `"`
 	for _, seed := range []string{
-		`{"secret":"c2VjcmV0LXNlY3JldA","os":"linux","user":"root","version":"1.2.3","sandbox":"host","ceiling":"full"}`,
-		`{"secret":"c2VjcmV0","os":"windows","ceiling":"read-only"}`,
-		`{"secret":"c2VjcmV0","os":"darwin","ceiling":"no-exec","hostname":"later"}`,
-		`{"secret":"c2VjcmV0","os":"linux","ceiling":"full","user":"\u001b[31m"}`,
-		`{"secret":"c2VjcmV0","os":"linux","ceiling":"full","user":"\u202egnp.exe"}`,
-		`{"secret":"c2VjcmV0","os":"linux","ceiling":"full","Reported":{"os":"plan9"}}`,
-		`{"secret":"c2VjcmV0","os":"linux","ceiling":"full","fingerprint":"` + fuzzPrint + `","id":"m0123456789abcdef","state":"confirmed"}`,
-		`{"secret":"a b","os":"linux","ceiling":"full"}`,
-		`{"secret":"","os":"linux","ceiling":"full"}`,
-		`{"secret":["c2VjcmV0"],"os":"linux","ceiling":"full"}`,
-		`{"secret":"c2VjcmV0","os":"linux","ceiling":"full"}{"secret":"x"}`,
-		`{"secret":"c2VjcmV0","os":"LINUX","ceiling":"full"}`,
-		"", "{", "null", "[]", `"secret"`, strings.Repeat("[", 5000),
-		`{"secret":"` + strings.Repeat("A", 4000) + `","os":"linux","ceiling":"full"}`,
+		kp + `,"os":"linux","user":"root","version":"1.2.3","sandbox":"host","ceiling":"full"}`,
+		kp + `,"os":"windows","ceiling":"read-only"}`,
+		kp + `,"os":"darwin","ceiling":"no-exec","hostname":"later"}`,
+		kp + `,"os":"linux","ceiling":"full","user":"\u001b[31m"}`,
+		kp + `,"os":"linux","ceiling":"full","user":"\u202egnp.exe"}`,
+		kp + `,"os":"linux","ceiling":"full","Reported":{"os":"plan9"}}`,
+		kp + `,"os":"linux","ceiling":"full","fingerprint":"` + fuzzPrint + `","id":"m0123456789abcdef","state":"confirmed"}`,
+		kp + `,"os":"linux","ceiling":"full","secret":"c2VjcmV0"}`,
+		`{"secret":"c2VjcmV0","os":"linux","ceiling":"full"}`,
+		`{"key":"` + fuzzKey + `","proof":"c2VjcmV0","os":"linux","ceiling":"full"}`,
+		`{"key":"c2VjcmV0","proof":"` + fuzzProof + `","os":"linux","ceiling":"full"}`,
+		`{"key":"` + fuzzKey + `A","proof":"` + fuzzProof + `","os":"linux","ceiling":"full"}`,
+		`{"key":"a b","proof":"` + fuzzProof + `","os":"linux","ceiling":"full"}`,
+		`{"key":"","proof":"","os":"linux","ceiling":"full"}`,
+		`{"key":["` + fuzzKey + `"],"proof":"` + fuzzProof + `","os":"linux","ceiling":"full"}`,
+		kp + `,"os":"linux","ceiling":"full"}{"key":"x"}`,
+		kp + `,"os":"LINUX","ceiling":"full"}`,
+		"", "{", "null", "[]", `"key"`, strings.Repeat("[", 5000),
+		`{"key":"` + strings.Repeat("A", 16000) + `","proof":"` + fuzzProof + `","os":"linux","ceiling":"full"}`,
 	} {
 		f.Add([]byte(seed))
 	}
 	f.Fuzz(func(t *testing.T, in []byte) {
 		req, err := parseEnrollRequest(in)
 		if err != nil {
-			if req != (enrollRequest{}) {
+			if !reflect.DeepEqual(req, enrollRequest{}) {
 				t.Fatalf("refused and returned %+v", req)
 			}
 			return
 		}
-		if !validSecret(req.Secret) || len(req.Secret) > maxSecretLen || req.Reported.validate() != nil {
+		if len(req.Key) != mldsa.MLDSA87PublicKeySize || len(req.Proof) != mldsa.MLDSA87SignatureSize || req.Reported.validate() != nil {
 			t.Fatalf("accepted %+v", req)
 		}
 		for _, text := range []string{req.OS, req.User, req.Version, req.Sandbox, req.Ceiling} {

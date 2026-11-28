@@ -61,6 +61,12 @@ const (
 	// AuditRehome: someone on this machine gave it another master
 	// (tenant child rehome). No call goes with it.
 	AuditRehome = "rehome"
+	// AuditRekey: the master this machine already had gave it, over the link,
+	// the fingerprint of the certificate it has now, and the machine pins
+	// that from here on (rekey.go). It happens once, as a machine enrolled
+	// before the ML-DSA-87 profile moves off the certificate it had then.
+	// From and To are the master's fingerprints, old and new.
+	AuditRekey = "rekey"
 	// AuditUpdates: someone on this machine changed whose word an update is
 	// taken on (tenant child updates): From and To are the rules.
 	AuditUpdates = "updates"
@@ -130,8 +136,8 @@ func parseAuditRecord(line []byte) (AuditRecord, error) {
 	if err := decodeStrict(line, &r); err != nil {
 		return AuditRecord{}, err
 	}
-	if _, err := parseFingerprint(r.Prev); err != nil || r.Seq == 0 || r.Time.IsZero() ||
-		(r.Event != AuditCall && r.Event != AuditDone && r.Event != AuditRehome && r.Event != AuditUpdates && r.Event != AuditUnprotected) {
+	if _, err := parseDigest(r.Prev, sha256.Size); err != nil || r.Seq == 0 || r.Time.IsZero() ||
+		(r.Event != AuditCall && r.Event != AuditDone && r.Event != AuditRehome && r.Event != AuditRekey && r.Event != AuditUpdates && r.Event != AuditUnprotected) {
 		return AuditRecord{}, errors.New("not an audit record")
 	}
 	return r, nil
@@ -448,7 +454,7 @@ func (l *AuditLog) append(rec AuditRecord) (string, error) {
 		l.f = nil
 		return "", fmt.Errorf("fleet: audit log: %w", err)
 	}
-	hash := fingerprintOf(line) // the SHA-256 of the line, in hex
+	hash := sha256Hex(line)
 	l.size, l.seq, l.prev = l.size+int64(len(line))+1, rec.Seq, hash
 	if l.oslog != nil {
 		l.oslog(auditOSLine(rec, hash))
@@ -462,6 +468,15 @@ func (l *AuditLog) append(rec AuditRecord) (string, error) {
 // the system log, when it returns.
 func (l *AuditLog) Rehome(by, from, to string) error {
 	_, err := l.append(AuditRecord{Event: AuditRehome, By: by, From: from, To: to})
+	return err
+}
+
+// Rekey writes the record of this machine taking its master's new
+// certificate over the link (AuditRekey): from and to are the fingerprints
+// of the certificate it pinned and of the one it pins now. It is on the
+// disk, and in the system log, when it returns.
+func (l *AuditLog) Rekey(from, to string) error {
+	_, err := l.append(AuditRecord{Event: AuditRekey, By: "the master, over the link", From: from, To: to})
 	return err
 }
 

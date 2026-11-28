@@ -5,6 +5,39 @@ Releases page.
 
 ## Unreleased
 
+- **Fleet and peer connections now use the CNSA 2.0 algorithms, and nothing else.** Every
+  connection between a master and its machines, and every peer connection over TLS, is TLS 1.3
+  with `TLS_AES_256_GCM_SHA384`, an ML-KEM-1024 key exchange and ML-DSA-87 certificates, pinned
+  by SHA-384. Both ends check what was negotiated and close a connection that got anything
+  else. Before, the suite was AES-128-GCM with an X25519 and ML-KEM-768 exchange and ECDSA
+  P-256 certificates, and a peer listener still took a TLS 1.2 client. Tenant is now built with
+  Go 1.27. What this is not: Tenant does not run in Go's FIPS 140-3 mode, and a machine's
+  memory snapshots, the audit log and update checksums keep the algorithms they had.
+- **An enrollment code is no longer sent to the master.** A code (now `tntfleet2_…`) holds the
+  seed of a one-time signing key. The new machine signs, with that key, for the one connection
+  it enrolls over and for its own certificate, and sends the signature; the master knows the
+  key by a hash. What crosses the network enrolls nothing anywhere else, and `fleet.json` still
+  holds nothing that could enroll a machine.
+- **A fleet set up with an older Tenant moves to the new certificates by itself; update the
+  master first.** The master makes its new certificate at its first start and keeps the old
+  one for the machines that still pin it. Such a machine can be updated and nothing else; once
+  its update is done it makes itself a new certificate, sends it over the link it has, and
+  connects again with it. A machine updated before its master serves no call until the master
+  is updated too. An older Tenant cannot enroll with a current master, and a current machine
+  does not take a `tntfleet1_…` code. **Peers do not move by themselves:** a peer certificate
+  from before is replaced at the next start, and each pair of peers has to be paired again.
+  **This move is for a limited time:** a later release takes the old certificates out
+  altogether, and a machine that has not moved by then has to be enrolled again.
+- **A full `fleet.json` always has room for a revoke.** A new machine or code is refused 64 KiB
+  short of the file's 4 MiB limit, so a change to a machine that is already there (a revoke, a
+  pause) never fails for want of room.
+
+- **Fixed (Windows): an update could roll back because the new binary was still open for an
+  instant.** Just after a new version's trial run its file can still be open in another handle
+  (the process on its way out, a virus scanner), and Windows refuses to rename a file that is.
+  A fleet machine's update then ended "rolled back: the new version could not be put in place
+  ... being used by another process", and `tenant update` and a rollback could stop the same
+  way. The rename is now tried again for up to about 5 seconds before it is reported.
 - **Changed: a fleet child is always the machine's own service (TEN-558).** `tenant child install` now
   installs what `--system` did: a service that runs as root or SYSTEM from boot, with the child's
   files in the machine's own location. It needs an elevated terminal (a root shell or sudo, a

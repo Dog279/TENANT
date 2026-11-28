@@ -302,7 +302,9 @@ func TestLinkEndpointRefusals(t *testing.T) {
 	serve := func(id *Identity) (int, string) {
 		req := httptest.NewRequest("GET", LinkPath, nil)
 		if id != nil {
-			req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{id.Certificate.Leaf}}
+			// What a handshake on the cnsa profile leaves (tls.go: verified).
+			req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{id.Certificate.Leaf},
+				Version: tls.VersionTLS13, CipherSuite: tls.TLS_AES_256_GCM_SHA384, CurveID: tls.MLKEM1024}
 		}
 		rec := httptest.NewRecorder()
 		h.mgr.serveLink(rec, req)

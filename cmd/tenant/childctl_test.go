@@ -811,7 +811,7 @@ func TestChildStatusWords(t *testing.T) {
 	if err != nil || held.Ready() != nil {
 		t.Fatal(err)
 	}
-	cert := strings.Repeat("ab", 32)
+	cert := strings.Repeat("ab", 48)
 	for _, tc := range []struct {
 		st   fleet.ChildStatus
 		want string

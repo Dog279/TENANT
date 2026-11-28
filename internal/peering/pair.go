@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"tenant/internal/cnsa"
 	"tenant/internal/logs/event"
 )
 
@@ -234,13 +234,12 @@ func RequestPair(ctx context.Context, baseURL string, req PairRequest, overlay b
 	if !overlay && strings.HasPrefix(strings.ToLower(baseURL), "https://") {
 		tr.TLSClientConfig = &tls.Config{
 			InsecureSkipVerify: true, // TOFU: no fingerprint yet; the PIN+approval is the trust
-			VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-				if len(rawCerts) > 0 {
-					capturedFP = CertFingerprint(rawCerts[0])
-				}
-				return nil
+			VerifyConnection: func(cs tls.ConnectionState) (err error) {
+				capturedFP, err = checkServer(cs)
+				return err
 			},
 		}
+		cnsa.Apply(tr.TLSClientConfig)
 	}
 	client := &http.Client{
 		Transport:     tr,

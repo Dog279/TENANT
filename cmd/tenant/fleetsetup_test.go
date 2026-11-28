@@ -17,16 +17,16 @@ import (
 // pasteCodes are codes of every shape CreateEnrollment can make, and the
 // edges of it: a dash or an underscore first, nothing but them, the longest.
 var pasteCodes = []string{
-	"tntfleet1_eyJuIjoid2ViMSIsImEiOlsiMTAuMC4wLjE6OTc3NyJdfQ",
-	"tntfleet1_-_-_-_",
-	"tntfleet1_" + strings.Repeat("Az09-_", 1300),
+	"tntfleet2_eyJuIjoid2ViMSIsImEiOlsiMTAuMC4wLjE6OTc3NyJdfQ",
+	"tntfleet2_-_-_-_",
+	"tntfleet2_" + strings.Repeat("Az09-_", 1300),
 }
 
 // The paste lines, for one code, exactly; each a single line in which the
 // code is a variable's value or standard input, never an argument.
 func TestEnrollPaste(t *testing.T) {
 	t.Setenv("TENANT_UPDATE_REPO", "acme/tenant")
-	const code = "tntfleet1_abc-_Z9"
+	const code = "tntfleet2_abc-_Z9"
 	// A child is the machine's own, from boot: every line is for an elevated
 	// terminal, and none installs one that runs as the account that pastes it.
 	boot, note := enrollPaste(code)
@@ -34,10 +34,10 @@ func TestEnrollPaste(t *testing.T) {
 		t.Errorf("a note with a repository: %q", note)
 	}
 	want := []pasteLine{
-		{"Linux, macOS, nothing installed (sudo asks for your password)", "curl -fsSL https://github.com/acme/tenant/releases/latest/download/install.sh | TENANT_CHILD=system TENANT_ENROLL_CODE='tntfleet1_abc-_Z9' sudo --preserve-env=TENANT_CHILD,TENANT_ENROLL_CODE sh"},
-		{"Windows, nothing installed (PowerShell run as administrator)", "$env:TENANT_CHILD='system'; $env:TENANT_ENROLL_CODE='tntfleet1_abc-_Z9'; irm https://github.com/acme/tenant/releases/latest/download/install.ps1 | iex"},
-		{"Linux, macOS, Tenant in /usr/local/bin (in a root shell)", "printf '%s\\n' 'tntfleet1_abc-_Z9' | tenant child install --system"},
-		{"Windows, Tenant under Program Files (PowerShell run as administrator)", "'tntfleet1_abc-_Z9' | tenant child install --system"},
+		{"Linux, macOS, nothing installed (sudo asks for your password)", "curl -fsSL https://github.com/acme/tenant/releases/latest/download/install.sh | TENANT_CHILD=system TENANT_ENROLL_CODE='tntfleet2_abc-_Z9' sudo --preserve-env=TENANT_CHILD,TENANT_ENROLL_CODE sh"},
+		{"Windows, nothing installed (PowerShell run as administrator)", "$env:TENANT_CHILD='system'; $env:TENANT_ENROLL_CODE='tntfleet2_abc-_Z9'; irm https://github.com/acme/tenant/releases/latest/download/install.ps1 | iex"},
+		{"Linux, macOS, Tenant in /usr/local/bin (in a root shell)", "printf '%s\\n' 'tntfleet2_abc-_Z9' | tenant child install --system"},
+		{"Windows, Tenant under Program Files (PowerShell run as administrator)", "'tntfleet2_abc-_Z9' | tenant child install --system"},
 	}
 	if !slices.Equal(boot, want) {
 		t.Errorf("from boot:\n got %q\nwant %q", boot, want)
@@ -67,7 +67,7 @@ func TestEnrollPasteWithoutARepository(t *testing.T) {
 		}
 	}
 	t.Setenv("TENANT_UPDATE_REPO", "acme/tenant")
-	for _, bad := range []string{"", "tnt1_abc", "tntfleet1_", "tntfleet1_a'b", "tntfleet1_a b", "tntfleet1_a\nb", "tntfleet1_a$b", "tntfleet1_" + strings.Repeat("a", 9000)} {
+	for _, bad := range []string{"", "tnt1_abc", "tntfleet2_", "tntfleet2_a'b", "tntfleet2_a b", "tntfleet2_a\nb", "tntfleet2_a$b", "tntfleet2_" + strings.Repeat("a", 9000)} {
 		if lines, note := enrollPaste(bad); lines != nil || note == "" {
 			t.Errorf("%q gave %q", bad, lines)
 		}

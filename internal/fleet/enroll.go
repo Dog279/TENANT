@@ -4,8 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/mldsa"
 	"crypto/rand"
-	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/base64"
@@ -35,18 +36,25 @@ const (
 
 	// codePrefix marks a fleet enrollment code. A peer invite starts with
 	// peerInvitePrefix, which no fleet code does, so neither parses as the
-	// other.
-	codePrefix       = "tntfleet1_"
+	// other. legacyCodePrefix is a code from before the cnsa profile, whose
+	// secret was sent to the master as it was: nothing takes one any more.
+	codePrefix       = "tntfleet2_"
+	legacyCodePrefix = "tntfleet1_"
 	peerInvitePrefix = "tnt1_"
 	maxCodeLen       = 8 << 10
-	maxSecretLen     = 128
+	seedLen          = 32 // an ML-DSA private key's seed
+
+	// What the proof of an enrollment is signed under, and the label the
+	// connection's own secret is taken from (RFC 8446, section 7.5).
+	enrollContext = "tenant fleet enroll 2"
+	enrollLabel   = "EXPORTER-tenant-fleet-enroll"
 
 	// EnrollPath is where the master serves NewEnrollHandler and where Enroll
 	// posts to.
 	EnrollPath = "/fleet/enroll"
 
-	maxEnrollBody    = 4 << 10
-	enrollAttempts   = 5 // per source, per enrollWindow
+	maxEnrollBody    = 16 << 10 // an ML-DSA-87 public key and signature are 7 KiB, and more in base64
+	enrollAttempts   = 5        // per source, per enrollWindow
 	enrollWindow     = time.Minute
 	maxEnrollSources = 4096
 	enrollDialWait   = 10 * time.Second
@@ -62,8 +70,11 @@ type enrollCode struct {
 	Name        string   `json:"n"`
 	Addresses   []string `json:"a"`
 	Fingerprint string   `json:"f"` // the master's certificate
-	Secret      string   `json:"s"`
-	Expires     int64    `json:"e"` // unix seconds
+	// Seed is the seed of the code's one-time ML-DSA-87 key, in base64url.
+	// It never leaves the machine the code is typed into: that machine signs
+	// with the key, and the master knows the key by its public half.
+	Seed    string `json:"s"`
+	Expires int64  `json:"e"` // unix seconds
 }
 
 func (c enrollCode) encode() string {
@@ -79,6 +90,8 @@ func parseEnrollCode(code string) (enrollCode, error) {
 	code = strings.TrimSpace(code)
 	switch {
 	case strings.HasPrefix(code, codePrefix):
+	case strings.HasPrefix(code, legacyCodePrefix):
+		return c, errors.New("fleet: this enrollment code is from a master that has not moved to ML-DSA-87 certificates: update the master's Tenant and ask it for a new code")
 	case strings.HasPrefix(code, peerInvitePrefix):
 		return c, errors.New("fleet: this is a peer invite, not a fleet enrollment code")
 	default:
@@ -94,7 +107,7 @@ func parseEnrollCode(code string) (enrollCode, error) {
 	if err != nil {
 		return enrollCode{}, fmt.Errorf("fleet: the enrollment code is damaged: %w", err)
 	}
-	if _, err := parseFingerprint(c.Fingerprint); err != nil || !validName(c.Name) || !validSecret(c.Secret) ||
+	if _, err := parseFingerprint(c.Fingerprint); err != nil || !validName(c.Name) || c.key() == nil ||
 		len(c.Addresses) == 0 || validAddresses(c.Addresses) != nil || c.Expires <= 0 {
 		return enrollCode{}, errors.New("fleet: the enrollment code is damaged")
 	}
@@ -105,39 +118,62 @@ func parseEnrollCode(code string) (enrollCode, error) {
 	return c, nil
 }
 
-// validSecret accepts the base64url text newSecret makes, and nothing that
-// could not be one.
-func validSecret(s string) bool {
-	if len(s) == 0 || len(s) > maxSecretLen {
-		return false
+// key is the code's one-time signing key, or nil for a code whose seed is
+// not one.
+func (c enrollCode) key() *mldsa.PrivateKey {
+	seed, err := base64.RawURLEncoding.DecodeString(c.Seed)
+	if err != nil || len(seed) != seedLen {
+		return nil
 	}
-	for i := 0; i < len(s); i++ {
-		switch c := s[i]; {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
-		default:
-			return false
-		}
+	key, err := mldsa.NewPrivateKey(mldsa.MLDSA87(), seed)
+	if err != nil {
+		return nil
 	}
-	return true
+	return key
 }
 
-func newSecret() string {
-	b := make([]byte, 32)
+// newEnrollKey makes a code's one-time key and returns its seed, which goes
+// into the code, and the hash of its public half, which the master keeps.
+func newEnrollKey() (seed, keyHash string, err error) {
+	b := make([]byte, seedLen)
 	_, _ = rand.Read(b) // crypto/rand fills b or stops the program; it returns no error
-	return base64.RawURLEncoding.EncodeToString(b)
+	key, err := mldsa.NewPrivateKey(mldsa.MLDSA87(), b)
+	if err != nil {
+		return "", "", fmt.Errorf("fleet: make the enrollment key: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), hashKey(key.PublicKey().Bytes()), nil
 }
 
-func hashSecret(secret string) string {
-	sum := sha256.Sum256([]byte(secret))
+// hashKey is how the master recognises a code's key: the SHA-384 of its
+// public half, in lowercase hex.
+func hashKey(public []byte) string {
+	sum := sha512.Sum384(public)
 	return hex.EncodeToString(sum[:])
 }
 
-// enrollment finds the record of the code with that secret hash. Every
+// enrollMessage is what a new machine signs with its code's key: the secret
+// of the one connection it enrolls over, which no other connection has, and
+// the certificate it presented there. A proof read off one connection is
+// therefore no proof on another, and enrolls no certificate but its own.
+// (The master's certificate is in the connection's secret already; the
+// client's is not, which is why it is named.)
+func enrollMessage(cs *tls.ConnectionState, childFingerprint string) ([]byte, error) {
+	if cs == nil {
+		return nil, ErrNoCertificate
+	}
+	binding, err := cs.ExportKeyingMaterial(enrollLabel, nil, sha512.Size384)
+	if err != nil {
+		return nil, fmt.Errorf("fleet: the connection has no secret to bind the enrollment to: %w", err)
+	}
+	return []byte(strings.Join([]string{enrollContext, hex.EncodeToString(binding), childFingerprint, ""}, "\n")), nil
+}
+
+// enrollment finds the record of the code whose key has that hash. Every
 // record is compared, whichever matches.
 func (d *fileData) enrollment(hash string) *enrollment {
 	var found *enrollment
 	for _, e := range d.Enrollments {
-		if subtle.ConstantTimeCompare([]byte(e.Secret), []byte(hash)) == 1 {
+		if subtle.ConstantTimeCompare([]byte(e.Key), []byte(hash)) == 1 {
 			found = e
 		}
 	}
@@ -151,10 +187,11 @@ func (d *fileData) reserved(name string, now time.Time) bool {
 	})
 }
 
-// prune drops the records of codes that expired long ago.
+// prune drops the records of codes that expired long ago, and of codes from
+// before the cnsa profile, which enroll nothing.
 func (d *fileData) prune(now time.Time) {
 	cutoff := now.Add(-enrollKeep).Unix()
-	d.Enrollments = slices.DeleteFunc(d.Enrollments, func(e *enrollment) bool { return e.Expires < cutoff })
+	d.Enrollments = slices.DeleteFunc(d.Enrollments, func(e *enrollment) bool { return e.Expires < cutoff || e.Key == "" })
 }
 
 // newID makes an id no machine in the file has.
@@ -170,9 +207,11 @@ func (d *fileData) newID() string {
 
 // CreateEnrollment makes the one-time code that enrolls one machine under
 // name. The code carries the name, the master's addresses, masterFingerprint
-// (the master's Identity.Fingerprint, which the new machine pins) and a
-// secret; fleet.json keeps only the secret's hash. ttl is how long the code
-// can be spent: zero means DefaultEnrollTTL, and a day is the most.
+// (the master's Identity.Fingerprint, which the new machine pins) and the
+// seed of a one-time ML-DSA-87 key; fleet.json keeps only the hash of that
+// key's public half. The new machine signs with the key and sends the
+// signature, never the seed. ttl is how long the code can be spent: zero
+// means DefaultEnrollTTL, and a day is the most.
 //
 // adopt is empty for a machine that starts clean. Given the id of a revoked
 // machine, the new machine takes that id, and with it whatever was kept under
@@ -193,9 +232,12 @@ func (s *Store) CreateEnrollment(masterFingerprint, name string, ttl time.Durati
 	if ttl < time.Second || ttl > maxEnrollTTL {
 		return "", fmt.Errorf("fleet: an enrollment code lasts between a second and %s", maxEnrollTTL)
 	}
-	secret := newSecret()
-	code := enrollCode{Name: name, Fingerprint: masterFingerprint, Secret: secret}
-	err := s.mutate(func(d *fileData) error {
+	seed, keyHash, err := newEnrollKey()
+	if err != nil {
+		return "", err
+	}
+	code := enrollCode{Name: name, Fingerprint: masterFingerprint, Seed: seed}
+	err = s.mutate(func(d *fileData) error {
 		if len(d.Addresses) == 0 {
 			return errors.New("fleet: the master has no address for a child to dial yet")
 		}
@@ -214,7 +256,7 @@ func (s *Store) CreateEnrollment(masterFingerprint, name string, ttl time.Durati
 		})
 		code.Addresses = slices.Clone(d.Addresses)
 		code.Expires = s.now().Add(ttl).Unix()
-		d.Enrollments = append(d.Enrollments, &enrollment{Name: name, Secret: hashSecret(secret), Expires: code.Expires, Adopt: adopt})
+		d.Enrollments = append(d.Enrollments, &enrollment{Name: name, Key: keyHash, Expires: code.Expires, Adopt: adopt})
 		return nil
 	})
 	if err != nil {
@@ -229,7 +271,7 @@ func (s *Store) CreateEnrollment(masterFingerprint, name string, ttl time.Durati
 // from one machine's screen cannot confirm another machine that got hold of
 // the enrollment code first.
 func ConfirmCode(masterFingerprint, childFingerprint string) string {
-	sum := sha256.Sum256([]byte("tenant fleet confirm 1\n" + masterFingerprint + "\n" + childFingerprint))
+	sum := sha512.Sum384([]byte("tenant fleet confirm 2\n" + masterFingerprint + "\n" + childFingerprint))
 	return fmt.Sprintf("%06d", binary.BigEndian.Uint64(sum[:8])%1_000_000)
 }
 
@@ -271,6 +313,7 @@ const (
 	RefusedTooLarge    Reason = "body_too_large"
 	RefusedBadRequest  Reason = "bad_request"
 	RefusedUnknownCode Reason = "unknown_code"
+	RefusedBadProof    Reason = "bad_proof" // the code's key did not sign for this connection and certificate
 	RefusedExpired     Reason = "expired_code"
 	RefusedReplay      Reason = "replayed_code" // the code was spent already
 	RefusedConflict    Reason = "conflict"      // the name, id or certificate is in use
@@ -296,19 +339,12 @@ func (r *Refusal) Error() string { return "fleet: enrollment refused: " + string
 // spent and the certificate is pinned to a new pending machine. Two attempts
 // with one code cannot both get through, and a spent code enrolls nothing
 // again. A refusal is returned as a *Refusal.
-func (s *Store) enroll(secret, fingerprint string, rep Reported) (Machine, error) {
-	hash := hashSecret(secret)
-	// A secret nobody was given is turned away from memory: a stranger does
-	// not get to take the file's lock.
-	d, _, err := s.view()
-	if err != nil {
-		return Machine{}, err
-	}
-	if d.enrollment(hash) == nil {
-		return Machine{}, &Refusal{Reason: RefusedUnknownCode}
-	}
+//
+// hash is the hash of the key the machine proved it holds (enrollHandler):
+// the code is known by it.
+func (s *Store) enroll(hash, fingerprint string, rep Reported) (Machine, error) {
 	var out Machine
-	err = s.mutate(func(d *fileData) error {
+	err := s.mutate(func(d *fileData) error {
 		now := s.now()
 		e := d.enrollment(hash)
 		switch {
@@ -325,7 +361,7 @@ func (s *Store) enroll(secret, fingerprint string, rep Reported) (Machine, error
 			return conflict
 		}
 		for other, m := range d.Machines {
-			if other != id && m.Fingerprint == fingerprint {
+			if other != id && (m.Fingerprint == fingerprint || m.Next == fingerprint) {
 				return conflict // one certificate, one machine
 			}
 		}
@@ -343,10 +379,13 @@ func (s *Store) enroll(secret, fingerprint string, rep Reported) (Machine, error
 	return out, err
 }
 
-// enrollRequest is what a new machine posts. Its certificate is not in it:
-// the master takes that from the connection.
+// enrollRequest is what a new machine posts: the public half of its code's
+// key, and that key's signature over enrollMessage. Its certificate is not
+// in it: the master takes that from the connection. The code's seed is not
+// in it either, so nothing in a request enrolls anything a second time.
 type enrollRequest struct {
-	Secret string `json:"secret"`
+	Key   []byte `json:"key"`
+	Proof []byte `json:"proof"`
 	Reported
 }
 
@@ -370,8 +409,8 @@ func parseEnrollRequest(b []byte) (enrollRequest, error) {
 	if _, err := dec.Token(); err != io.EOF {
 		return enrollRequest{}, errors.New("unexpected data after the request")
 	}
-	if !validSecret(req.Secret) {
-		return enrollRequest{}, errors.New("no enrollment secret")
+	if len(req.Key) != mldsa.MLDSA87PublicKeySize || len(req.Proof) != mldsa.MLDSA87SignatureSize {
+		return enrollRequest{}, errors.New("no enrollment key and proof")
 	}
 	if err := req.Reported.validate(); err != nil {
 		return enrollRequest{}, err
@@ -495,6 +534,12 @@ func (h *enrollHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, answer, status)
 	}
+	// The body is read before anything is answered. A request is about
+	// 10 KiB, more than the server has taken in when the handler starts, and
+	// an answer sent with the rest unread closes the connection with data
+	// pending: that resets it, and the machine sees a dropped connection in
+	// place of the reason. The server's ReadTimeout bounds a slow body.
+	body, bodyErr := io.ReadAll(http.MaxBytesReader(w, r.Body, maxEnrollBody))
 	if ok, report := h.limit.allow(sourceKey(r.RemoteAddr), ref.Time); !ok {
 		if report {
 			refuse(http.StatusTooManyRequests, RefusedRateLimit, "too many enrollment attempts; try again in a minute")
@@ -505,7 +550,7 @@ func (h *enrollHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// The certificate comes from the handshake, which proved the machine
 	// holds its key. Without one there is nothing to pin.
-	leaf, err := presented(r.TLS)
+	leaf, _, err := verified(r.TLS, false)
 	if err != nil {
 		refuse(http.StatusForbidden, RefusedNoCert, "a client certificate is required")
 		return
@@ -523,10 +568,9 @@ func (h *enrollHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		refuse(http.StatusServiceUnavailable, RefusedOff, "enrollment is switched off on the master")
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxEnrollBody))
-	if err != nil {
+	if bodyErr != nil {
 		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
+		if errors.As(bodyErr, &tooLarge) {
 			refuse(http.StatusRequestEntityTooLarge, RefusedTooLarge, "request body too large")
 		} else {
 			refuse(http.StatusBadRequest, RefusedBadRequest, "bad request")
@@ -538,7 +582,34 @@ func (h *enrollHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		refuse(http.StatusBadRequest, RefusedBadRequest, "bad request")
 		return
 	}
-	m, err := h.store.enroll(req.Secret, ref.Fingerprint, req.Reported)
+	// A key nobody was given a code for is turned away from memory: a
+	// stranger gets no signature checked and does not take the file's lock.
+	hash := hashKey(req.Key)
+	d, _, err := h.store.view()
+	if err != nil {
+		refuse(http.StatusServiceUnavailable, RefusedUnavailable, "enrollment is not available")
+		return
+	}
+	e := d.enrollment(hash)
+	if e == nil {
+		refuse(http.StatusForbidden, RefusedUnknownCode, "enrollment refused")
+		return
+	}
+	ref.Name = e.Name
+	// The proof: the code's key signed this connection and this certificate.
+	key, err := mldsa.NewPublicKey(mldsa.MLDSA87(), req.Key)
+	var msg []byte
+	if err == nil {
+		msg, err = enrollMessage(r.TLS, ref.Fingerprint)
+	}
+	if err == nil {
+		err = mldsa.Verify(key, msg, req.Proof, &mldsa.Options{Context: enrollContext})
+	}
+	if err != nil {
+		refuse(http.StatusForbidden, RefusedBadProof, "enrollment refused")
+		return
+	}
+	m, err := h.store.enroll(hash, ref.Fingerprint, req.Reported)
 	if err != nil {
 		var why *Refusal
 		if !errors.As(err, &why) {
@@ -559,9 +630,11 @@ func (h *enrollHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // Enroll runs on the machine being enrolled. It reads code, dials the
 // master at the addresses in it, refuses any server whose certificate is not
-// the one the code names, and presents the code's secret with id, this
-// machine's new identity. self is what the machine reports about itself; its
-// Sandbox and Ceiling are also what the returned Child is set to.
+// the one the code names, and proves it holds the code by signing, with the
+// code's key, for that one connection and for id, this machine's new
+// identity. The code's seed is not sent. self is what the machine reports
+// about itself; its Sandbox and Ceiling are also what the returned Child is
+// set to.
 //
 // It returns the Child to save as child.json and the six digits to show the
 // operator. The machine is then pending: it connects like any other and is
@@ -569,8 +642,8 @@ func (h *enrollHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // The digits are "" when the master confirmed the machine as it enrolled
 // (TEN-553): nothing is left to type.
 //
-// The secret is sent once, to the first address that proves to be the
-// master. A code is spent by that, so a failure after the secret went out is
+// The proof is sent once, to the first address that proves to be the
+// master. A code is spent by that, so a failure after the proof went out is
 // not retried here: ask the master whether the machine is pending.
 func Enroll(ctx context.Context, code string, id Identity, self Reported) (Child, string, error) {
 	fail := func(err error) (Child, string, error) { return Child{}, "", err }
@@ -588,7 +661,7 @@ func Enroll(ctx context.Context, code string, id Identity, self Reported) (Child
 	if err != nil {
 		return fail(err)
 	}
-	body, _ := json.Marshal(enrollRequest{Secret: ec.Secret, Reported: self}) // strings: cannot fail
+	key := ec.key() // parseEnrollCode checked there is one
 
 	var (
 		conn   net.Conn
@@ -611,6 +684,17 @@ func Enroll(ctx context.Context, code string, id Identity, self Reported) (Child
 	ctx, cancel := context.WithTimeout(ctx, enrollAnswerWait)
 	defer cancel()
 	defer context.AfterFunc(ctx, func() { _ = conn.Close() })()
+
+	cs := conn.(*tls.Conn).ConnectionState() // a tls.Dialer's connection, its handshake done
+	msg, err := enrollMessage(&cs, id.Fingerprint)
+	if err != nil {
+		return fail(err)
+	}
+	proof, err := key.Sign(nil, msg, &mldsa.Options{Context: enrollContext})
+	if err != nil {
+		return fail(fmt.Errorf("fleet: sign the enrollment: %w", err))
+	}
+	body, _ := json.Marshal(enrollRequest{Key: key.PublicKey().Bytes(), Proof: proof, Reported: self}) // bytes and strings: cannot fail
 
 	// The connection is made and checked; the URL only fills in the request
 	// line and the Host header, and being constant it cannot fail to parse.

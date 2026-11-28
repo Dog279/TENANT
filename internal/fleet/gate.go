@@ -200,7 +200,7 @@ func (s gated) Dispatch(ctx context.Context, call model.ToolCall) (string, bool,
 	g := s.g
 	args, _ := cut(string(call.Arguments), maxAuditArgs)
 	hash, err := g.record(AuditRecord{Event: AuditCall, Call: call.ID, Tool: call.Name,
-		Args: args, ArgsSHA256: fingerprintOf(call.Arguments)})
+		Args: args, ArgsSHA256: sha256Hex(call.Arguments)})
 	if err != nil {
 		return "fleet: this machine could not write its audit record, so it did not run the call: " + err.Error(), true, nil
 	}
@@ -226,7 +226,7 @@ func (s gated) Dispatch(ctx context.Context, call model.ToolCall) (string, bool,
 		done.Asked, done.AskedMore = c.taken()
 		text += refusals(done.Asked) + c.unsent()
 	}
-	done.ResultSHA256, done.ResultBytes = fingerprintOf([]byte(text)), len(text)
+	done.ResultSHA256, done.ResultBytes = sha256Hex([]byte(text)), len(text)
 	if hash, err := g.record(done); err == nil {
 		setAudit(ctx, hash)
 	} else {
