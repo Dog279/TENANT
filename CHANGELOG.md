@@ -32,6 +32,12 @@ Releases page.
   short of the file's 4 MiB limit, so a change to a machine that is already there (a revoke, a
   pause) never fails for want of room.
 
+- **Fixed (Windows): an update could roll back because the new binary was still open for an
+  instant.** Just after a new version's trial run its file can still be open in another handle
+  (the process on its way out, a virus scanner), and Windows refuses to rename a file that is.
+  A fleet machine's update then ended "rolled back: the new version could not be put in place
+  ... being used by another process", and `tenant update` and a rollback could stop the same
+  way. The rename is now tried again for up to about 5 seconds before it is reported.
 - **Changed: a fleet child is always the machine's own service (TEN-558).** `tenant child install` now
   installs what `--system` did: a service that runs as root or SYSTEM from boot, with the child's
   files in the machine's own location. It needs an elevated terminal (a root shell or sudo, a

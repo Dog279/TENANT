@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // ErrPrevInUse is Swap's refusal on Windows when the previous version is
@@ -27,6 +29,22 @@ func PrevPath(exe string) string { return sibling(exe, ".prev") }
 
 // newPath is where Rollback parks the binary it demotes on Windows.
 func newPath(exe string) string { return sibling(exe, ".new") }
+
+// held runs a rename again while Windows refuses it because another handle
+// has the file open. A binary that has just run or been written is held for
+// an instant by its own process on the way out or by a virus scanner, and a
+// rename then fails with access denied or a sharing violation (errors 5 and
+// 32; windows-latest, 2026-11-27: a fleet machine's update rolled back at
+// its swap, right after the trial run). The instant passes, so the rename is
+// tried again, for about 5 seconds in all, before the caller is told.
+func held(rename func() error) error {
+	err := rename()
+	for try := 0; try < 50 && runtime.GOOS == "windows" && (errors.Is(err, syscall.Errno(5)) || errors.Is(err, syscall.Errno(32))); try++ {
+		time.Sleep(100 * time.Millisecond)
+		err = rename()
+	}
+	return err
+}
 
 func sibling(exe, tag string) string {
 	if ext := filepath.Ext(exe); strings.EqualFold(ext, ".exe") {
@@ -48,7 +66,8 @@ func sibling(exe, tag string) string {
 // old binary is renamed aside and the new one renamed in. Between those two
 // syscalls there is no tenant.exe; an OS stop landing there leaves the
 // operator one line, `ren tenant.new.exe tenant.exe` (whatever the staged
-// file is called). A failed second rename puts the old binary back itself.
+// file is called). A staged binary still open in another handle is waited
+// for (held); a second rename that fails puts the old binary back itself.
 func Swap(exe, staged string) error {
 	info, err := os.Stat(exe)
 	if err != nil {
@@ -74,7 +93,7 @@ func Swap(exe, staged string) error {
 	if err := os.Rename(exe, prev); err != nil {
 		return err
 	}
-	if err := renameFn(staged, exe); err != nil {
+	if err := held(func() error { return renameFn(staged, exe) }); err != nil {
 		if back := os.Rename(prev, exe); back != nil {
 			return fmt.Errorf("%w; and %s could not be put back (%v): rename it to %s by hand", err, prev, back, filepath.Base(exe))
 		}
@@ -96,10 +115,10 @@ func Rollback(exe string) error {
 		return os.Rename(prev, exe)
 	}
 	parked := newPath(exe)
-	if err := os.Rename(exe, parked); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := held(func() error { return os.Rename(exe, parked) }); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	if err := os.Rename(prev, exe); err != nil {
+	if err := held(func() error { return os.Rename(prev, exe) }); err != nil {
 		return fmt.Errorf("%w: %s is parked at %s; rename it back by hand", err, filepath.Base(exe), filepath.Base(parked))
 	}
 	_ = os.Remove(parked) // fails while the demoted binary still runs; then it is harmless until it exits
